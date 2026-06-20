@@ -1,0 +1,35 @@
+### Java ###
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+### Maven ###
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+### IDEs ###
+.idea/
+*.ipr
+*.iws
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+### OS / local files ###
+.DS_Store
+*.log
+
+### Project-local generated/reference files ###
+external/
