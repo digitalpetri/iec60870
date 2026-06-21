@@ -136,6 +136,7 @@ final class FakeServerTransport implements ServerTransport {
     }
 
     /** Signals connection loss to the server's listener. */
+    @SuppressWarnings("unused") // test-fixture affordance mirroring the real transport's API
     void loseConnection() {
       requireListener().onConnectionLost(new RuntimeException("connection lost"));
     }
@@ -145,6 +146,7 @@ final class FakeServerTransport implements ServerTransport {
      *
      * @return {@code true} if closed.
      */
+    @SuppressWarnings("unused") // test-fixture affordance mirroring the real transport's API
     boolean isClosed() {
       return closed;
     }

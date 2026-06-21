@@ -62,7 +62,7 @@ class MeasuredValueNormalizedWithCp24TimeTest {
   void rejectsNullComponent() {
     // The compact constructor rejects a null quality descriptor.
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () ->
             new MeasuredValueNormalizedWithCp24Time(
                 IOA, new NormalizedValue((short) 0), null, new Cp24Time2a(0, 0, false, true)));

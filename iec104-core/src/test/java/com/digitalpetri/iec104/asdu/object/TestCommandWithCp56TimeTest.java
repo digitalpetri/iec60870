@@ -58,7 +58,7 @@ class TestCommandWithCp56TimeTest {
   @Test
   void rejectsNullTime() {
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () -> new TestCommandWithCp56Time(InformationObjectAddress.of(0), ushort(0x1234), null));
   }
 }

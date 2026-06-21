@@ -2,6 +2,7 @@ package com.digitalpetri.iec104.asdu.element;
 
 import com.digitalpetri.iec104.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * Qualifier of counter interrogation command (QCC) per IEC 60870-5-101 clause 7.2.6.23.
@@ -27,16 +28,14 @@ public record QualifierOfCounterInterrogation(int request, FreezeMode freeze) {
    *
    * @param request the {@code RQT} field, in the range {@code 0..63}.
    * @param freeze the freeze mode applied to the requested counter group.
-   * @throws IllegalArgumentException if {@code request} is outside {@code 0..63} or {@code freeze}
-   *     is {@code null}.
+   * @throws IllegalArgumentException if {@code request} is outside {@code 0..63}.
+   * @throws NullPointerException if {@code freeze} is {@code null}.
    */
   public QualifierOfCounterInterrogation {
     if (request < 0 || request > REQUEST_MASK) {
       throw new IllegalArgumentException("request out of range [0, 63]: " + request);
     }
-    if (freeze == null) {
-      throw new IllegalArgumentException("freeze must not be null");
-    }
+    Objects.requireNonNull(freeze, "freeze");
   }
 
   /** Serde for the {@link QualifierOfCounterInterrogation} octet (QCC, 7.2.6.23). */

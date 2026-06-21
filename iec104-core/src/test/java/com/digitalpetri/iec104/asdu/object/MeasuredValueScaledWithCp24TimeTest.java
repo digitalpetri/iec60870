@@ -62,7 +62,7 @@ class MeasuredValueScaledWithCp24TimeTest {
     Qds quality = new Qds(false, false, false, false, false);
     Cp24Time2a time = new Cp24Time2a(0, 0, false, true);
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () -> new MeasuredValueScaledWithCp24Time(null, (short) 0, quality, time));
     // CP24Time2a also rejects an out-of-range milliseconds value.
     assertThrows(IllegalArgumentException.class, () -> new Cp24Time2a(60000, 0, false, true));

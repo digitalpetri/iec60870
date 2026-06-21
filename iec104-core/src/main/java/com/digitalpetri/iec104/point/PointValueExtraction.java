@@ -17,23 +17,4 @@ import java.util.Optional;
  * @param timestamp the absolute acquisition timestamp, if the object carried a resolvable time tag.
  * @see MonitorMapping#extract(InformationObject)
  */
-public record PointValueExtraction(PointValue<?> value, Optional<Instant> timestamp) {
-
-  /**
-   * Validates the components of an extraction result.
-   *
-   * @param value the extracted point value, whose own {@link PointValue#timestamp()} mirrors {@code
-   *     timestamp}.
-   * @param timestamp the absolute acquisition timestamp, if the object carried a resolvable time
-   *     tag.
-   * @throws NullPointerException if {@code value} or {@code timestamp} is null.
-   */
-  public PointValueExtraction {
-    if (value == null) {
-      throw new NullPointerException("value");
-    }
-    if (timestamp == null) {
-      throw new NullPointerException("timestamp");
-    }
-  }
-}
+public record PointValueExtraction(PointValue<?> value, Optional<Instant> timestamp) {}

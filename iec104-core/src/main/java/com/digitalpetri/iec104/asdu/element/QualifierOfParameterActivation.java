@@ -4,6 +4,7 @@ import static org.joou.Unsigned.ubyte;
 
 import com.digitalpetri.iec104.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 import org.joou.UByte;
 
 /**
@@ -22,12 +23,10 @@ public record QualifierOfParameterActivation(UByte value) {
    * Validates that the value is present.
    *
    * @param value the QPA value, in the range {@code 0..255}.
-   * @throws IllegalArgumentException if {@code value} is {@code null}.
+   * @throws NullPointerException if {@code value} is {@code null}.
    */
   public QualifierOfParameterActivation {
-    if (value == null) {
-      throw new IllegalArgumentException("value must not be null");
-    }
+    Objects.requireNonNull(value, "value");
   }
 
   /**

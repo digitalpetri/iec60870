@@ -39,6 +39,8 @@ public record ReadCommand(InformationObjectAddress address) implements Informati
      * @param o the read command to encode.
      * @param buffer the caller-owned buffer to write into.
      */
+    // Parameters match the codec method-reference signature; C_RD_NA_1 has no elements to encode.
+    @SuppressWarnings("unused")
     public static void encode(ReadCommand o, ByteBuf buffer) {
       // No information elements: the IOA (written by the caller) fully specifies the command.
     }
@@ -53,6 +55,9 @@ public record ReadCommand(InformationObjectAddress address) implements Informati
      * @param buffer the caller-owned buffer to read from.
      * @return the decoded read command.
      */
+    // The buffer parameter matches the codec method-reference signature; C_RD_NA_1 reads no
+    // elements.
+    @SuppressWarnings("unused")
     public static ReadCommand decode(InformationObjectAddress address, ByteBuf buffer) {
       return new ReadCommand(address);
     }

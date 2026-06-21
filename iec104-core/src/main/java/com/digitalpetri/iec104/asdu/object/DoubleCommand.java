@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.DoubleCommandState;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_DC_NA_1 (46) — double command without time tag (IEC 60870-5-101 §7.3.2.2).
@@ -31,19 +32,12 @@ public record DoubleCommand(
    * @param address the information object address.
    * @param state the double command state (DCS).
    * @param qualifier the qualifier of command (QU and S/E).
-   * @throws IllegalArgumentException if {@code address}, {@code state}, or {@code qualifier} is
-   *     null.
+   * @throws NullPointerException if {@code address}, {@code state}, or {@code qualifier} is null.
    */
   public DoubleCommand {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (state == null) {
-      throw new IllegalArgumentException("state must not be null");
-    }
-    if (qualifier == null) {
-      throw new IllegalArgumentException("qualifier must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(qualifier, "qualifier");
   }
 
   /** Serde for the {@link DoubleCommand} information elements (after the IOA). */

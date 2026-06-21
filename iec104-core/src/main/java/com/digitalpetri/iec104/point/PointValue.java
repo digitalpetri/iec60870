@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.element.DoublePointState;
 import com.digitalpetri.iec104.asdu.element.NormalizedValue;
 import com.digitalpetri.iec104.asdu.element.Vti;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -42,15 +43,9 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @throws NullPointerException if {@code value}, {@code quality}, or {@code timestamp} is null.
    */
   public PointValue {
-    if (value == null) {
-      throw new NullPointerException("value");
-    }
-    if (quality == null) {
-      throw new NullPointerException("quality");
-    }
-    if (timestamp == null) {
-      throw new NullPointerException("timestamp");
-    }
+    Objects.requireNonNull(value, "value");
+    Objects.requireNonNull(quality, "quality");
+    Objects.requireNonNull(timestamp, "timestamp");
   }
 
   /**

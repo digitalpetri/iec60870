@@ -3,8 +3,8 @@ package com.digitalpetri.iec104.apci;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -106,8 +106,8 @@ class ApciSessionTest {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
 
-    session.onApdu(iFrame(0, 0, asdu(1)));
-    session.onApdu(iFrame(1, 0, asdu(2)));
+    session.onApdu(iFrame(0, asdu(1)));
+    session.onApdu(iFrame(1, asdu(2)));
 
     assertEquals(2, events.asdus.size());
     // The next sent I-frame carries V(R) = 2 as its N(R).
@@ -160,10 +160,10 @@ class ApciSessionTest {
     session.onConnected();
 
     // w = 2: the second received I-frame triggers an S-frame ack with N(R) = 2.
-    session.onApdu(iFrame(0, 0, asdu(1)));
+    session.onApdu(iFrame(0, asdu(1)));
     assertTrue(output.sFrames().isEmpty());
 
-    session.onApdu(iFrame(1, 0, asdu(2)));
+    session.onApdu(iFrame(1, asdu(2)));
     assertEquals(1, output.sFrames().size());
     assertEquals(2, output.sFrames().get(0).receiveSequenceNumber());
   }
@@ -176,7 +176,7 @@ class ApciSessionTest {
     session.onConnected();
 
     // One received I-frame (below w) arms t2 but does not ack yet.
-    session.onApdu(iFrame(0, 0, asdu(1)));
+    session.onApdu(iFrame(0, asdu(1)));
     assertTrue(output.sFrames().isEmpty());
 
     scheduler.advance(T2_MILLIS, TimeUnit.MILLISECONDS);
@@ -339,7 +339,7 @@ class ApciSessionTest {
     session.onConnected();
 
     // Expected N(S) = 0 but the peer skips to 2.
-    session.onApdu(iFrame(2, 0, asdu(1)));
+    session.onApdu(iFrame(2, asdu(1)));
 
     assertInstanceOf(SequenceNumberException.class, events.closeCause.get());
   }
@@ -399,10 +399,10 @@ class ApciSessionTest {
     session.onConnected();
 
     for (int ns = 0; ns <= 32767; ns++) {
-      session.onApdu(iFrame(ns, 0, asdu(ns & 0xFF)));
+      session.onApdu(iFrame(ns, asdu(ns & 0xFF)));
     }
     // V(R) has wrapped back to 0; the next expected N(S) is 0 again.
-    session.onApdu(iFrame(0, 0, asdu(0)));
+    session.onApdu(iFrame(0, asdu(0)));
     assertNull(events.closeCause.get());
     assertEquals(32769, events.asdus.size());
   }
@@ -438,8 +438,8 @@ class ApciSessionTest {
         List.of(object));
   }
 
-  private static Apdu iFrame(int ns, int nr, Asdu asdu) {
-    return new Apdu(new ControlField.TypeI(ns, nr), asdu);
+  private static Apdu iFrame(int ns, Asdu asdu) {
+    return new Apdu(new ControlField.TypeI(ns, 0), asdu);
   }
 
   private static Apdu sFrame(int nr) {
@@ -527,7 +527,6 @@ class ApciSessionTest {
   void asduFixturesAreDistinctInstances() {
     Asdu a = asdu(1);
     Asdu b = asdu(1);
-    assertSame(a, a);
-    assertFalse(a == b);
+    assertNotSame(a, b);
   }
 }

@@ -1,6 +1,5 @@
 package com.digitalpetri.iec104.server;
 
-import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.object.DoubleCommand;
 import com.digitalpetri.iec104.asdu.object.DoubleCommandWithCp56Time;
@@ -14,6 +13,7 @@ import com.digitalpetri.iec104.asdu.object.SetpointShortFloat;
 import com.digitalpetri.iec104.asdu.object.SetpointShortFloatWithCp56Time;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.asdu.object.SingleCommandWithCp56Time;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Derives the {@link CommandMode} (select or execute) of a received control command from its
@@ -30,12 +30,10 @@ final class CommandModes {
   /**
    * Returns the select/execute mode of a received command information object.
    *
-   * @param type the type identification of the command ASDU (used as a fallback for objects that do
-   *     not carry a select/execute flag).
    * @param object the received command information object.
    * @return the command mode.
    */
-  static CommandMode of(AsduType type, InformationObject object) {
+  static CommandMode of(InformationObject object) {
     Boolean select = selectFlag(object);
     if (select == null) {
       // C_BO commands (and anything without an S/E flag) are direct execute.
@@ -50,7 +48,7 @@ final class CommandModes {
    * @param object the command information object.
    * @return {@code true} for select, {@code false} for execute, or {@code null} if not applicable.
    */
-  private static Boolean selectFlag(InformationObject object) {
+  private static @Nullable Boolean selectFlag(InformationObject object) {
     if (object instanceof SingleCommand o) {
       return o.qualifier().select();
     }

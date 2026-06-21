@@ -2,29 +2,20 @@ package com.digitalpetri.iec104.server;
 
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.InformationObject;
-import com.digitalpetri.iec104.asdu.object.Bitstring32;
 import com.digitalpetri.iec104.asdu.object.Bitstring32WithCp24Time;
 import com.digitalpetri.iec104.asdu.object.Bitstring32WithCp56Time;
-import com.digitalpetri.iec104.asdu.object.DoublePointInformation;
 import com.digitalpetri.iec104.asdu.object.DoublePointWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.DoublePointWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.IntegratedTotals;
 import com.digitalpetri.iec104.asdu.object.IntegratedTotalsWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.IntegratedTotalsWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.MeasuredValueNormalized;
-import com.digitalpetri.iec104.asdu.object.MeasuredValueNormalizedNoQuality;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueNormalizedWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueNormalizedWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.MeasuredValueScaled;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueScaledWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueScaledWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.MeasuredValueShortFloat;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueShortFloatWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueShortFloatWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec104.asdu.object.SinglePointWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.SinglePointWithCp56Time;
-import com.digitalpetri.iec104.asdu.object.StepPositionInformation;
 import com.digitalpetri.iec104.asdu.object.StepPositionWithCp24Time;
 import com.digitalpetri.iec104.asdu.object.StepPositionWithCp56Time;
 import com.digitalpetri.iec104.point.PointType;
@@ -134,18 +125,8 @@ final class MonitorTypes {
         || object instanceof IntegratedTotalsWithCp24Time) {
       return TimeTagStyle.CP24;
     }
-    // Untimed monitor records, the no-quality normalized variant, and anything else.
-    if (object instanceof SinglePointInformation
-        || object instanceof DoublePointInformation
-        || object instanceof StepPositionInformation
-        || object instanceof Bitstring32
-        || object instanceof MeasuredValueNormalized
-        || object instanceof MeasuredValueNormalizedNoQuality
-        || object instanceof MeasuredValueScaled
-        || object instanceof MeasuredValueShortFloat
-        || object instanceof IntegratedTotals) {
-      return TimeTagStyle.NONE;
-    }
+    // Untimed monitor records, the no-quality normalized variant, and any record this helper does
+    // not recognize all carry no time tag.
     return TimeTagStyle.NONE;
   }
 }

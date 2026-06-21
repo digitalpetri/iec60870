@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec104.asdu.time.Cp24Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_IT_TA_1 (16) — integrated totals with a CP24Time2a time tag (IEC 60870-5-101 §7.3.1.16).
@@ -29,19 +30,13 @@ public record IntegratedTotalsWithCp24Time(
    * @param counter the binary counter reading (BCR): signed 32-bit value, sequence number, and the
    *     carry, adjusted, and invalid status bits.
    * @param time the CP24Time2a time tag at which the counter was read.
-   * @throws IllegalArgumentException if {@code address}, {@code counter}, or {@code time} is {@code
+   * @throws NullPointerException if {@code address}, {@code counter}, or {@code time} is {@code
    *     null}.
    */
   public IntegratedTotalsWithCp24Time {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (counter == null) {
-      throw new IllegalArgumentException("counter must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(counter, "counter");
+    Objects.requireNonNull(time, "time");
   }
 
   /** Serde for the {@link IntegratedTotalsWithCp24Time} information elements (after the IOA). */

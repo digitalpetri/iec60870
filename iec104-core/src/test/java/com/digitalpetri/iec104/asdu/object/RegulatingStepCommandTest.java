@@ -75,7 +75,7 @@ class RegulatingStepCommandTest {
   @Test
   void rejectsNullState() {
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () ->
             new RegulatingStepCommand(
                 InformationObjectAddress.of(0x000000), null, new QualifierOfCommand(0, false)));

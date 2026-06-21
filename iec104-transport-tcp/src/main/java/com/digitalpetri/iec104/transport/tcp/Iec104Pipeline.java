@@ -59,6 +59,9 @@ final class Iec104Pipeline {
    *     callers awaiting the handshake use its {@link SslHandler#handshakeFuture() handshake
    *     future}.
    */
+  // The returned SslHandler is an intentional API affordance so callers can await the handshake;
+  // current callers re-fetch it from the pipeline in a later callback, so it is not used here.
+  @SuppressWarnings("UnusedReturnValue")
   static @Nullable SslHandler configure(
       Channel channel,
       ProtocolProfile profile,

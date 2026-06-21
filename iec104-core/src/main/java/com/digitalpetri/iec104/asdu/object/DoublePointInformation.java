@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.DoublePointState;
 import com.digitalpetri.iec104.asdu.element.Qds;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_DP_NA_1 (3) — double-point information without time tag (IEC 60870-5-101 §7.3.1.3).
@@ -42,18 +43,12 @@ public record DoublePointInformation(
    * @param address the information object address.
    * @param state the double-point state (DPI).
    * @param quality the quality descriptor; the overflow (OV) bit is not part of DIQ and is ignored.
-   * @throws IllegalArgumentException if {@code address}, {@code state}, or {@code quality} is null.
+   * @throws NullPointerException if {@code address}, {@code state}, or {@code quality} is null.
    */
   public DoublePointInformation {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (state == null) {
-      throw new IllegalArgumentException("state must not be null");
-    }
-    if (quality == null) {
-      throw new IllegalArgumentException("quality must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(quality, "quality");
   }
 
   /** Serde for the {@link DoublePointInformation} information elements (after the IOA). */

@@ -20,18 +20,6 @@ public record FixedTestBitPattern(UShort value) {
   public static final FixedTestBitPattern DEFAULT = of(0x55AA);
 
   /**
-   * Validates that the value is present.
-   *
-   * @param value the test bit pattern, in the range {@code 0..65535}.
-   * @throws IllegalArgumentException if {@code value} is {@code null}.
-   */
-  public FixedTestBitPattern {
-    if (value == null) {
-      throw new IllegalArgumentException("value must not be null");
-    }
-  }
-
-  /**
    * Creates a fixed test bit pattern from a raw 16-bit value.
    *
    * @param value the test bit pattern, in the range {@code 0..65535}.

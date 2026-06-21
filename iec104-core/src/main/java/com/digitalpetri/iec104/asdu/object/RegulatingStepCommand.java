@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.element.StepCommandState;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_RC_NA_1 (47) — regulating step command without time tag (IEC 60870-5-101 §7.3.2.3).
@@ -31,19 +32,12 @@ public record RegulatingStepCommand(
    * @param address the information object address.
    * @param state the regulating step command state (RCS).
    * @param qualifier the qualifier of command (QU + S/E).
-   * @throws IllegalArgumentException if {@code address}, {@code state}, or {@code qualifier} is
-   *     null.
+   * @throws NullPointerException if {@code address}, {@code state}, or {@code qualifier} is null.
    */
   public RegulatingStepCommand {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (state == null) {
-      throw new IllegalArgumentException("state must not be null");
-    }
-    if (qualifier == null) {
-      throw new IllegalArgumentException("qualifier must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(qualifier, "qualifier");
   }
 
   /** Serde for the {@link RegulatingStepCommand} information elements (after the IOA). */

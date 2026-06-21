@@ -7,6 +7,7 @@ import com.digitalpetri.iec104.asdu.element.Spe;
 import com.digitalpetri.iec104.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec104.asdu.time.Cp24Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_EP_TB_1 (18) — packed start events of protection equipment with time tag.
@@ -38,25 +39,15 @@ public record PackedStartEventsOfProtection(
    * @param quality the quality descriptor for events of protection equipment (QDP).
    * @param elapsedTime the relay duration time (CP16Time2a).
    * @param time the CP24Time2a time tag of the event.
-   * @throws IllegalArgumentException if {@code address}, {@code event}, {@code quality}, {@code
+   * @throws NullPointerException if {@code address}, {@code event}, {@code quality}, {@code
    *     elapsedTime}, or {@code time} is {@code null}.
    */
   public PackedStartEventsOfProtection {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (event == null) {
-      throw new IllegalArgumentException("event must not be null");
-    }
-    if (quality == null) {
-      throw new IllegalArgumentException("quality must not be null");
-    }
-    if (elapsedTime == null) {
-      throw new IllegalArgumentException("elapsedTime must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(event, "event");
+    Objects.requireNonNull(quality, "quality");
+    Objects.requireNonNull(elapsedTime, "elapsedTime");
+    Objects.requireNonNull(time, "time");
   }
 
   /** Serde for the {@link PackedStartEventsOfProtection} information elements (after the IOA). */

@@ -6,6 +6,7 @@ import com.digitalpetri.iec104.asdu.element.Sep;
 import com.digitalpetri.iec104.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec104.asdu.time.Cp24Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_EP_TA_1 (17) — event of protection equipment with a CP24Time2a time tag.
@@ -30,22 +31,14 @@ public record EventOfProtectionEquipment(
    * @param event the single event of protection equipment with quality bits (SEP).
    * @param elapsedTime the elapsed (relay operating) time (CP16Time2a).
    * @param time the CP24Time2a time tag of the event.
-   * @throws IllegalArgumentException if {@code address}, {@code event}, {@code elapsedTime}, or
-   *     {@code time} is {@code null}.
+   * @throws NullPointerException if {@code address}, {@code event}, {@code elapsedTime}, or {@code
+   *     time} is {@code null}.
    */
   public EventOfProtectionEquipment {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (event == null) {
-      throw new IllegalArgumentException("event must not be null");
-    }
-    if (elapsedTime == null) {
-      throw new IllegalArgumentException("elapsedTime must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(event, "event");
+    Objects.requireNonNull(elapsedTime, "elapsedTime");
+    Objects.requireNonNull(time, "time");
   }
 
   /** Serde for the {@link EventOfProtectionEquipment} information elements (after the IOA). */

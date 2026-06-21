@@ -98,7 +98,7 @@ public class NettyClientTransport implements ClientTransport {
 
   @Override
   public CompletionStage<Void> connect() {
-    return channelFsm.connect().thenApply(channel -> null);
+    return channelFsm.connect().thenAccept(channel -> {});
   }
 
   @Override
@@ -132,6 +132,9 @@ public class NettyClientTransport implements ClientTransport {
                     .addListener(
                         future -> {
                           if (future.isSuccess()) {
+                            // CompletableFuture<Void> can only be completed with null; the
+                            // @NotNull on complete() does not apply to a Void result.
+                            //noinspection DataFlowIssue
                             result.complete(null);
                           } else {
                             result.completeExceptionally(future.cause());
@@ -169,7 +172,7 @@ public class NettyClientTransport implements ClientTransport {
               .channel(NioSocketChannel.class)
               .option(ChannelOption.TCP_NODELAY, true)
               .handler(
-                  new ChannelInitializer<Channel>() {
+                  new ChannelInitializer<>() {
                     @Override
                     protected void initChannel(Channel channel) {
                       Iec104Pipeline.configure(
@@ -200,6 +203,10 @@ public class NettyClientTransport implements ClientTransport {
             Channel channel = connectFuture.channel();
             SslHandler sslHandler = channel.pipeline().get(SslHandler.class);
 
+            // ChannelPipeline.get(Class) returns null when no such handler is installed; the
+            // SslHandler is only present when TLS is configured. The IDE infers non-null from the
+            // unannotated generic return, so suppress the false "always false" report.
+            //noinspection ConstantValue
             if (sslHandler == null) {
               future.complete(channel);
             } else {
@@ -214,6 +221,9 @@ public class NettyClientTransport implements ClientTransport {
     public CompletableFuture<Void> disconnect(FsmContext<State, Event> ctx, Channel channel) {
       CompletableFuture<Void> future = new CompletableFuture<>();
 
+      // CompletableFuture<Void> can only be completed with null; the @NotNull on complete()
+      // does not apply to a Void result.
+      //noinspection DataFlowIssue
       channel.close().addListener(f -> future.complete(null));
 
       return future;

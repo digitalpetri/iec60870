@@ -6,6 +6,7 @@ import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 import org.joou.UShort;
 
 /**
@@ -36,16 +37,11 @@ public record TestCommandWithCp56Time(
    * @param testSequenceCounter the 16-bit test sequence counter (TSC), in the range {@code
    *     0..65535}; echoed unchanged in the confirmation.
    * @param time the CP56Time2a time tag; echoed unchanged in the confirmation.
-   * @throws IllegalArgumentException if {@code testSequenceCounter} or {@code time} is {@code
-   *     null}.
+   * @throws NullPointerException if {@code testSequenceCounter} or {@code time} is {@code null}.
    */
   public TestCommandWithCp56Time {
-    if (testSequenceCounter == null) {
-      throw new IllegalArgumentException("testSequenceCounter must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(testSequenceCounter, "testSequenceCounter");
+    Objects.requireNonNull(time, "time");
   }
 
   /**

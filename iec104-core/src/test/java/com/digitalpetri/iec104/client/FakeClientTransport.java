@@ -80,6 +80,8 @@ final class FakeClientTransport implements ClientTransport {
   }
 
   /** Disables the automatic STARTDT confirmation. */
+  // Intentional test-fixture API: the only control of the documented auto-STARTDT behavior.
+  @SuppressWarnings("unused")
   void disableAutoStartDt() {
     this.autoStartDt = false;
   }
@@ -125,15 +127,6 @@ final class FakeClientTransport implements ClientTransport {
   void loseConnection() {
     connected = false;
     requireListener().onConnectionLost(new RuntimeException("connection lost"));
-  }
-
-  /**
-   * Returns the APDUs the client has sent so far.
-   *
-   * @return the sent APDUs in order.
-   */
-  List<Apdu> sent() {
-    return sent;
   }
 
   /**

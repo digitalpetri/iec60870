@@ -2,6 +2,7 @@ package com.digitalpetri.iec104.interop;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -49,7 +50,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
@@ -99,6 +99,9 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
 @Tag("interop")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("Java client vs lib60870-C interop_server")
+// The single Iec104Client is owned by the @BeforeAll/@AfterAll lifecycle and shared by all tests;
+// closing it per call site (try-with-resources) would tear down the shared client mid-suite.
+@SuppressWarnings("resource")
 class ClientVsLib60870ServerInteropTest {
 
   private static final Logger log =
@@ -314,7 +317,7 @@ class ClientVsLib60870ServerInteropTest {
 
   @Test
   @DisplayName("Counter interrogation returns integrated totals (1070=1000, 1071=1000)")
-  void counterInterrogation() throws InterruptedException {
+  void counterInterrogation() {
     // No high-level counter-interrogation method on Iec104Client: send a raw C_CI_NA_1 (general
     // counter request) and collect the M_IT_NA_1 data ASDUs from events().
     events().clear();
@@ -344,7 +347,7 @@ class ClientVsLib60870ServerInteropTest {
                 a ->
                     a.type() == AsduType.M_IT_NA_1
                         && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                        && a.objects().size() >= 1,
+                        && !a.objects().isEmpty(),
                 WAIT_TIMEOUT);
     assertNotNull(data, "expected M_IT_NA_1 counter data with COT REQUESTED_BY_GENERAL_COUNTER");
 
@@ -599,7 +602,7 @@ class ClientVsLib60870ServerInteropTest {
 
   @Test
   @DisplayName("A periodic M_ME_NB_1 update for IOA 1050 (COT PERIODIC) arrives within ~5s")
-  void periodicUpdate() throws InterruptedException {
+  void periodicUpdate() {
     // Contract section 8: the server enqueues a periodic scaled measured value (M_ME_NB_1) at IOA
     // 1050 every 2s with COT PERIODIC. Subscribe-and-wait for a matching PointUpdated.
     ClientEvent.PointUpdated update =
@@ -610,8 +613,8 @@ class ClientVsLib60870ServerInteropTest {
                         && u.cause() == Cause.PERIODIC,
                 Duration.ofSeconds(8));
     assertNotNull(update, "expected a periodic PointUpdated for IOA 1050");
-    assertTrue(
-        update.value().value() instanceof Short, "periodic 1050 value must be a scaled Short");
+    assertInstanceOf(
+        Short.class, update.value().value(), "periodic 1050 value must be a scaled Short");
   }
 
   // --- Coverage notes -------------------------------------------------------------------------
@@ -688,43 +691,50 @@ class ClientVsLib60870ServerInteropTest {
     assertEquals(expected, value.value(), "single-point state");
   }
 
+  // expected is fixed per contract today but kept to make each typed helper self-documenting.
+  @SuppressWarnings("SameParameterValue")
   private static void assertDoublePoint(PointValue<?> value, DoublePointState expected) {
     assertNotNull(value, "missing double-point value");
     assertEquals(expected, value.value(), "double-point state");
   }
 
+  @SuppressWarnings("SameParameterValue")
   private static void assertStep(PointValue<?> value, int expected) {
     assertNotNull(value, "missing step-position value");
-    assertTrue(value.value() instanceof Vti, "step value should be a Vti");
-    Vti vti = (Vti) value.value();
+    Vti vti = assertInstanceOf(Vti.class, value.value(), "step value should be a Vti");
     assertEquals(expected, vti.value(), "step position value");
     assertFalse(vti.transientState(), "step transient flag should be false");
   }
 
+  @SuppressWarnings("SameParameterValue")
   private static void assertBits(PointValue<?> value, int expected) {
     assertNotNull(value, "missing bitstring value");
     assertEquals(expected, value.value(), "bitstring 32 value");
   }
 
+  @SuppressWarnings("SameParameterValue")
   private static void assertNormalized(PointValue<?> value, double expected) {
     assertNotNull(value, "missing normalized value");
-    assertTrue(value.value() instanceof NormalizedValue, "normalized value type");
-    double actual = ((NormalizedValue) value.value()).doubleValue();
+    NormalizedValue normalized =
+        assertInstanceOf(NormalizedValue.class, value.value(), "normalized value type");
+    double actual = normalized.doubleValue();
     // Within one LSB (~3.05e-5) of the requested 0.5 (contract section 2).
     assertTrue(
         Math.abs(actual - expected) <= 3.06e-5,
         "normalized value " + actual + " not within 1 LSB of " + expected);
   }
 
+  @SuppressWarnings("SameParameterValue")
   private static void assertScaled(PointValue<?> value, short expected) {
     assertNotNull(value, "missing scaled value");
     assertEquals(expected, value.value(), "scaled value");
   }
 
+  @SuppressWarnings("SameParameterValue")
   private static void assertShortFloat(PointValue<?> value, float expected) {
     assertNotNull(value, "missing short-float value");
-    assertTrue(value.value() instanceof Float, "short-float value type");
-    assertEquals(expected, (Float) value.value(), 1e-4f, "short-float value");
+    Float actual = assertInstanceOf(Float.class, value.value(), "short-float value type");
+    assertEquals(expected, actual, 1e-4f, "short-float value");
   }
 
   // --- Projection helpers ---------------------------------------------------------------------
@@ -762,13 +772,10 @@ class ClientVsLib60870ServerInteropTest {
   private static final class EventRecorder implements Flow.Subscriber<ClientEvent> {
 
     private final ConcurrentLinkedQueue<ClientEvent> queue = new ConcurrentLinkedQueue<>();
-    private final AtomicReference<Flow.@Nullable Subscription> subscription =
-        new AtomicReference<>();
     private volatile CountDownLatch tick = new CountDownLatch(1);
 
     @Override
     public void onSubscribe(Flow.Subscription s) {
-      subscription.set(s);
       s.request(Long.MAX_VALUE);
     }
 
@@ -797,6 +804,7 @@ class ClientVsLib60870ServerInteropTest {
      * Awaits an {@link ClientEvent.AsduReceived} whose ASDU matches {@code predicate}, returning
      * the matching ASDU or {@code null} if the timeout elapses first.
      */
+    @SuppressWarnings("SameParameterValue") // timeout kept symmetric with awaitPointUpdated
     @Nullable Asdu awaitAsdu(Predicate<Asdu> predicate, Duration timeout) {
       long deadline = System.nanoTime() + timeout.toNanos();
       while (true) {
@@ -807,7 +815,7 @@ class ClientVsLib60870ServerInteropTest {
             return received.asdu();
           }
         }
-        if (!awaitTick(deadline)) {
+        if (awaitTickTimedOut(deadline)) {
           return null;
         }
       }
@@ -827,22 +835,22 @@ class ClientVsLib60870ServerInteropTest {
             return updated;
           }
         }
-        if (!awaitTick(deadline)) {
+        if (awaitTickTimedOut(deadline)) {
           return null;
         }
       }
     }
 
-    private boolean awaitTick(long deadlineNanos) {
+    private boolean awaitTickTimedOut(long deadlineNanos) {
       long remaining = deadlineNanos - System.nanoTime();
       if (remaining <= 0) {
-        return false;
+        return true;
       }
       try {
-        return tick.await(remaining, TimeUnit.NANOSECONDS) || System.nanoTime() < deadlineNanos;
+        return !(tick.await(remaining, TimeUnit.NANOSECONDS) || System.nanoTime() < deadlineNanos);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
-        return false;
+        return true;
       }
     }
   }

@@ -24,4 +24,7 @@
  *
  * <p>See {@code README.md} in this module for how to run each example.
  */
+@NullMarked
 package com.digitalpetri.iec104.examples;
+
+import org.jspecify.annotations.NullMarked;

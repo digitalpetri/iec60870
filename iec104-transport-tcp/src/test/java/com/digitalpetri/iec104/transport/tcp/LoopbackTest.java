@@ -83,22 +83,19 @@ class LoopbackTest {
     var station =
         Station.builder(STATION).point(monitorDefinition).point(commandDefinition).build();
 
-    Iec104Server server =
-        TcpIec104Server.builder()
-            .bindAddress("127.0.0.1")
-            .port(port)
-            .addStation(station)
-            .handler(COMMAND_ACCEPTING_HANDLER)
-            .build();
-
-    Iec104Client client =
-        TcpIec104Client.builder()
-            .host("127.0.0.1")
-            .port(port)
-            .startDataTransferOnConnect(true)
-            .build();
-
-    try {
+    try (Iec104Server server =
+            TcpIec104Server.builder()
+                .bindAddress("127.0.0.1")
+                .port(port)
+                .addStation(station)
+                .handler(COMMAND_ACCEPTING_HANDLER)
+                .build();
+        Iec104Client client =
+            TcpIec104Client.builder()
+                .host("127.0.0.1")
+                .port(port)
+                .startDataTransferOnConnect(true)
+                .build()) {
       server.start();
 
       // connect() also performs the STARTDT handshake (startDataTransferOnConnect defaults true).
@@ -123,9 +120,6 @@ class LoopbackTest {
       CommandResult commandResult = client.commands().single(COMMAND_POINT, true);
       assertTrue(commandResult.positive(), "single command should be confirmed positively");
       assertEquals(COMMAND_POINT, commandResult.target());
-    } finally {
-      client.close();
-      server.close();
     }
   }
 

@@ -2,6 +2,7 @@ package com.digitalpetri.iec104.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,11 +67,11 @@ class DefaultIec104ClientTest {
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
     // Positive activation confirmation.
-    transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
     // One monitor object reported as an interrogation response.
     transport.deliverAsdu(measured(Cause.INTERROGATED_BY_STATION, (short) 42));
     // Activation termination ends the interrogation.
-    transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_TERMINATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
 
     InterrogationResult result = stage.toCompletableFuture().join();
     assertEquals(STATION, result.station());
@@ -85,10 +86,10 @@ class DefaultIec104ClientTest {
     client.connect();
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
-    transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_CONFIRMATION, true));
+    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, true));
 
     var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
-    assertTrue(ex.getCause() instanceof NegativeConfirmationException);
+    assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
   }
 
   @Test
@@ -99,8 +100,7 @@ class DefaultIec104ClientTest {
     CompletionStage<CommandResult> stage =
         client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
 
-    transport.deliverAsdu(
-        commandConfirmation(point.objectAddress(), Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertTrue(result.positive());
@@ -123,8 +123,7 @@ class DefaultIec104ClientTest {
     CompletionStage<CommandResult> stage =
         client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
 
-    transport.deliverAsdu(
-        commandConfirmation(point.objectAddress(), Cause.ACTIVATION_CONFIRMATION, true));
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), true));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertFalse(result.positive());
@@ -139,11 +138,9 @@ class DefaultIec104ClientTest {
         client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
 
     // Confirm the select phase; the execute phase is sent only after this confirmation.
-    transport.deliverAsdu(
-        commandConfirmation(point.objectAddress(), Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
     // Confirm the execute phase.
-    transport.deliverAsdu(
-        commandConfirmation(point.objectAddress(), Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertTrue(result.positive());
@@ -190,33 +187,29 @@ class DefaultIec104ClientTest {
   void connectFailureIsTranslatedToTypedException() {
     FakeClientTransport failing = new FakeClientTransport();
     failing.failConnect(new IOException("refused"));
-    DefaultIec104Client failingClient =
+    try (DefaultIec104Client failingClient =
         new DefaultIec104Client(
-            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build());
-    try {
+            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build())) {
       var ex =
           assertThrows(
               CompletionException.class,
               () -> failingClient.connectAsync().toCompletableFuture().join());
-      assertTrue(ex.getCause() instanceof IOException);
+      assertInstanceOf(IOException.class, ex.getCause());
       assertFalse(failingClient.isConnected());
-    } finally {
-      failingClient.close();
     }
   }
 
   @Test
   void commandTimeoutCleansUpPendingRequest() {
     FakeClientTransport quietTransport = new FakeClientTransport();
-    DefaultIec104Client timingClient =
+    try (DefaultIec104Client timingClient =
         new DefaultIec104Client(
             quietTransport,
             ClientConfig.builder()
                 .callbackExecutor(Runnable::run)
                 .commandTimeout(Duration.ofMillis(50))
                 .requestTimeout(Duration.ofMillis(50))
-                .build());
-    try {
+                .build())) {
       timingClient.connect();
       PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
 
@@ -227,26 +220,22 @@ class DefaultIec104ClientTest {
 
       // No confirmation is ever delivered; the command must time out and be removed.
       var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
-      assertTrue(ex.getCause() instanceof ProtocolTimeoutException);
+      assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
 
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
       // A late confirmation for the timed-out command is ignored without error.
-      quietTransport.deliverAsdu(
-          commandConfirmation(point.objectAddress(), Cause.ACTIVATION_CONFIRMATION, false));
+      quietTransport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
       assertEquals(0, timingClient.pendingRequestCount());
-    } finally {
-      timingClient.close();
     }
   }
 
   @Test
   void sendFailureFailsTheRequestAndDoesNotLeak() {
     FakeClientTransport failing = new FakeClientTransport();
-    DefaultIec104Client failingClient =
+    try (DefaultIec104Client failingClient =
         new DefaultIec104Client(
-            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build());
-    try {
+            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build())) {
       failingClient.connect();
       // From now on every send fails; the in-flight interrogation must fail too.
       failing.failSend(new IOException("write failed"));
@@ -255,8 +244,6 @@ class DefaultIec104ClientTest {
 
       assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
       assertEquals(0, failingClient.pendingRequestCount(), "failed send must not leak a request");
-    } finally {
-      failingClient.close();
     }
   }
 
@@ -290,8 +277,8 @@ class DefaultIec104ClientTest {
     assertTrue(events.stream().noneMatch(e -> e instanceof ClientEvent.PointUpdated));
 
     // Completing it for the correct station still works, proving no corruption.
-    transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_CONFIRMATION, false));
-    transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_TERMINATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
     assertTrue(stage.toCompletableFuture().join().terminated());
   }
 
@@ -300,10 +287,9 @@ class DefaultIec104ClientTest {
     // A single-thread executor preserves submission order and never runs two callbacks at once.
     ExecutorService executor = Executors.newSingleThreadExecutor();
     FakeClientTransport serialTransport = new FakeClientTransport();
-    DefaultIec104Client serialClient =
+    try (DefaultIec104Client serialClient =
         new DefaultIec104Client(
-            serialTransport, ClientConfig.builder().callbackExecutor(executor).build());
-    try {
+            serialTransport, ClientConfig.builder().callbackExecutor(executor).build())) {
       serialClient.connect();
 
       int count = 200;
@@ -345,8 +331,12 @@ class DefaultIec104ClientTest {
 
       assertTrue(latch.await(5, TimeUnit.SECONDS), "all events delivered");
       assertEquals(1, maxConcurrent.get(), "callbacks must never overlap");
+      // The unsynchronized list captured every counted event, proving callbacks never raced.
+      assertEquals(
+          count,
+          received.stream().filter(e -> e instanceof ClientEvent.AsduReceived).count(),
+          "every delivered ASDU event was recorded without corruption");
     } finally {
-      serialClient.close();
       executor.shutdownNow();
     }
   }
@@ -374,9 +364,9 @@ class DefaultIec104ClientTest {
             });
   }
 
-  private Asdu control(AsduType type, Cause cause, boolean negative) {
+  private Asdu control(Cause cause, boolean negative) {
     return new Asdu(
-        type,
+        AsduType.C_IC_NA_1,
         false,
         cause,
         negative,
@@ -400,11 +390,11 @@ class DefaultIec104ClientTest {
         List.of(new MeasuredValueScaled(InformationObjectAddress.of(110), value, goodQds())));
   }
 
-  private Asdu commandConfirmation(InformationObjectAddress ioa, Cause cause, boolean negative) {
+  private Asdu commandConfirmation(InformationObjectAddress ioa, boolean negative) {
     return new Asdu(
         AsduType.C_SC_NA_1,
         false,
-        cause,
+        Cause.ACTIVATION_CONFIRMATION,
         negative,
         false,
         config.originatorAddress(),

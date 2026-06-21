@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.Qds;
 import com.digitalpetri.iec104.asdu.time.Cp24Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_BO_TA_1 (8) — bitstring of 32 bit with a CP24Time2a time tag (IEC 60870-5-101 §7.3.1.8).
@@ -30,19 +31,13 @@ public record Bitstring32WithCp24Time(
    * @param bits the 32-bit binary state information (BSI); treated as an opaque bitstring.
    * @param quality the quality descriptor (QDS).
    * @param time the CP24Time2a time tag of the event.
-   * @throws IllegalArgumentException if {@code address}, {@code quality}, or {@code time} is {@code
+   * @throws NullPointerException if {@code address}, {@code quality}, or {@code time} is {@code
    *     null}.
    */
   public Bitstring32WithCp24Time {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (quality == null) {
-      throw new IllegalArgumentException("quality must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(quality, "quality");
+    Objects.requireNonNull(time, "time");
   }
 
   /** Serde for the {@link Bitstring32WithCp24Time} information elements (after the IOA). */

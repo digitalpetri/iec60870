@@ -127,18 +127,13 @@ public interface PointCatalog {
         boolean present = merged.containsKey(address);
 
         switch (policy) {
-          case PREFER_CONFIGURED -> {
+          case PREFER_CONFIGURED, ADD_OBSERVED_ONLY -> {
             if (!present) {
               merged.put(address, observedEntry(observed, point, maybeType.get()));
             }
           }
           case PREFER_OBSERVED ->
               merged.put(address, observedEntry(observed, point, maybeType.get()));
-          case ADD_OBSERVED_ONLY -> {
-            if (!present) {
-              merged.put(address, observedEntry(observed, point, maybeType.get()));
-            }
-          }
         }
       }
 

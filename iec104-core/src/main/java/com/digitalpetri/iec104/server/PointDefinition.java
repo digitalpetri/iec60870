@@ -90,6 +90,8 @@ public record PointDefinition<T>(
    * @param capability the capability to test.
    * @return {@code true} if the point declares {@code capability}.
    */
+  // Public API accessor; reads naturally in the positive even though internal callers negate it.
+  @SuppressWarnings("BooleanMethodIsAlwaysInverted")
   public boolean hasCapability(PointCapability capability) {
     return capabilities.contains(capability);
   }

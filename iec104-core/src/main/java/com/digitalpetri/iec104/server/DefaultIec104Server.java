@@ -279,13 +279,11 @@ public final class DefaultIec104Server implements Iec104Server {
    * Blocks until a stage completes, translating its failure to a typed exception.
    *
    * @param stage the stage to wait on.
-   * @param <T> the result type.
-   * @return the stage's result.
    * @throws Iec104Exception if the stage completed exceptionally with a protocol failure.
    */
-  private static <T> T await(CompletionStage<T> stage) {
+  private static void await(CompletionStage<?> stage) {
     try {
-      return stage.toCompletableFuture().join();
+      stage.toCompletableFuture().join();
     } catch (CompletionException e) {
       throw unwrap(e.getCause());
     } catch (CancellationException e) {
@@ -403,6 +401,9 @@ public final class DefaultIec104Server implements Iec104Server {
      * Dispatches a received ASDU on the serial per-connection chain so handler callbacks never run
      * concurrently for this connection.
      */
+    // Read-modify-write of dispatchTail is serialized by the session lock (onAsdu, the only caller,
+    // runs under it), so the non-atomic compound assignment is safe.
+    @SuppressWarnings("NonAtomicOperationOnVolatileField")
     private void dispatch(Asdu asdu) {
       dispatchTail =
           dispatchTail
@@ -411,6 +412,8 @@ public final class DefaultIec104Server implements Iec104Server {
               .exceptionally(
                   error -> {
                     LOGGER.debug("dispatch failed for {}", remoteAddress, error);
+                    // null is the only valid completion value for a CompletableFuture<Void>.
+                    //noinspection DataFlowIssue
                     return null;
                   });
     }
@@ -428,7 +431,7 @@ public final class DefaultIec104Server implements Iec104Server {
           .onRawAsduAsync(context, asdu)
           .thenCompose(
               consumed -> {
-                if (Boolean.TRUE.equals(consumed)) {
+                if (consumed) {
                   return done();
                 }
                 return dispatchByType(context, asdu);
@@ -689,7 +692,7 @@ public final class DefaultIec104Server implements Iec104Server {
 
       InformationObject commandObject = asdu.objects().get(0);
       PointAddress target = new PointAddress(asdu.commonAddress(), commandObject.address());
-      CommandMode mode = CommandModes.of(asdu.type(), commandObject);
+      CommandMode mode = CommandModes.of(commandObject);
       CommandRequest request = new CommandRequest(target, asdu.type(), commandObject, mode);
 
       return config

@@ -6,7 +6,6 @@ import java.util.PriorityQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Delayed;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -51,21 +50,6 @@ final class ManualScheduler implements ScheduledExecutorService {
       }
     }
     nowMillis = target;
-  }
-
-  /**
-   * Returns the number of tasks currently scheduled and not yet run or cancelled.
-   *
-   * @return the pending task count.
-   */
-  int pendingTaskCount() {
-    int count = 0;
-    for (ScheduledTask<?> task : queue) {
-      if (!task.cancelled) {
-        count++;
-      }
-    }
-    return count;
   }
 
   @Override
@@ -230,7 +214,7 @@ final class ManualScheduler implements ScheduledExecutorService {
     }
 
     @Override
-    public @Nullable V get() throws ExecutionException {
+    public @Nullable V get() {
       if (cancelled) {
         throw new CancellationException();
       }
@@ -238,8 +222,7 @@ final class ManualScheduler implements ScheduledExecutorService {
     }
 
     @Override
-    public @Nullable V get(long timeout, TimeUnit unit)
-        throws ExecutionException, TimeoutException {
+    public @Nullable V get(long timeout, TimeUnit unit) throws TimeoutException {
       if (!done) {
         throw new TimeoutException();
       }

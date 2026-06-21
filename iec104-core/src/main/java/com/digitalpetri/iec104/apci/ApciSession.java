@@ -129,7 +129,6 @@ public final class ApciSession {
   private final ReentrantLock lock = new ReentrantLock();
 
   private final Role role;
-  private final ApciSettings settings;
   private final ScheduledExecutorService scheduler;
   private final Output output;
   private final Events events;
@@ -180,7 +179,7 @@ public final class ApciSession {
       Events events) {
 
     this.role = Objects.requireNonNull(role, "role");
-    this.settings = Objects.requireNonNull(settings, "settings");
+    Objects.requireNonNull(settings, "settings");
     this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     this.output = Objects.requireNonNull(output, "output");
     this.events = Objects.requireNonNull(events, "events");
@@ -483,6 +482,8 @@ public final class ApciSession {
       flushSendQueue();
     }
     if (future != null) {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       future.complete(null);
     }
   }
@@ -501,6 +502,8 @@ public final class ApciSession {
       events.onDataTransferStateChanged(false);
     }
     if (future != null) {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       future.complete(null);
     }
   }

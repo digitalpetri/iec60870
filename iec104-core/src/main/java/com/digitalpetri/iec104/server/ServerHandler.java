@@ -165,6 +165,8 @@ public interface ServerHandler {
    * @param request the reset request.
    * @return the reset decision.
    */
+  // Params are unused by the accepting default but are part of the overridable hook contract.
+  @SuppressWarnings("unused")
   default ResetDecision onReset(ServerContext context, ResetRequest request) {
     return ResetDecision.accept();
   }
@@ -195,6 +197,8 @@ public interface ServerHandler {
    * @return {@code true} if the handler consumed the ASDU, {@code false} to defer to standard
    *     dispatch.
    */
+  // Params are unused by the deferring default but are part of the overridable hook contract.
+  @SuppressWarnings("unused")
   default boolean onRawAsdu(ServerContext context, Asdu asdu) {
     return false;
   }

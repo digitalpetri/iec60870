@@ -71,7 +71,6 @@ public final class DefaultIec104Client implements Iec104Client {
 
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
-  private final Executor callbackExecutor;
 
   private final SubmissionPublisher<ClientEvent> publisher;
   private final ApciSession session;
@@ -123,7 +122,7 @@ public final class DefaultIec104Client implements Iec104Client {
       this.scheduler = Executors.newSingleThreadScheduledExecutor(new SchedulerThreadFactory());
       this.ownsScheduler = true;
     }
-    this.callbackExecutor = config.callbackExecutor();
+    Executor callbackExecutor = config.callbackExecutor();
     this.publisher = new SubmissionPublisher<>(callbackExecutor, Flow.defaultBufferSize());
 
     this.session =
@@ -244,7 +243,7 @@ public final class DefaultIec104Client implements Iec104Client {
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
     PendingInterrogation request = new PendingInterrogation(station, future);
-    registerAndSend(request, asdu, config.requestTimeout(), future);
+    registerAndSend(request, asdu, config.requestTimeout());
     return future;
   }
 
@@ -273,7 +272,7 @@ public final class DefaultIec104Client implements Iec104Client {
 
     CompletableFuture<List<InformationObject>> future = new CompletableFuture<>();
     PendingRead request = new PendingRead(point, future);
-    registerAndSend(request, asdu, config.requestTimeout(), future);
+    registerAndSend(request, asdu, config.requestTimeout());
     return future;
   }
 
@@ -320,10 +319,13 @@ public final class DefaultIec104Client implements Iec104Client {
           } else if (ack.negative()) {
             result.completeExceptionally(new NegativeConfirmationException(ack.cause(), ack));
           } else {
+            // CompletableFuture<Void> can only be completed with null; the @NotNull on
+            // complete(T) does not account for the Void type argument.
+            //noinspection ConstantConditions
             result.complete(null);
           }
         });
-    registerAndSend(request, asdu, config.commandTimeout(), confirmation);
+    registerAndSend(request, asdu, config.commandTimeout());
     return result;
   }
 
@@ -460,10 +462,8 @@ public final class DefaultIec104Client implements Iec104Client {
    * @param request the pending request.
    * @param asdu the ASDU to send.
    * @param timeout the timeout for the request.
-   * @param future the user-facing future, failed if the send fails.
    */
-  private void registerAndSend(
-      PendingRequest request, Asdu asdu, Duration timeout, CompletableFuture<?> future) {
+  private void registerAndSend(PendingRequest request, Asdu asdu, Duration timeout) {
 
     lock.lock();
     try {
@@ -1042,7 +1042,7 @@ public final class DefaultIec104Client implements Iec104Client {
       PendingConfirmation request =
           new PendingConfirmation(
               type, target.commonAddress(), target.objectAddress(), confirmation);
-      registerAndSend(request, asdu, config.commandTimeout(), confirmation);
+      registerAndSend(request, asdu, config.commandTimeout());
       return confirmation;
     }
 

@@ -65,6 +65,9 @@ class NettyServerConnection implements ServerTransportConnection {
         .addListener(
             future -> {
               if (future.isSuccess()) {
+                // CompletableFuture<Void> is completed with null by design; Netty's
+                // GenericFutureListener has no @Nullable metadata, so the IDE flags it.
+                //noinspection DataFlowIssue
                 result.complete(null);
               } else {
                 result.completeExceptionally(future.cause());
@@ -92,6 +95,9 @@ class NettyServerConnection implements ServerTransportConnection {
   @Override
   public Optional<Certificate> peerCertificate() {
     SslHandler sslHandler = channel.pipeline().get(SslHandler.class);
+    // ChannelPipeline.get(Class) returns null when no such handler is installed (plaintext
+    // channels), but Netty lacks @Nullable metadata, so the IDE thinks the check is dead.
+    //noinspection ConstantValue
     if (sslHandler == null) {
       return Optional.empty();
     }

@@ -118,13 +118,6 @@ class ServerVsLib60870ClientInteropTest {
   /** Generous: the first run shallow-clones + builds lib60870-C (minutes). */
   private static final Duration IMAGE_BUILD_TIMEOUT = Duration.ofMinutes(10);
 
-  /**
-   * Bound on the client script run. The script's own sleeps total roughly 15-20s (interrogations,
-   * clock sync, read, two commands, a ~3s keepalive idle, STOPDT); 90s leaves ample margin without
-   * ever hanging.
-   */
-  private static final Duration CLIENT_TIMEOUT = Duration.ofSeconds(90);
-
   private @Nullable ScheduledExecutorService periodic;
   private @Nullable Iec104Server server;
   private int serverPort;
@@ -233,7 +226,7 @@ class ServerVsLib60870ClientInteropTest {
     // Contract section 8: enqueue a periodic scaled measured value at IOA 1050 every 2s with COT
     // PERIODIC so passive observers (and the client's keepalive idle window) see live traffic.
     AtomicInteger periodicValue = new AtomicInteger(SCALED_VALUE);
-    periodic = new ScheduledThreadPoolExecutor(1, r -> daemon(r, "interop-periodic"));
+    periodic = new ScheduledThreadPoolExecutor(1, ServerVsLib60870ClientInteropTest::daemon);
     periodic.scheduleAtFixedRate(
         () -> {
           try {
@@ -268,6 +261,10 @@ class ServerVsLib60870ClientInteropTest {
   void clientScriptedSequencePasses() {
     ToStringConsumer logs = new ToStringConsumer();
 
+    // The container IS managed by this try-with-resources; the inspection misfires because the
+    // fluent withX() builder methods return SELF, so it can't prove the chained value is the same
+    // instance that gets closed.
+    //noinspection resource
     try (GenericContainer<?> client =
         new GenericContainer<>(
                 new ImageFromDockerfile("iec104-interop/lib60870c-interop", false)
@@ -383,8 +380,8 @@ class ServerVsLib60870ClientInteropTest {
     }
   }
 
-  private static Thread daemon(Runnable runnable, String name) {
-    Thread thread = new Thread(runnable, name);
+  private static Thread daemon(Runnable runnable) {
+    Thread thread = new Thread(runnable, "interop-periodic");
     thread.setDaemon(true);
     return thread;
   }

@@ -81,7 +81,7 @@ class DoubleCommandTest {
   @Test
   void rejectsNullState() {
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () ->
             new DoubleCommand(
                 InformationObjectAddress.of(0x000000), null, new QualifierOfCommand(0, false)));

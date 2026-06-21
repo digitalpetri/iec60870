@@ -36,7 +36,9 @@ import com.digitalpetri.iec104.asdu.time.Cp24Time2a;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Bidirectional bridge between the wire-level monitor information objects in {@code
@@ -81,12 +83,11 @@ public final class MonitorMapping {
    *
    * @param monitorObject the monitor information object to classify.
    * @return the point type family of {@code monitorObject}.
+   * @throws NullPointerException if {@code monitorObject} is {@code null}.
    * @throws IllegalArgumentException if {@code monitorObject} is not a supported monitor type.
    */
   public static PointType typeOf(InformationObject monitorObject) {
-    if (monitorObject == null) {
-      throw new IllegalArgumentException("monitorObject must not be null");
-    }
+    Objects.requireNonNull(monitorObject, "monitorObject");
     if (monitorObject instanceof SinglePointInformation
         || monitorObject instanceof SinglePointWithCp24Time
         || monitorObject instanceof SinglePointWithCp56Time) {
@@ -145,16 +146,12 @@ public final class MonitorMapping {
    *     is not a supported monitor type.
    */
   public static Optional<PointValueExtraction> extract(InformationObject monitorObject) {
-    if (monitorObject == null) {
-      return Optional.empty();
-    }
-
     // Single-point
     if (monitorObject instanceof SinglePointInformation o) {
-      return Optional.of(extraction(PointValue.single(o.on()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.single(o.on()), o.quality(), null));
     }
     if (monitorObject instanceof SinglePointWithCp24Time o) {
-      return Optional.of(extraction(PointValue.single(o.on()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.single(o.on()), o.quality(), null));
     }
     if (monitorObject instanceof SinglePointWithCp56Time o) {
       return Optional.of(extraction(PointValue.single(o.on()), o.quality(), instant(o.time())));
@@ -162,12 +159,10 @@ public final class MonitorMapping {
 
     // Double-point
     if (monitorObject instanceof DoublePointInformation o) {
-      return Optional.of(
-          extraction(PointValue.doublePoint(o.state()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.doublePoint(o.state()), o.quality(), null));
     }
     if (monitorObject instanceof DoublePointWithCp24Time o) {
-      return Optional.of(
-          extraction(PointValue.doublePoint(o.state()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.doublePoint(o.state()), o.quality(), null));
     }
     if (monitorObject instanceof DoublePointWithCp56Time o) {
       return Optional.of(
@@ -176,12 +171,10 @@ public final class MonitorMapping {
 
     // Step position
     if (monitorObject instanceof StepPositionInformation o) {
-      return Optional.of(
-          extraction(PointValue.stepPosition(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.stepPosition(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof StepPositionWithCp24Time o) {
-      return Optional.of(
-          extraction(PointValue.stepPosition(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.stepPosition(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof StepPositionWithCp56Time o) {
       return Optional.of(
@@ -190,10 +183,10 @@ public final class MonitorMapping {
 
     // Bit string
     if (monitorObject instanceof Bitstring32 o) {
-      return Optional.of(extraction(PointValue.bitstring(o.bits()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.bitstring(o.bits()), o.quality(), null));
     }
     if (monitorObject instanceof Bitstring32WithCp24Time o) {
-      return Optional.of(extraction(PointValue.bitstring(o.bits()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.bitstring(o.bits()), o.quality(), null));
     }
     if (monitorObject instanceof Bitstring32WithCp56Time o) {
       return Optional.of(
@@ -202,16 +195,14 @@ public final class MonitorMapping {
 
     // Normalized
     if (monitorObject instanceof MeasuredValueNormalized o) {
-      return Optional.of(
-          extraction(PointValue.normalized(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.normalized(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueNormalizedNoQuality o) {
       Qds good = new Qds(false, false, false, false, false);
-      return Optional.of(extraction(PointValue.normalized(o.value()), good, Optional.empty()));
+      return Optional.of(extraction(PointValue.normalized(o.value()), good, null));
     }
     if (monitorObject instanceof MeasuredValueNormalizedWithCp24Time o) {
-      return Optional.of(
-          extraction(PointValue.normalized(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.normalized(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueNormalizedWithCp56Time o) {
       return Optional.of(
@@ -220,10 +211,10 @@ public final class MonitorMapping {
 
     // Scaled
     if (monitorObject instanceof MeasuredValueScaled o) {
-      return Optional.of(extraction(PointValue.scaled(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.scaled(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueScaledWithCp24Time o) {
-      return Optional.of(extraction(PointValue.scaled(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.scaled(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueScaledWithCp56Time o) {
       return Optional.of(extraction(PointValue.scaled(o.value()), o.quality(), instant(o.time())));
@@ -231,12 +222,10 @@ public final class MonitorMapping {
 
     // Short float
     if (monitorObject instanceof MeasuredValueShortFloat o) {
-      return Optional.of(
-          extraction(PointValue.shortFloat(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.shortFloat(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueShortFloatWithCp24Time o) {
-      return Optional.of(
-          extraction(PointValue.shortFloat(o.value()), o.quality(), Optional.empty()));
+      return Optional.of(extraction(PointValue.shortFloat(o.value()), o.quality(), null));
     }
     if (monitorObject instanceof MeasuredValueShortFloatWithCp56Time o) {
       return Optional.of(
@@ -245,10 +234,10 @@ public final class MonitorMapping {
 
     // Integrated totals
     if (monitorObject instanceof IntegratedTotals o) {
-      return Optional.of(counterExtraction(o.counter(), Optional.empty()));
+      return Optional.of(counterExtraction(o.counter(), null));
     }
     if (monitorObject instanceof IntegratedTotalsWithCp24Time o) {
-      return Optional.of(counterExtraction(o.counter(), Optional.empty()));
+      return Optional.of(counterExtraction(o.counter(), null));
     }
     if (monitorObject instanceof IntegratedTotalsWithCp56Time o) {
       return Optional.of(counterExtraction(o.counter(), instant(o.time())));
@@ -279,103 +268,86 @@ public final class MonitorMapping {
    * @param value the point value to encode; its runtime type must match {@code type}.
    * @param style the time-tag style of the produced object.
    * @return the monitor information object.
-   * @throws IllegalArgumentException if {@code type}, {@code ioa}, {@code value}, or {@code style}
-   *     is null, or if the value's runtime type does not match {@code type}.
+   * @throws NullPointerException if {@code type}, {@code ioa}, {@code value}, or {@code style} is
+   *     {@code null}.
+   * @throws IllegalArgumentException if the value's runtime type does not match {@code type}.
    */
   public static InformationObject toMonitorObject(
       PointType type, InformationObjectAddress ioa, PointValue<?> value, TimeTagStyle style) {
 
-    if (type == null) {
-      throw new IllegalArgumentException("type must not be null");
-    }
-    if (ioa == null) {
-      throw new IllegalArgumentException("ioa must not be null");
-    }
-    if (value == null) {
-      throw new IllegalArgumentException("value must not be null");
-    }
-    if (style == null) {
-      throw new IllegalArgumentException("style must not be null");
-    }
+    Objects.requireNonNull(type, "type");
+    Objects.requireNonNull(ioa, "ioa");
+    Objects.requireNonNull(value, "value");
+    Objects.requireNonNull(style, "style");
 
     Qds qds = value.quality().toQds();
 
-    switch (type) {
-      case SINGLE_POINT:
-        {
-          boolean on = as(value.value(), Boolean.class, type);
-          return switch (style) {
-            case NONE -> new SinglePointInformation(ioa, on, qds);
-            case CP24 -> new SinglePointWithCp24Time(ioa, on, qds, cp24(value));
-            case CP56 -> new SinglePointWithCp56Time(ioa, on, qds, cp56(value));
-          };
-        }
-      case DOUBLE_POINT:
-        {
-          DoublePointState state = as(value.value(), DoublePointState.class, type);
-          return switch (style) {
-            case NONE -> new DoublePointInformation(ioa, state, qds);
-            case CP24 -> new DoublePointWithCp24Time(ioa, state, qds, cp24(value));
-            case CP56 -> new DoublePointWithCp56Time(ioa, state, qds, cp56(value));
-          };
-        }
-      case STEP_POSITION:
-        {
-          Vti vti = as(value.value(), Vti.class, type);
-          return switch (style) {
-            case NONE -> new StepPositionInformation(ioa, vti, qds);
-            case CP24 -> new StepPositionWithCp24Time(ioa, vti, qds, cp24(value));
-            case CP56 -> new StepPositionWithCp56Time(ioa, vti, qds, cp56(value));
-          };
-        }
-      case BITSTRING32:
-        {
-          int bits = as(value.value(), Integer.class, type);
-          return switch (style) {
-            case NONE -> new Bitstring32(ioa, bits, qds);
-            case CP24 -> new Bitstring32WithCp24Time(ioa, bits, qds, cp24(value));
-            case CP56 -> new Bitstring32WithCp56Time(ioa, bits, qds, cp56(value));
-          };
-        }
-      case NORMALIZED:
-        {
-          NormalizedValue nva = as(value.value(), NormalizedValue.class, type);
-          return switch (style) {
-            case NONE -> new MeasuredValueNormalized(ioa, nva, qds);
-            case CP24 -> new MeasuredValueNormalizedWithCp24Time(ioa, nva, qds, cp24(value));
-            case CP56 -> new MeasuredValueNormalizedWithCp56Time(ioa, nva, qds, cp56(value));
-          };
-        }
-      case SCALED:
-        {
-          short scaled = as(value.value(), Short.class, type);
-          return switch (style) {
-            case NONE -> new MeasuredValueScaled(ioa, scaled, qds);
-            case CP24 -> new MeasuredValueScaledWithCp24Time(ioa, scaled, qds, cp24(value));
-            case CP56 -> new MeasuredValueScaledWithCp56Time(ioa, scaled, qds, cp56(value));
-          };
-        }
-      case SHORT_FLOAT:
-        {
-          float f = as(value.value(), Float.class, type);
-          return switch (style) {
-            case NONE -> new MeasuredValueShortFloat(ioa, f, qds);
-            case CP24 -> new MeasuredValueShortFloatWithCp24Time(ioa, f, qds, cp24(value));
-            case CP56 -> new MeasuredValueShortFloatWithCp56Time(ioa, f, qds, cp56(value));
-          };
-        }
-      case INTEGRATED_TOTALS:
-        {
-          BinaryCounterReading bcr = as(value.value(), BinaryCounterReading.class, type);
-          return switch (style) {
-            case NONE -> new IntegratedTotals(ioa, bcr);
-            case CP24 -> new IntegratedTotalsWithCp24Time(ioa, bcr, cp24(value));
-            case CP56 -> new IntegratedTotalsWithCp56Time(ioa, bcr, cp56(value));
-          };
-        }
-      default:
-        throw new IllegalArgumentException("unsupported point type: " + type);
-    }
+    return switch (type) {
+      case SINGLE_POINT -> {
+        boolean on = as(value.value(), Boolean.class, type);
+        yield switch (style) {
+          case NONE -> new SinglePointInformation(ioa, on, qds);
+          case CP24 -> new SinglePointWithCp24Time(ioa, on, qds, cp24(value));
+          case CP56 -> new SinglePointWithCp56Time(ioa, on, qds, cp56(value));
+        };
+      }
+      case DOUBLE_POINT -> {
+        DoublePointState state = as(value.value(), DoublePointState.class, type);
+        yield switch (style) {
+          case NONE -> new DoublePointInformation(ioa, state, qds);
+          case CP24 -> new DoublePointWithCp24Time(ioa, state, qds, cp24(value));
+          case CP56 -> new DoublePointWithCp56Time(ioa, state, qds, cp56(value));
+        };
+      }
+      case STEP_POSITION -> {
+        Vti vti = as(value.value(), Vti.class, type);
+        yield switch (style) {
+          case NONE -> new StepPositionInformation(ioa, vti, qds);
+          case CP24 -> new StepPositionWithCp24Time(ioa, vti, qds, cp24(value));
+          case CP56 -> new StepPositionWithCp56Time(ioa, vti, qds, cp56(value));
+        };
+      }
+      case BITSTRING32 -> {
+        int bits = as(value.value(), Integer.class, type);
+        yield switch (style) {
+          case NONE -> new Bitstring32(ioa, bits, qds);
+          case CP24 -> new Bitstring32WithCp24Time(ioa, bits, qds, cp24(value));
+          case CP56 -> new Bitstring32WithCp56Time(ioa, bits, qds, cp56(value));
+        };
+      }
+      case NORMALIZED -> {
+        NormalizedValue nva = as(value.value(), NormalizedValue.class, type);
+        yield switch (style) {
+          case NONE -> new MeasuredValueNormalized(ioa, nva, qds);
+          case CP24 -> new MeasuredValueNormalizedWithCp24Time(ioa, nva, qds, cp24(value));
+          case CP56 -> new MeasuredValueNormalizedWithCp56Time(ioa, nva, qds, cp56(value));
+        };
+      }
+      case SCALED -> {
+        short scaled = as(value.value(), Short.class, type);
+        yield switch (style) {
+          case NONE -> new MeasuredValueScaled(ioa, scaled, qds);
+          case CP24 -> new MeasuredValueScaledWithCp24Time(ioa, scaled, qds, cp24(value));
+          case CP56 -> new MeasuredValueScaledWithCp56Time(ioa, scaled, qds, cp56(value));
+        };
+      }
+      case SHORT_FLOAT -> {
+        float f = as(value.value(), Float.class, type);
+        yield switch (style) {
+          case NONE -> new MeasuredValueShortFloat(ioa, f, qds);
+          case CP24 -> new MeasuredValueShortFloatWithCp24Time(ioa, f, qds, cp24(value));
+          case CP56 -> new MeasuredValueShortFloatWithCp56Time(ioa, f, qds, cp56(value));
+        };
+      }
+      case INTEGRATED_TOTALS -> {
+        BinaryCounterReading bcr = as(value.value(), BinaryCounterReading.class, type);
+        yield switch (style) {
+          case NONE -> new IntegratedTotals(ioa, bcr);
+          case CP24 -> new IntegratedTotalsWithCp24Time(ioa, bcr, cp24(value));
+          case CP56 -> new IntegratedTotalsWithCp56Time(ioa, bcr, cp56(value));
+        };
+      }
+    };
   }
 
   /**
@@ -383,14 +355,14 @@ public final class MonitorMapping {
    *
    * @param value the point value (with good quality and no timestamp).
    * @param qds the wire quality descriptor to apply.
-   * @param timestamp the optional resolved timestamp.
+   * @param timestamp the resolved timestamp, or {@code null} if absent.
    * @return the extraction result.
    */
   private static <T> PointValueExtraction extraction(
-      PointValue<T> value, Qds qds, Optional<Instant> timestamp) {
+      PointValue<T> value, Qds qds, @Nullable Instant timestamp) {
     PointValue<T> withQuality = value.withQuality(Quality.fromQds(qds));
     PointValue<T> finalValue = applyTimestamp(withQuality, timestamp);
-    return new PointValueExtraction(finalValue, timestamp);
+    return new PointValueExtraction(finalValue, Optional.ofNullable(timestamp));
   }
 
   /**
@@ -398,15 +370,15 @@ public final class MonitorMapping {
    * onto the point quality.
    *
    * @param counter the binary counter reading.
-   * @param timestamp the optional resolved timestamp.
+   * @param timestamp the resolved timestamp, or {@code null} if absent.
    * @return the extraction result.
    */
   private static PointValueExtraction counterExtraction(
-      BinaryCounterReading counter, Optional<Instant> timestamp) {
+      BinaryCounterReading counter, @Nullable Instant timestamp) {
     Quality quality = Quality.good().withInvalid(counter.invalid());
     PointValue<BinaryCounterReading> withQuality = PointValue.counter(counter).withQuality(quality);
     PointValue<BinaryCounterReading> finalValue = applyTimestamp(withQuality, timestamp);
-    return new PointValueExtraction(finalValue, timestamp);
+    return new PointValueExtraction(finalValue, Optional.ofNullable(timestamp));
   }
 
   /**
@@ -414,13 +386,13 @@ public final class MonitorMapping {
    * absent.
    *
    * @param value the point value.
-   * @param timestamp the optional timestamp to apply.
+   * @param timestamp the timestamp to apply, or {@code null} to leave the value unchanged.
    * @param <T> the value type.
    * @return the value with the timestamp applied, if present.
    */
   private static <T> PointValue<T> applyTimestamp(
-      PointValue<T> value, Optional<Instant> timestamp) {
-    return timestamp.map(value::withTimestamp).orElse(value);
+      PointValue<T> value, @Nullable Instant timestamp) {
+    return timestamp != null ? value.withTimestamp(timestamp) : value;
   }
 
   /**
@@ -429,8 +401,8 @@ public final class MonitorMapping {
    * @param time the time tag.
    * @return the resolved instant.
    */
-  private static Optional<Instant> instant(Cp56Time2a time) {
-    return Optional.of(time.toInstant(TIME_ZONE));
+  private static Instant instant(Cp56Time2a time) {
+    return time.toInstant(TIME_ZONE);
   }
 
   /**
@@ -468,7 +440,7 @@ public final class MonitorMapping {
    * @return the payload cast to {@code expected}.
    * @throws IllegalArgumentException if {@code value} is not an instance of {@code expected}.
    */
-  private static <T> T as(Object value, Class<T> expected, PointType type) {
+  private static <T> T as(@Nullable Object value, Class<T> expected, PointType type) {
     if (!expected.isInstance(value)) {
       throw new IllegalArgumentException(
           "value for "

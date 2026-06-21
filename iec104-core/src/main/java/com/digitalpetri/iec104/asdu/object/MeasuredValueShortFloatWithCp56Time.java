@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.Qds;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * M_ME_TF_1 (36) — measured value, short floating point number, with a CP56Time2a time tag (IEC
@@ -31,19 +32,13 @@ public record MeasuredValueShortFloatWithCp56Time(
    * @param value the measured value as an IEEE STD 754 short floating point number (R32).
    * @param quality the quality descriptor (QDS).
    * @param time the CP56Time2a time tag.
-   * @throws IllegalArgumentException if {@code address}, {@code quality}, or {@code time} is {@code
+   * @throws NullPointerException if {@code address}, {@code quality}, or {@code time} is {@code
    *     null}.
    */
   public MeasuredValueShortFloatWithCp56Time {
-    if (address == null) {
-      throw new IllegalArgumentException("address must not be null");
-    }
-    if (quality == null) {
-      throw new IllegalArgumentException("quality must not be null");
-    }
-    if (time == null) {
-      throw new IllegalArgumentException("time must not be null");
-    }
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(quality, "quality");
+    Objects.requireNonNull(time, "time");
   }
 
   /**

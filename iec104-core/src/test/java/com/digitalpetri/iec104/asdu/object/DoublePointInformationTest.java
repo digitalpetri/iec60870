@@ -76,7 +76,7 @@ class DoublePointInformationTest {
   void rejectsNullState() {
     Qds quality = new Qds(false, false, false, false, false);
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () -> new DoublePointInformation(InformationObjectAddress.of(0x000000), null, quality));
   }
 }

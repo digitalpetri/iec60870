@@ -39,6 +39,9 @@ import java.util.Optional;
  *     defensively.
  * @param source the provenance of the entry.
  */
+// Phantom type parameter T documents the point's logical value type as part of the public API;
+// it is intentionally unused by the components and bound to a wildcard at every call site.
+@SuppressWarnings("unused")
 public record CatalogEntry<T>(
     PointAddress address,
     PointType type,

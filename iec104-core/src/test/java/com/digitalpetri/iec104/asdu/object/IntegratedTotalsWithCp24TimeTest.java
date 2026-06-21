@@ -60,7 +60,7 @@ class IntegratedTotalsWithCp24TimeTest {
   @Test
   void rejectsNullTime() {
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () ->
             new IntegratedTotalsWithCp24Time(
                 IOA, new BinaryCounterReading(0, 0, false, false, false), null));

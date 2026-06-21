@@ -4,8 +4,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import java.time.Duration;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A tiny awaitility-style polling helper for the integration tests: it repeatedly evaluates a
@@ -33,19 +31,7 @@ final class Await {
    * @param condition the condition to poll.
    */
   static void until(String description, BooleanSupplier condition) {
-    until(description, DEFAULT_TIMEOUT, condition);
-  }
-
-  /**
-   * Polls {@code condition} until it returns {@code true} or {@code timeout} elapses.
-   *
-   * @param description a human-readable description of the awaited condition, used in the failure
-   *     message.
-   * @param timeout the maximum time to wait before failing the test.
-   * @param condition the condition to poll.
-   */
-  static void until(String description, Duration timeout, BooleanSupplier condition) {
-    long deadline = System.nanoTime() + timeout.toNanos();
+    long deadline = System.nanoTime() + DEFAULT_TIMEOUT.toNanos();
     while (System.nanoTime() < deadline) {
       if (condition.getAsBoolean()) {
         return;
@@ -55,38 +41,7 @@ final class Await {
     if (condition.getAsBoolean()) {
       return;
     }
-    fail("timed out after " + timeout.toMillis() + " ms waiting for: " + description);
-  }
-
-  /**
-   * Polls {@code supplier} until it returns a non-null value or {@link #DEFAULT_TIMEOUT} elapses,
-   * then returns that value.
-   *
-   * @param description a human-readable description of the awaited value, used in the failure
-   *     message.
-   * @param supplier the supplier to poll.
-   * @param <T> the type of the awaited value.
-   * @return the first non-null value produced by {@code supplier}.
-   */
-  static <T> T value(String description, Supplier<? extends @Nullable T> supplier) {
-    long deadline = System.nanoTime() + DEFAULT_TIMEOUT.toNanos();
-    while (System.nanoTime() < deadline) {
-      T result = supplier.get();
-      if (result != null) {
-        return result;
-      }
-      sleep();
-    }
-    T last = supplier.get();
-    if (last != null) {
-      return last;
-    }
-    fail(
-        "timed out after "
-            + DEFAULT_TIMEOUT.toMillis()
-            + " ms waiting for a value for: "
-            + description);
-    throw new AssertionError("unreachable");
+    fail("timed out after " + DEFAULT_TIMEOUT.toMillis() + " ms waiting for: " + description);
   }
 
   private static void sleep() {

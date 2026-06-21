@@ -176,6 +176,9 @@ public final class ServerExample {
    * Wraps a server so that {@link #close()} also stops the periodic publisher started alongside it.
    * Every other method delegates to the wrapped server.
    */
+  // Intentional delegating decorator, not a data aggregate; record value-semantics (generated
+  // equals/hashCode and component accessors) would misrepresent intent.
+  @SuppressWarnings("ClassCanBeRecord")
   private static final class PublishingServer implements Iec104Server {
 
     private final Iec104Server delegate;

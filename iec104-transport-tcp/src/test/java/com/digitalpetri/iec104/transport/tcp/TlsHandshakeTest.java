@@ -13,11 +13,12 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.security.cert.Certificate;
 import java.util.Optional;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -64,11 +65,11 @@ class TlsHandshakeTest {
         new NettyServerTransport(
             NettyServerTransportConfig.builder("127.0.0.1", port).tlsOptions(serverTls).build());
 
-    AtomicReference<@Nullable ServerTransportConnection> accepted = new AtomicReference<>();
+    BlockingQueue<ServerTransportConnection> accepted = new LinkedBlockingQueue<>();
     server.setConnectionHandler(
         connection -> {
           connection.setListener(NOOP_LISTENER);
-          accepted.set(connection);
+          accepted.add(connection);
         });
 
     NettyClientTransport client =
@@ -160,12 +161,8 @@ class TlsHandshakeTest {
   }
 
   private static @Nullable ServerTransportConnection awaitAccepted(
-      AtomicReference<@Nullable ServerTransportConnection> ref) throws InterruptedException {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
-    while (ref.get() == null && System.nanoTime() < deadline) {
-      Thread.sleep(20);
-    }
-    return ref.get();
+      BlockingQueue<ServerTransportConnection> queue) throws InterruptedException {
+    return queue.poll(AWAIT_SECONDS, TimeUnit.SECONDS);
   }
 
   private static int reserveEphemeralPort() throws IOException {

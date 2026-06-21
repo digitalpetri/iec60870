@@ -120,6 +120,8 @@ public class NettyServerTransport implements ServerTransport {
               if (future.isSuccess()) {
                 listenChannel.set(future.channel());
                 LOGGER.debug("bound IEC 104 server on {}", bindAddress);
+                // null is the only valid completion value for a CompletableFuture<Void>.
+                //noinspection DataFlowIssue
                 result.complete(null);
               } else {
                 result.completeExceptionally(future.cause());
@@ -139,7 +141,16 @@ public class NettyServerTransport implements ServerTransport {
         () ->
             childChannels
                 .close()
-                .addListener(f -> shutdownGroups().whenComplete((v, ex) -> result.complete(null)));
+                .addListener(
+                    f ->
+                        shutdownGroups()
+                            .whenComplete(
+                                (v, ex) -> {
+                                  // null is the only valid completion value for a
+                                  // CompletableFuture<Void>.
+                                  //noinspection DataFlowIssue
+                                  result.complete(null);
+                                }));
 
     if (channel != null) {
       channel.close().addListener(f -> closeChildrenAndGroups.run());
@@ -201,14 +212,22 @@ public class NettyServerTransport implements ServerTransport {
     CompletableFuture<Void> workerDone = new CompletableFuture<>();
 
     if (ownsBossGroup) {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       bossGroup.shutdownGracefully().addListener(f -> bossDone.complete(null));
     } else {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       bossDone.complete(null);
     }
 
     if (ownsWorkerGroup) {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       workerGroup.shutdownGracefully().addListener(f -> workerDone.complete(null));
     } else {
+      // null is the only valid completion value for a CompletableFuture<Void>.
+      //noinspection DataFlowIssue
       workerDone.complete(null);
     }
 

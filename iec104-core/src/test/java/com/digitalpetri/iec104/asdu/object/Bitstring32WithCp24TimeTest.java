@@ -59,7 +59,7 @@ class Bitstring32WithCp24TimeTest {
   @Test
   void rejectsNullTime() {
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () ->
             new Bitstring32WithCp24Time(IOA, 0, new Qds(false, false, false, false, false), null));
   }

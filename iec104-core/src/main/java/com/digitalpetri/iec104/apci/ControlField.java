@@ -126,7 +126,7 @@ public sealed interface ControlField
    * it; {@link #decode(ByteBuf)} reads four octets from a caller-owned buffer and never releases
    * it.
    */
-  static final class Serde {
+  final class Serde {
 
     /** First-control-octet value identifying the STARTDT-activation U-format function. */
     private static final int U_STARTDT_ACT = 0x07;

@@ -67,7 +67,7 @@ class MeasuredValueShortFloatWithCp56TimeTest {
     Qds quality = new Qds(false, false, false, false, false);
     Cp56Time2a time = new Cp56Time2a(0, 0, 0, 1, 0, 1, 0, false, false, true);
     assertThrows(
-        IllegalArgumentException.class,
+        NullPointerException.class,
         () -> new MeasuredValueShortFloatWithCp56Time(null, 0.0f, quality, time));
     // CP56Time2a also rejects an out-of-range milliseconds value.
     assertThrows(
