@@ -29,6 +29,9 @@ Keep new modules under the parent build and centralize dependency/plugin version
 - Download dependency sources: `mise exec -- mvn -q package -DskipTests -Pdownload-external-src`
 - Run a specific test class: `mise exec -- mvn -q -pl <module> test -Dtest=ClassName`
   (see `docs/running-tests.md` for module-targeting patterns)
+- Run the lib60870-C interop tests (Docker required, excluded by default):
+  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec104-interop -am -Pinterop test`
+  (see `iec104-interop/README.md` for details)
 
 ## Additional References
 

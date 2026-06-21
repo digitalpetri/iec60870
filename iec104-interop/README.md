@@ -71,25 +71,29 @@ A standalone smoke test (server peer + stock `simple_client`, on a throwaway Doc
 
 ## Running the interop tests
 
+Testcontainers auto-detects the active Docker socket from your current `docker context`, so no
+`DOCKER_HOST` or `docker.client.strategy` override is needed. On macOS with Docker Desktop, skip the
+Ryuk resource-reaper container (it can have socket-mount trouble there; the tests stop their own
+containers in `@AfterAll`).
+
+**From the repository root:**
+
 ```bash
+TESTCONTAINERS_RYUK_DISABLED=true \
 mise exec -- mvn -pl iec104-interop -am -Pinterop test
 ```
 
-On macOS with Docker Desktop, Testcontainers needs these knobs so it talks to the right socket and
-does not require the Ryuk resource-reaper:
+**From the `iec104-interop/` module directory**
 
 ```bash
-DOCKER_HOST=unix:///Users/kevin/.docker/run/docker.sock \
 TESTCONTAINERS_RYUK_DISABLED=true \
-mise exec -- mvn -pl iec104-interop -am -Pinterop test \
-  -DargLine="-Dapi.version=1.43 -Ddocker.client.strategy=org.testcontainers.dockerclient.EnvironmentAndSystemPropertyClientProviderStrategy"
+mise exec -- mvn -f ../pom.xml -pl iec104-interop -am -Pinterop test
 ```
 
-- `DOCKER_HOST` points Testcontainers at the user-mode Docker Desktop socket.
-- `TESTCONTAINERS_RYUK_DISABLED=true` skips the Ryuk reaper container (the tests stop their own
-  containers in `@AfterAll`).
-- The `argLine` pins the Docker API version and forces the
-  `EnvironmentAndSystemPropertyClientProviderStrategy` so the `DOCKER_HOST` above is honored.
+> **If Testcontainers cannot find the daemon** and your active context is not the `default`
+> `/var/run/docker.sock`, check `~/.testcontainers.properties` for a stale `docker.client.strategy`
+> pin (e.g. `UnixSocketClientProviderStrategy`, which only looks at `/var/run/docker.sock`). Remove
+> that line so the active context is used, or set `DOCKER_HOST` to the right socket.
 
 ## Default build excludes these tests
 
