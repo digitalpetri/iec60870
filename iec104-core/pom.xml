@@ -27,6 +27,20 @@
       <artifactId>jspecify</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.jooq</groupId>
+      <artifactId>joou</artifactId>
+    </dependency>
+    <!--
+      Deliberate netty-buffer dependency: the raw codec layer encodes/decodes ASDUs through
+      co-located Serde classes that operate on Netty ByteBuf. ByteBuf is confined to the codec
+      layer; it must not appear in high-level client/server/model public API signatures, and no
+      netty-channel/handler types are permitted in core.
+    -->
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-buffer</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
       <version>${slf4j.version}</version>

@@ -8,9 +8,39 @@ details.
 ## Modules
 
 - `iec104-core`: core protocol model, serializers/codecs, client/server APIs, and transport
-  interfaces.
-- `iec104-transport-tcp`: Netty-backed TCP/TLS transport implementation.
-- `iec104-tests`: cross-module integration tests.
+  interfaces. Contains the raw ASDU layer (every standard TypeID with a co-located `Serde`), the APCI
+  session engine, and the high-level `Iec104Client`/`Iec104Server` facades. No Netty runtime types
+  appear in its public API.
+- `iec104-transport-tcp`: Netty-backed TCP/TLS transport implementation, plus the user-facing
+  `TcpIec104Client` / `TcpIec104Server` builders.
+- `iec104-examples`: runnable client, server, raw-ASDU, and TLS examples.
+- `iec104-tests`: cross-module in-JVM client↔server integration tests (including TLS).
+- `iec104-interop`: interoperability tests that drive the library against `lib60870-C` peer images
+  via Testcontainers. Tagged `@Tag("interop")` and excluded from the default build; run with
+  `-Pinterop` and a running Docker daemon (see `iec104-interop/README.md`).
+
+## Documentation
+
+Architecture and design documentation lives under [`docs/architecture/`](docs/architecture/): the
+two-layer API, the core-vs-transport split, the protocol coverage matrix, the APCI lifecycle and
+timers, buffer ownership and threading, TLS and configuration, and the error model and extensibility
+points.
+
+## Usage
+
+```java
+// Controlling station (master)
+try (Iec104Client client = TcpIec104Client.builder()
+        .host("127.0.0.1").port(2404)
+        .startDataTransferOnConnect(true)
+        .build()) {
+
+    client.connect();
+    InterrogationResult snapshot = client.interrogate(CommonAddress.of(1));
+    CommandResult result = client.commands()
+        .single(new PointAddress(CommonAddress.of(1), InformationObjectAddress.of(5000)), true);
+}
+```
 
 ## Requirements
 

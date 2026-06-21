@@ -39,7 +39,9 @@
   <modules>
     <module>iec104-core</module>
     <module>iec104-transport-tcp</module>
+    <module>iec104-examples</module>
     <module>iec104-tests</module>
+    <module>iec104-interop</module>
   </modules>
 
   <properties>
@@ -48,6 +50,7 @@
 
     <!-- Dependencies -->
     <jspecify.version>1.0.0</jspecify.version>
+    <joou.version>0.9.4</joou.version>
     <netty.version>4.1.131.Final</netty.version>
     <netty-channel-fsm.version>1.0.2</netty-channel-fsm.version>
     <slf4j.version>2.0.17</slf4j.version>
@@ -55,6 +58,7 @@
     <!-- Test Dependencies -->
     <bouncycastle.version>1.83</bouncycastle.version>
     <junit.version>5.14.3</junit.version>
+    <testcontainers.version>1.20.4</testcontainers.version>
 
     <!-- Plugin Dependencies -->
     <central-publishing-maven-plugin.version>0.10.0</central-publishing-maven-plugin.version>
@@ -69,6 +73,7 @@
     <maven-release-plugin.version>3.3.1</maven-release-plugin.version>
     <maven-resources-plugin.version>3.4.0</maven-resources-plugin.version>
     <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+    <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
     <spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
     <versions-maven-plugin.version>2.21.0</versions-maven-plugin.version>
   </properties>
@@ -76,9 +81,28 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>${netty.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
         <groupId>org.jspecify</groupId>
         <artifactId>jspecify</artifactId>
         <version>${jspecify.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jooq</groupId>
+        <artifactId>joou</artifactId>
+        <version>${joou.version}</version>
       </dependency>
       <dependency>
         <groupId>org.junit.jupiter</groupId>

@@ -1,0 +1,7 @@
+# The build context is intentionally tiny: the lib60870 sources are cloned
+# inside the build stage, not copied from the host. Ignore everything EXCEPT
+# the custom interop driver sources, which are COPYed into the build stage and
+# compiled against the in-tree static lib + headers.
+*
+!interop_server.c
+!interop_client.c
