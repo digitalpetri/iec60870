@@ -49,6 +49,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -151,8 +152,8 @@ class ClientVsLib60870ServerInteropTest {
           .withStartupTimeout(STARTUP_TIMEOUT)
           .waitingFor(Wait.forLogMessage(".*INTEROP-SERVER READY.*", 1));
 
-  private Iec104Client client;
-  private EventRecorder events;
+  private @Nullable Iec104Client client;
+  private @Nullable EventRecorder events;
 
   @BeforeAll
   void startServerAndClient() {
@@ -188,13 +189,27 @@ class ClientVsLib60870ServerInteropTest {
     SERVER.stop();
   }
 
+  /** Returns the client established in {@link #startServerAndClient()}, asserting it is present. */
+  private Iec104Client client() {
+    assertNotNull(client, "client must be initialized by @BeforeAll");
+    return client;
+  }
+
+  /**
+   * Returns the recorder established in {@link #startServerAndClient()}, asserting it is present.
+   */
+  private EventRecorder events() {
+    assertNotNull(events, "events must be initialized by @BeforeAll");
+    return events;
+  }
+
   // --- Interrogation --------------------------------------------------------------------------
 
   @Test
   @DisplayName("STARTDT succeeds and station interrogation returns every non-counter point value")
   void stationInterrogation() {
-    events.clear();
-    InterrogationResult result = client.interrogate(STATION, QualifierOfInterrogation.STATION);
+    events().clear();
+    InterrogationResult result = client().interrogate(STATION, QualifierOfInterrogation.STATION);
     assertTrue(result.terminated(), "station interrogation must end with ACT_TERM");
 
     Map<Long, PointValue<?>> values = byIoa(result);
@@ -210,19 +225,21 @@ class ClientVsLib60870ServerInteropTest {
 
     // The carrying data ASDU uses the documented station-response COT (contract section 3).
     Asdu data =
-        events.awaitAsdu(
-            a ->
-                a.cause() == Cause.INTERROGATED_BY_STATION
-                    && a.objects().stream()
-                        .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a ->
+                    a.cause() == Cause.INTERROGATED_BY_STATION
+                        && a.objects().stream()
+                            .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
+                WAIT_TIMEOUT);
     assertNotNull(data, "station IC data ASDU must carry COT INTERROGATED_BY_STATION");
 
     // The positive ACT_CON and the ACT_TERM for the interrogation were both observed.
     Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_IC_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a -> a.type() == AsduType.C_IC_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
+                WAIT_TIMEOUT);
     assertNotNull(actCon, "station IC must be positively confirmed (ACT_CON)");
     assertFalse(actCon.negative(), "station IC ACT_CON must be positive");
 
@@ -234,8 +251,8 @@ class ClientVsLib60870ServerInteropTest {
   @Test
   @DisplayName("Group 1 interrogation reports all seven non-time points with COT GROUP_1")
   void group1Interrogation() {
-    events.clear();
-    InterrogationResult result = client.interrogate(STATION, QualifierOfInterrogation.GROUP_1);
+    events().clear();
+    InterrogationResult result = client().interrogate(STATION, QualifierOfInterrogation.GROUP_1);
     assertTrue(result.terminated(), "group 1 interrogation must end with ACT_TERM");
 
     Map<Long, PointValue<?>> values = byIoa(result);
@@ -245,12 +262,13 @@ class ClientVsLib60870ServerInteropTest {
     assertAllNonTimePoints(values);
 
     Asdu data =
-        events.awaitAsdu(
-            a ->
-                a.cause() == Cause.INTERROGATED_BY_GROUP_1
-                    && a.objects().stream()
-                        .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a ->
+                    a.cause() == Cause.INTERROGATED_BY_GROUP_1
+                        && a.objects().stream()
+                            .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
+                WAIT_TIMEOUT);
     assertNotNull(data, "group 1 data ASDU must carry COT INTERROGATED_BY_GROUP_1");
 
     // No time-tagged IOAs in group 1.
@@ -260,8 +278,8 @@ class ClientVsLib60870ServerInteropTest {
   @Test
   @DisplayName("Group 2 reports all seven time-tagged points as non-time types with COT GROUP_2")
   void group2Interrogation() {
-    events.clear();
-    InterrogationResult result = client.interrogate(STATION, QualifierOfInterrogation.GROUP_2);
+    events().clear();
+    InterrogationResult result = client().interrogate(STATION, QualifierOfInterrogation.GROUP_2);
     assertTrue(result.terminated(), "group 2 interrogation must end with ACT_TERM");
 
     Map<Long, PointValue<?>> values = byIoa(result);
@@ -273,12 +291,13 @@ class ClientVsLib60870ServerInteropTest {
     assertAllTimeTaggedPointsByValue(values);
 
     Asdu data =
-        events.awaitAsdu(
-            a ->
-                a.cause() == Cause.INTERROGATED_BY_GROUP_2
-                    && a.objects().stream()
-                        .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE_T),
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a ->
+                    a.cause() == Cause.INTERROGATED_BY_GROUP_2
+                        && a.objects().stream()
+                            .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE_T),
+                WAIT_TIMEOUT);
     assertNotNull(data, "group 2 data ASDU must carry COT INTERROGATED_BY_GROUP_2");
     assertEquals(
         AsduType.M_SP_NA_1,
@@ -295,7 +314,7 @@ class ClientVsLib60870ServerInteropTest {
   void counterInterrogation() throws InterruptedException {
     // No high-level counter-interrogation method on Iec104Client: send a raw C_CI_NA_1 (general
     // counter request) and collect the M_IT_NA_1 data ASDUs from events().
-    events.clear();
+    events().clear();
 
     Asdu request =
         new Asdu(
@@ -312,24 +331,26 @@ class ClientVsLib60870ServerInteropTest {
                     // RQT_GENERAL = 5; freeze mode is accepted but ignored by the fixed image.
                     new QualifierOfCounterInterrogation(5, FreezeMode.READ))));
 
-    client.send(request);
+    client().send(request);
 
     // Expect: ACT_CON (positive), the counter data ASDU(s) with COT REQUESTED_BY_GENERAL_COUNTER,
     // then ACT_TERM. Wait for the data ASDU carrying the two integrated totals.
     Asdu data =
-        events.awaitAsdu(
-            a ->
-                a.type() == AsduType.M_IT_NA_1
-                    && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                    && a.objects().size() >= 1,
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a ->
+                    a.type() == AsduType.M_IT_NA_1
+                        && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
+                        && a.objects().size() >= 1,
+                WAIT_TIMEOUT);
     assertNotNull(data, "expected M_IT_NA_1 counter data with COT REQUESTED_BY_GENERAL_COUNTER");
 
     // Also confirm the positive ACT_CON for the counter interrogation was received.
     Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_CI_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a -> a.type() == AsduType.C_CI_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
+                WAIT_TIMEOUT);
     assertNotNull(actCon, "expected ACT_CON for counter interrogation");
     assertFalse(actCon.negative(), "counter interrogation ACT_CON must be positive");
 
@@ -340,12 +361,13 @@ class ClientVsLib60870ServerInteropTest {
     // 1071 may arrive in the same or a subsequent data ASDU; merge.
     if (!counters.containsKey((long) IOA_COUNTER_T)) {
       Asdu more =
-          events.awaitAsdu(
-              a ->
-                  a.type() == AsduType.M_IT_NA_1
-                      && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                      && countersByIoa(a).containsKey((long) IOA_COUNTER_T),
-              WAIT_TIMEOUT);
+          events()
+              .awaitAsdu(
+                  a ->
+                      a.type() == AsduType.M_IT_NA_1
+                          && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
+                          && countersByIoa(a).containsKey((long) IOA_COUNTER_T),
+                  WAIT_TIMEOUT);
       if (more != null) {
         counters.putAll(countersByIoa(more));
       }
@@ -360,7 +382,7 @@ class ClientVsLib60870ServerInteropTest {
   @DisplayName("Read of IOA 1000 returns the single point with COT REQUEST")
   void readSinglePoint() {
     PointAddress point = PointAddress.of(1, IOA_SINGLE);
-    List<InformationObject> objects = client.read(point);
+    List<InformationObject> objects = client().read(point);
     assertFalse(objects.isEmpty(), "read must return at least one information object");
 
     InformationObject single =
@@ -376,12 +398,13 @@ class ClientVsLib60870ServerInteropTest {
 
     // The carrying ASDU's COT REQUEST is published as an AsduReceived; confirm it.
     Asdu readAsdu =
-        events.awaitAsdu(
-            a ->
-                a.cause() == Cause.REQUEST
-                    && a.objects().stream()
-                        .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a ->
+                    a.cause() == Cause.REQUEST
+                        && a.objects().stream()
+                            .anyMatch(o -> o.address().value().longValue() == IOA_SINGLE),
+                WAIT_TIMEOUT);
     assertNotNull(readAsdu, "read response ASDU should carry COT REQUEST");
   }
 
@@ -413,9 +436,9 @@ class ClientVsLib60870ServerInteropTest {
             new ReadCase(IOA_SHORT_T, AsduType.M_ME_TF_1, true));
 
     for (ReadCase c : cases) {
-      events.clear();
+      events().clear();
       PointAddress point = PointAddress.of(1, c.ioa());
-      List<InformationObject> objects = client.read(point);
+      List<InformationObject> objects = client().read(point);
       assertFalse(objects.isEmpty(), () -> "read of IOA " + c.ioa() + " returned no objects");
 
       InformationObject object =
@@ -439,12 +462,13 @@ class ClientVsLib60870ServerInteropTest {
 
       // The carrying ASDU (COT REQUEST) must use the IOA's native TypeID.
       Asdu readAsdu =
-          events.awaitAsdu(
-              a ->
-                  a.cause() == Cause.REQUEST
-                      && a.objects().stream()
-                          .anyMatch(o -> o.address().value().longValue() == c.ioa()),
-              WAIT_TIMEOUT);
+          events()
+              .awaitAsdu(
+                  a ->
+                      a.cause() == Cause.REQUEST
+                          && a.objects().stream()
+                              .anyMatch(o -> o.address().value().longValue() == c.ioa()),
+                  WAIT_TIMEOUT);
       assertNotNull(readAsdu, () -> "read of IOA " + c.ioa() + " must publish a COT REQUEST ASDU");
       assertEquals(
           c.expectedType(),
@@ -476,13 +500,13 @@ class ClientVsLib60870ServerInteropTest {
             new Case("bitstring(51)", Command.bitstring(accept, 0x0F0F0F0F)));
 
     for (Case c : cases) {
-      CommandResult direct = client.commands().send(c.command(), CommandMode.directExecute());
+      CommandResult direct = client().commands().send(c.command(), CommandMode.directExecute());
       assertTrue(
           direct.positive(),
           () ->
               c.label() + " direct-execute must be positively confirmed; cause=" + direct.cause());
 
-      CommandResult sbo = client.commands().send(c.command(), CommandMode.selectBeforeOperate());
+      CommandResult sbo = client().commands().send(c.command(), CommandMode.selectBeforeOperate());
       assertTrue(
           sbo.positive(),
           () ->
@@ -496,7 +520,7 @@ class ClientVsLib60870ServerInteropTest {
   @DisplayName("A command to the REJECT IOA 3000 is negatively confirmed")
   void rejectedCommand() {
     PointAddress reject = PointAddress.of(1, IOA_REJECT);
-    CommandResult result = client.commands().single(reject, true);
+    CommandResult result = client().commands().single(reject, true);
     assertFalse(result.positive(), "command to IOA 3000 must be negatively confirmed (P/N=1)");
   }
 
@@ -507,14 +531,14 @@ class ClientVsLib60870ServerInteropTest {
   void clockSync() {
     // synchronizeClock throws on a negative confirmation; reaching the next line means ACT_CON
     // positive (contract section 6).
-    client.synchronizeClock(STATION, Instant.now());
+    client().synchronizeClock(STATION, Instant.now());
   }
 
   @Test
   @DisplayName("Test command is positively confirmed (ACT_CON)")
   void testCommand() {
     // No high-level test-command method: send a raw C_TS_NA_1 and observe the positive ACT_CON.
-    events.clear();
+    events().clear();
     Asdu request =
         new Asdu(
             AsduType.C_TS_NA_1,
@@ -525,12 +549,13 @@ class ClientVsLib60870ServerInteropTest {
             OriginatorAddress.of(3),
             STATION,
             List.of(new TestCommand(InformationObjectAddress.of(0), FixedTestBitPattern.DEFAULT)));
-    client.send(request);
+    client().send(request);
 
     Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_TS_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a -> a.type() == AsduType.C_TS_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
+                WAIT_TIMEOUT);
     assertNotNull(actCon, "expected ACT_CON for test command");
     assertFalse(actCon.negative(), "test command ACT_CON must be positive");
   }
@@ -539,7 +564,7 @@ class ClientVsLib60870ServerInteropTest {
   @DisplayName("Reset process is positively confirmed and re-issues End-of-Initialization")
   void resetProcess() {
     // No high-level reset method: send a raw C_RP_NA_1 (general) and observe the positive ACT_CON.
-    events.clear();
+    events().clear();
     Asdu request =
         new Asdu(
             AsduType.C_RP_NA_1,
@@ -552,17 +577,18 @@ class ClientVsLib60870ServerInteropTest {
             List.of(
                 new ResetProcessCommand(
                     InformationObjectAddress.of(0), QualifierOfResetProcess.GENERAL)));
-    client.send(request);
+    client().send(request);
 
     Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_RP_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            WAIT_TIMEOUT);
+        events()
+            .awaitAsdu(
+                a -> a.type() == AsduType.C_RP_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
+                WAIT_TIMEOUT);
     assertNotNull(actCon, "expected ACT_CON for reset process");
     assertFalse(actCon.negative(), "reset process ACT_CON must be positive");
 
     // Contract section 6: a reset process re-issues End-of-Initialization (M_EI_NA_1).
-    Asdu endOfInit = events.awaitAsdu(a -> a.type() == AsduType.M_EI_NA_1, WAIT_TIMEOUT);
+    Asdu endOfInit = events().awaitAsdu(a -> a.type() == AsduType.M_EI_NA_1, WAIT_TIMEOUT);
     assertNotNull(endOfInit, "reset process should re-issue End-of-Initialization (M_EI_NA_1)");
   }
 
@@ -574,11 +600,12 @@ class ClientVsLib60870ServerInteropTest {
     // Contract section 8: the server enqueues a periodic scaled measured value (M_ME_NB_1) at IOA
     // 1050 every 2s with COT PERIODIC. Subscribe-and-wait for a matching PointUpdated.
     ClientEvent.PointUpdated update =
-        events.awaitPointUpdated(
-            u ->
-                u.address().objectAddress().value().longValue() == IOA_SCALED
-                    && u.cause() == Cause.PERIODIC,
-            Duration.ofSeconds(8));
+        events()
+            .awaitPointUpdated(
+                u ->
+                    u.address().objectAddress().value().longValue() == IOA_SCALED
+                        && u.cause() == Cause.PERIODIC,
+                Duration.ofSeconds(8));
     assertNotNull(update, "expected a periodic PointUpdated for IOA 1050");
     assertTrue(
         update.value().value() instanceof Short, "periodic 1050 value must be a scaled Short");
@@ -732,7 +759,8 @@ class ClientVsLib60870ServerInteropTest {
   private static final class EventRecorder implements Flow.Subscriber<ClientEvent> {
 
     private final ConcurrentLinkedQueue<ClientEvent> queue = new ConcurrentLinkedQueue<>();
-    private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
+    private final AtomicReference<Flow.@Nullable Subscription> subscription =
+        new AtomicReference<>();
     private volatile CountDownLatch tick = new CountDownLatch(1);
 
     @Override
@@ -766,7 +794,7 @@ class ClientVsLib60870ServerInteropTest {
      * Awaits an {@link ClientEvent.AsduReceived} whose ASDU matches {@code predicate}, returning
      * the matching ASDU or {@code null} if the timeout elapses first.
      */
-    Asdu awaitAsdu(Predicate<Asdu> predicate, Duration timeout) {
+    @Nullable Asdu awaitAsdu(Predicate<Asdu> predicate, Duration timeout) {
       long deadline = System.nanoTime() + timeout.toNanos();
       while (true) {
         for (ClientEvent event : queue) {
@@ -786,7 +814,7 @@ class ClientVsLib60870ServerInteropTest {
      * Awaits a {@link ClientEvent.PointUpdated} matching {@code predicate}, returning it or {@code
      * null} if the timeout elapses first.
      */
-    ClientEvent.PointUpdated awaitPointUpdated(
+    ClientEvent.@Nullable PointUpdated awaitPointUpdated(
         Predicate<ClientEvent.PointUpdated> predicate, Duration timeout) {
       long deadline = System.nanoTime() + timeout.toNanos();
       while (true) {

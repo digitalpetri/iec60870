@@ -101,9 +101,77 @@ java.sql.Date sqlDate = new java.sql.Date(timestamp);
 
 ## Nullability
 
-Packages should be annotated with JSpecify's `@NullMarked`. Assume non-null by default; use
-`@Nullable` only for parameters, fields, or return types that genuinely accept or return null. Use
-explicit null checks and validation at public API boundaries.
+This codebase uses JSpecify. Assume non-null by default; use `@Nullable` only for parameters,
+fields, or return types that genuinely accept or return null. Use explicit null checks and
+validation at public API boundaries.
+
+### Every package needs `@NullMarked`
+
+Every package MUST carry a `package-info.java` annotated with JSpecify's `@NullMarked`. This applies
+to **both the production and the test source trees** — there are no exceptions. When you create a new
+package, or add the first class to a test package that has no `package-info.java` yet, add the file
+before writing other code.
+
+Test packages are easy to forget, but they matter just as much. A test class that implements or
+extends a `@NullMarked` production type from a package that is not itself `@NullMarked` triggers "Not
+annotated method overrides method annotated with @NullMarked" inspection warnings. Marking the test
+package opts it into the same nullness contract as the code it exercises and clears the warnings.
+
+Production packages additionally document themselves with a package-level Javadoc comment; keep that
+convention. Test packages do not need a Javadoc description — the annotation and import alone are
+enough:
+
+```java
+@NullMarked
+package com.digitalpetri.iec104.client;
+
+import org.jspecify.annotations.NullMarked;
+```
+
+### Placing `@Nullable` and narrowing nullable values
+
+`@Nullable` is a `TYPE_USE` annotation. Per the [Google Java Style Guide on type-use
+annotations](https://google.github.io/styleguide/javaguide.html#s4.8.5-annotations), it appears
+immediately before the annotated type, after any modifiers (`private @Nullable Iec104Client client;`,
+not `@Nullable private Iec104Client client;`). Place it on fields, method parameters, return types,
+and type arguments — never on local variables (the IntelliJ inspection rejects `@Nullable` on a local
+with "Nullability annotation is not applicable to local variables"). On a nested or fully-qualified
+type the annotation binds to the simple type name, not the qualifier:
+
+```java
+AtomicReference<@Nullable Throwable> closeCause = new AtomicReference<>();
+AtomicReference<Flow.@Nullable Subscription> subscription = new AtomicReference<>();
+private java.net.@Nullable SocketAddress remoteAddress;
+```
+
+Because a local cannot be annotated, narrow a `@Nullable` value to non-null at the use site rather
+than declaring a nullable local. Prefer `java.util.Objects.requireNonNull(value)` in production and
+utility code; in tests use JUnit's `assertNotNull(value, message)` (the inspector honors its
+contract). This commonly applies to a lifecycle field assigned in `@BeforeEach`/`@BeforeAll` and
+guarded for `null` in teardown: annotate the field `@Nullable`, then capture a non-null reference
+where the test body uses it.
+
+```java
+private @Nullable Iec104Client client;
+
+@AfterEach
+void tearDown() {
+  if (client != null) {
+    client.close();
+  }
+}
+
+@Test
+void connects() {
+  client = TcpIec104Client.builder()./* ... */.build();
+  Iec104Client client = requireNonNull(this.client);
+  client.connect();
+}
+```
+
+When a field is read across many test methods, a small private accessor that narrows once
+(`private Iec104Client client() { return requireNonNull(this.client); }`) is cleaner than repeating
+the narrowing in every method.
 
 ## Documentation
 

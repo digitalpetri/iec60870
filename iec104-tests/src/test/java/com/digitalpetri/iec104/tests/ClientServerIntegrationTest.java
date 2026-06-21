@@ -1,5 +1,6 @@
 package com.digitalpetri.iec104.tests;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +31,7 @@ import java.net.ServerSocket;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -58,8 +60,8 @@ class ClientServerIntegrationTest {
   private static final PointAddress ACCEPTED_COMMAND = PointAddress.of(1, 200);
   private static final PointAddress REJECTED_COMMAND = PointAddress.of(1, 201);
 
-  private Iec104Server server;
-  private Iec104Client client;
+  private @Nullable Iec104Server server;
+  private @Nullable Iec104Client client;
 
   @AfterEach
   void tearDown() {
@@ -74,6 +76,8 @@ class ClientServerIntegrationTest {
   @Test
   void fullLifecycleHappyPath() throws Exception {
     EventCollector events = startServerAndClient();
+    Iec104Client client = requireNonNull(this.client);
+    Iec104Server server = requireNonNull(this.server);
 
     // connect() also performs the STARTDT handshake (startDataTransferOnConnect defaults true).
     client.connect();
@@ -144,6 +148,7 @@ class ClientServerIntegrationTest {
   @Test
   void generalInterrogationReturnsConfiguredStationPoints() throws Exception {
     startServerAndClient();
+    Iec104Client client = requireNonNull(this.client);
     client.connect();
 
     InterrogationResult interrogation = client.interrogate(STATION);
@@ -167,6 +172,7 @@ class ClientServerIntegrationTest {
   @Test
   void directExecuteCommandIsAcceptedAndRejectedAppropriately() throws Exception {
     startServerAndClient();
+    Iec104Client client = requireNonNull(this.client);
     client.connect();
 
     CommandResult accepted = client.commands().single(ACCEPTED_COMMAND, true);
@@ -180,11 +186,13 @@ class ClientServerIntegrationTest {
   @Test
   void spontaneousPublishDeliversPointUpdatedEvent() throws Exception {
     EventCollector events = startServerAndClient();
+    Iec104Client client = requireNonNull(this.client);
+    Iec104Server server = requireNonNull(this.server);
     client.connect();
 
     server.publish(SCALED_POINT, PointValue.scaled((short) 4242), Cause.SPONTANEOUS);
 
-    AtomicReference<ClientEvent.PointUpdated> seen = new AtomicReference<>();
+    AtomicReference<ClientEvent.@Nullable PointUpdated> seen = new AtomicReference<>();
     Await.until(
         "spontaneous scaled point update",
         () -> {
@@ -198,7 +206,7 @@ class ClientServerIntegrationTest {
           return false;
         });
 
-    ClientEvent.PointUpdated update = seen.get();
+    ClientEvent.PointUpdated update = requireNonNull(seen.get());
     assertEquals(Cause.SPONTANEOUS, update.cause());
     assertEquals((short) 4242, update.value().value());
   }
@@ -206,6 +214,7 @@ class ClientServerIntegrationTest {
   @Test
   void clockSynchronizationCompletes() throws Exception {
     startServerAndClient();
+    Iec104Client client = requireNonNull(this.client);
     client.connect();
 
     // The default ServerHandler accepts clock sync; the call returns normally on a positive

@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,7 +63,7 @@ class TlsHandshakeTest {
         new NettyServerTransport(
             NettyServerTransportConfig.builder("127.0.0.1", port).tlsOptions(serverTls).build());
 
-    AtomicReference<ServerTransportConnection> accepted = new AtomicReference<>();
+    AtomicReference<@Nullable ServerTransportConnection> accepted = new AtomicReference<>();
     server.setConnectionHandler(
         connection -> {
           connection.setListener(NOOP_LISTENER);
@@ -140,7 +141,7 @@ class TlsHandshakeTest {
         public void onApdu(com.digitalpetri.iec104.apci.Apdu apdu) {}
 
         @Override
-        public void onConnectionLost(Throwable cause) {}
+        public void onConnectionLost(@Nullable Throwable cause) {}
       };
 
   /**
@@ -157,8 +158,8 @@ class TlsHandshakeTest {
     stage.toCompletableFuture().get(AWAIT_SECONDS, TimeUnit.SECONDS);
   }
 
-  private static ServerTransportConnection awaitAccepted(
-      AtomicReference<ServerTransportConnection> ref) throws InterruptedException {
+  private static @Nullable ServerTransportConnection awaitAccepted(
+      AtomicReference<@Nullable ServerTransportConnection> ref) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
     while (ref.get() == null && System.nanoTime() < deadline) {
       Thread.sleep(20);

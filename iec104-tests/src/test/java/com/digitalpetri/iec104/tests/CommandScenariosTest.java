@@ -29,6 +29,8 @@ import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
 import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.util.Objects;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -51,8 +53,8 @@ class CommandScenariosTest {
   private static final PointAddress ACCEPTED_COMMAND = PointAddress.of(1, 200);
   private static final PointAddress REJECTED_COMMAND = PointAddress.of(1, 201);
 
-  private Iec104Server server;
-  private Iec104Client client;
+  private @Nullable Iec104Server server;
+  private @Nullable Iec104Client client;
 
   @AfterEach
   void tearDown() {
@@ -67,6 +69,7 @@ class CommandScenariosTest {
   @Test
   void directExecutePositive() throws Exception {
     startServerAndClient();
+    Iec104Client client = Objects.requireNonNull(this.client);
     client.connect();
 
     CommandResult result =
@@ -81,6 +84,7 @@ class CommandScenariosTest {
   @Test
   void selectBeforeOperatePositive() throws Exception {
     startServerAndClient();
+    Iec104Client client = Objects.requireNonNull(this.client);
     client.connect();
 
     CommandResult result =
@@ -96,6 +100,7 @@ class CommandScenariosTest {
   @Test
   void rejectedCommandYieldsNonPositiveResult() throws Exception {
     startServerAndClient();
+    Iec104Client client = Objects.requireNonNull(this.client);
     client.connect();
 
     CommandResult result =
@@ -112,6 +117,7 @@ class CommandScenariosTest {
   @Test
   void rejectedSelectBeforeOperateStopsAtSelectPhase() throws Exception {
     startServerAndClient();
+    Iec104Client client = Objects.requireNonNull(this.client);
     client.connect();
 
     // The select activation is rejected, so the service never sends the execute activation; the
@@ -128,6 +134,7 @@ class CommandScenariosTest {
   @Test
   void negativeInterrogationConfirmationThrows() throws Exception {
     startServerAndClient();
+    Iec104Client client = Objects.requireNonNull(this.client);
     client.connect();
 
     // The handler rejects interrogation of the second station, so interrogate() surfaces the

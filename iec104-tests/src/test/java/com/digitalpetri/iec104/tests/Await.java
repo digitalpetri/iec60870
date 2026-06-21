@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import java.time.Duration;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A tiny awaitility-style polling helper for the integration tests: it repeatedly evaluates a
@@ -67,7 +68,7 @@ final class Await {
    * @param <T> the type of the awaited value.
    * @return the first non-null value produced by {@code supplier}.
    */
-  static <T> T value(String description, Supplier<T> supplier) {
+  static <T> T value(String description, Supplier<? extends @Nullable T> supplier) {
     long deadline = System.nanoTime() + DEFAULT_TIMEOUT.toNanos();
     while (System.nanoTime() < deadline) {
       T result = supplier.get();

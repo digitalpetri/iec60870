@@ -29,6 +29,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -123,8 +124,8 @@ class ServerVsLib60870ClientInteropTest {
    */
   private static final Duration CLIENT_TIMEOUT = Duration.ofSeconds(90);
 
-  private ScheduledExecutorService periodic;
-  private Iec104Server server;
+  private @Nullable ScheduledExecutorService periodic;
+  private @Nullable Iec104Server server;
   private int serverPort;
 
   @BeforeAll

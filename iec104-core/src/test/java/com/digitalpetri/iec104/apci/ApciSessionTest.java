@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.joou.UShort;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -503,7 +504,7 @@ class ApciSessionTest {
 
     private final List<Asdu> asdus = new ArrayList<>();
     private final List<Boolean> dataTransferChanges = new ArrayList<>();
-    private final AtomicReference<Throwable> closeCause = new AtomicReference<>();
+    private final AtomicReference<@Nullable Throwable> closeCause = new AtomicReference<>();
 
     @Override
     public void onAsdu(Asdu asdu) {
@@ -516,7 +517,7 @@ class ApciSessionTest {
     }
 
     @Override
-    public void onClosed(Throwable cause) {
+    public void onClosed(@Nullable Throwable cause) {
       closeCause.set(cause);
     }
   }

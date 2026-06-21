@@ -11,6 +11,7 @@ import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Instant;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -25,8 +26,8 @@ import org.junit.jupiter.api.Test;
  */
 class ExampleInteropTest {
 
-  private Iec104Server server;
-  private Iec104Client client;
+  private @Nullable Iec104Server server;
+  private @Nullable Iec104Client client;
 
   @AfterEach
   void tearDown() {
@@ -43,12 +44,13 @@ class ExampleInteropTest {
     int port = freePort();
     server = ServerExample.start(port);
 
-    client =
+    Iec104Client client =
         TcpIec104Client.builder()
             .host("127.0.0.1")
             .port(port)
             .startDataTransferOnConnect(true)
             .build();
+    this.client = client;
 
     client.connect();
     assertTrue(client.isConnected(), "client should be connected after connect()");

@@ -10,6 +10,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A deterministic, single-threaded {@link ScheduledExecutorService} backed by a virtual clock.
@@ -67,8 +68,8 @@ final class ManualScheduler implements ScheduledExecutorService {
 
   @Override
   public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
-    ScheduledTask<Void> task =
-        new ScheduledTask<>(
+    ScheduledTask<@Nullable Void> task =
+        new ScheduledTask<@Nullable Void>(
             () -> {
               command.run();
               return null;
@@ -168,14 +169,15 @@ final class ManualScheduler implements ScheduledExecutorService {
   }
 
   /** A scheduled task with a virtual deadline and a tie-breaking insertion order. */
-  private static final class ScheduledTask<V> implements ScheduledFuture<V>, Comparable<Delayed> {
+  private static final class ScheduledTask<V extends @Nullable Object>
+      implements ScheduledFuture<V>, Comparable<Delayed> {
 
     private final Callable<V> callable;
     private final long deadlineMillis;
     private final long order;
     private volatile boolean cancelled;
     private volatile boolean done;
-    private V result;
+    private @Nullable V result;
 
     ScheduledTask(Callable<V> callable, long deadlineMillis, long order) {
       this.callable = callable;
@@ -227,7 +229,7 @@ final class ManualScheduler implements ScheduledExecutorService {
     }
 
     @Override
-    public V get() throws ExecutionException {
+    public @Nullable V get() throws ExecutionException {
       if (cancelled) {
         throw new java.util.concurrent.CancellationException();
       }
@@ -235,7 +237,8 @@ final class ManualScheduler implements ScheduledExecutorService {
     }
 
     @Override
-    public V get(long timeout, TimeUnit unit) throws ExecutionException, TimeoutException {
+    public @Nullable V get(long timeout, TimeUnit unit)
+        throws ExecutionException, TimeoutException {
       if (!done) {
         throw new TimeoutException();
       }

@@ -24,6 +24,7 @@ import com.digitalpetri.iec104.point.PointValue;
 import com.digitalpetri.iec104.point.TimeTagStyle;
 import java.util.List;
 import java.util.concurrent.Executor;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -391,9 +392,9 @@ class DefaultIec104ServerTest {
 
   @Test
   void requestContextIsPopulatedWithRemoteAddressAndStation() {
-    java.util.concurrent.atomic.AtomicReference<java.net.SocketAddress> seenRemote =
+    java.util.concurrent.atomic.AtomicReference<java.net.@Nullable SocketAddress> seenRemote =
         new java.util.concurrent.atomic.AtomicReference<>();
-    java.util.concurrent.atomic.AtomicReference<CommonAddress> seenStation =
+    java.util.concurrent.atomic.AtomicReference<@Nullable CommonAddress> seenStation =
         new java.util.concurrent.atomic.AtomicReference<>();
 
     ServerHandler handler =

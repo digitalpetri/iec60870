@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.List;
 import javax.net.ssl.SSLContext;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,8 +45,8 @@ class TlsIntegrationTest {
   private static final CommonAddress STATION = CommonAddress.of(1);
   private static final PointAddress MONITOR_POINT = PointAddress.of(1, 100);
 
-  private Iec104Server server;
-  private Iec104Client client;
+  private @Nullable Iec104Server server;
+  private @Nullable Iec104Client client;
 
   @AfterEach
   void tearDown() {
