@@ -1,5 +1,6 @@
 package com.digitalpetri.iec104.tests;
 
+import java.io.IOException;
 import java.math.BigInteger;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
@@ -21,6 +22,7 @@ import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.OperatorCreationException;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 /**
@@ -135,7 +137,7 @@ final class SelfSignedTls {
       KeyStore keyStore = KeyStore.getInstance("PKCS12");
       keyStore.load(null, null);
       return keyStore;
-    } catch (java.io.IOException e) {
+    } catch (IOException e) {
       throw new GeneralSecurityException("failed to initialise in-memory keystore", e);
     }
   }
@@ -166,7 +168,7 @@ final class SelfSignedTls {
       X509CertificateHolder holder = builder.build(signer);
 
       return new JcaX509CertificateConverter().getCertificate(holder);
-    } catch (org.bouncycastle.operator.OperatorCreationException | java.io.IOException e) {
+    } catch (OperatorCreationException | IOException e) {
       throw new GeneralSecurityException("failed to create self-signed certificate", e);
     }
   }

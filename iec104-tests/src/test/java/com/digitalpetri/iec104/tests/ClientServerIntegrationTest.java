@@ -9,7 +9,9 @@ import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.PointAddress;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.asdu.element.DoublePointState;
+import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.client.ClientEvent;
+import com.digitalpetri.iec104.client.Command;
 import com.digitalpetri.iec104.client.CommandMode;
 import com.digitalpetri.iec104.client.CommandResult;
 import com.digitalpetri.iec104.client.Iec104Client;
@@ -105,11 +107,7 @@ class ClientServerIntegrationTest {
 
     // Direct-execute command on the accepted point is confirmed positively.
     CommandResult directExecute =
-        client
-            .commands()
-            .send(
-                com.digitalpetri.iec104.client.Command.single(ACCEPTED_COMMAND, true),
-                CommandMode.directExecute());
+        client.commands().send(Command.single(ACCEPTED_COMMAND, true), CommandMode.directExecute());
     assertTrue(directExecute.positive(), "direct-execute command should be confirmed positively");
     assertEquals(ACCEPTED_COMMAND, directExecute.target());
 
@@ -117,9 +115,7 @@ class ClientServerIntegrationTest {
     CommandResult selectBeforeOperate =
         client
             .commands()
-            .send(
-                com.digitalpetri.iec104.client.Command.single(ACCEPTED_COMMAND, false),
-                CommandMode.selectBeforeOperate());
+            .send(Command.single(ACCEPTED_COMMAND, false), CommandMode.selectBeforeOperate());
     assertTrue(
         selectBeforeOperate.positive(),
         "select-before-operate command should be confirmed positively");
@@ -302,9 +298,7 @@ class ClientServerIntegrationTest {
     @Override
     public CommandDecision onCommand(ServerContext context, CommandRequest request) {
       if (request.target().equals(ACCEPTED_COMMAND)) {
-        boolean on =
-            request.commandObject() instanceof com.digitalpetri.iec104.asdu.object.SingleCommand sc
-                && sc.on();
+        boolean on = request.commandObject() instanceof SingleCommand sc && sc.on();
         return CommandDecision.acceptAndUpdate(PointValue.single(on));
       }
       return CommandDecision.reject(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS);

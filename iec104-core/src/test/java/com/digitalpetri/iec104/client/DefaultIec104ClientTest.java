@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec104.ConnectionClosedException;
 import com.digitalpetri.iec104.NegativeConfirmationException;
+import com.digitalpetri.iec104.ProtocolTimeoutException;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.address.PointAddress;
@@ -16,13 +17,24 @@ import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.asdu.element.Qds;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
+import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueScaled;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.client.ClientEvent.PointUpdated;
+import java.io.IOException;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -75,10 +87,7 @@ class DefaultIec104ClientTest {
 
     transport.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION_CONFIRMATION, true));
 
-    var ex =
-        assertThrows(
-            java.util.concurrent.CompletionException.class,
-            () -> stage.toCompletableFuture().join());
+    var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
     assertTrue(ex.getCause() instanceof NegativeConfirmationException);
   }
 
@@ -173,26 +182,23 @@ class DefaultIec104ClientTest {
 
     transport.loseConnection();
 
-    var ex =
-        assertThrows(
-            java.util.concurrent.CompletionException.class,
-            () -> stage.toCompletableFuture().join());
+    var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
     assertSame(ConnectionClosedException.class, ex.getCause().getClass());
   }
 
   @Test
   void connectFailureIsTranslatedToTypedException() {
     FakeClientTransport failing = new FakeClientTransport();
-    failing.failConnect(new java.io.IOException("refused"));
+    failing.failConnect(new IOException("refused"));
     DefaultIec104Client failingClient =
         new DefaultIec104Client(
             failing, ClientConfig.builder().callbackExecutor(Runnable::run).build());
     try {
       var ex =
           assertThrows(
-              java.util.concurrent.CompletionException.class,
+              CompletionException.class,
               () -> failingClient.connectAsync().toCompletableFuture().join());
-      assertTrue(ex.getCause() instanceof java.io.IOException);
+      assertTrue(ex.getCause() instanceof IOException);
       assertFalse(failingClient.isConnected());
     } finally {
       failingClient.close();
@@ -207,8 +213,8 @@ class DefaultIec104ClientTest {
             quietTransport,
             ClientConfig.builder()
                 .callbackExecutor(Runnable::run)
-                .commandTimeout(java.time.Duration.ofMillis(50))
-                .requestTimeout(java.time.Duration.ofMillis(50))
+                .commandTimeout(Duration.ofMillis(50))
+                .requestTimeout(Duration.ofMillis(50))
                 .build());
     try {
       timingClient.connect();
@@ -220,11 +226,8 @@ class DefaultIec104ClientTest {
               .sendAsync(Command.single(point, true), CommandMode.directExecute());
 
       // No confirmation is ever delivered; the command must time out and be removed.
-      var ex =
-          assertThrows(
-              java.util.concurrent.CompletionException.class,
-              () -> stage.toCompletableFuture().join());
-      assertTrue(ex.getCause() instanceof com.digitalpetri.iec104.ProtocolTimeoutException);
+      var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+      assertTrue(ex.getCause() instanceof ProtocolTimeoutException);
 
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
@@ -246,12 +249,11 @@ class DefaultIec104ClientTest {
     try {
       failingClient.connect();
       // From now on every send fails; the in-flight interrogation must fail too.
-      failing.failSend(new java.io.IOException("write failed"));
+      failing.failSend(new IOException("write failed"));
 
       CompletionStage<InterrogationResult> stage = failingClient.interrogateAsync(STATION);
 
-      assertThrows(
-          java.util.concurrent.CompletionException.class, () -> stage.toCompletableFuture().join());
+      assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
       assertEquals(0, failingClient.pendingRequestCount(), "failed send must not leak a request");
     } finally {
       failingClient.close();
@@ -278,9 +280,8 @@ class DefaultIec104ClientTest {
             config.originatorAddress(),
             CommonAddress.of(99),
             List.of(
-                new com.digitalpetri.iec104.asdu.object.InterrogationCommand(
-                    InformationObjectAddress.of(0),
-                    com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation.STATION))));
+                new InterrogationCommand(
+                    InformationObjectAddress.of(0), QualifierOfInterrogation.STATION))));
 
     // The interrogation is still pending; the unmatched ASDU was surfaced only as AsduReceived.
     assertFalse(stage.toCompletableFuture().isDone());
@@ -297,8 +298,7 @@ class DefaultIec104ClientTest {
   @Test
   void callbacksAreSerialized() throws Exception {
     // A single-thread executor preserves submission order and never runs two callbacks at once.
-    java.util.concurrent.ExecutorService executor =
-        java.util.concurrent.Executors.newSingleThreadExecutor();
+    ExecutorService executor = Executors.newSingleThreadExecutor();
     FakeClientTransport serialTransport = new FakeClientTransport();
     DefaultIec104Client serialClient =
         new DefaultIec104Client(
@@ -307,12 +307,10 @@ class DefaultIec104ClientTest {
       serialClient.connect();
 
       int count = 200;
-      java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(count);
-      java.util.concurrent.atomic.AtomicInteger concurrent =
-          new java.util.concurrent.atomic.AtomicInteger();
-      java.util.concurrent.atomic.AtomicInteger maxConcurrent =
-          new java.util.concurrent.atomic.AtomicInteger();
-      List<ClientEvent> received = new java.util.ArrayList<>();
+      CountDownLatch latch = new CountDownLatch(count);
+      AtomicInteger concurrent = new AtomicInteger();
+      AtomicInteger maxConcurrent = new AtomicInteger();
+      List<ClientEvent> received = new ArrayList<>();
 
       serialClient
           .events()
@@ -345,7 +343,7 @@ class DefaultIec104ClientTest {
         serialTransport.deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
       }
 
-      assertTrue(latch.await(5, java.util.concurrent.TimeUnit.SECONDS), "all events delivered");
+      assertTrue(latch.await(5, TimeUnit.SECONDS), "all events delivered");
       assertEquals(1, maxConcurrent.get(), "callbacks must never overlap");
     } finally {
       serialClient.close();
@@ -386,9 +384,8 @@ class DefaultIec104ClientTest {
         config.originatorAddress(),
         STATION,
         List.of(
-            new com.digitalpetri.iec104.asdu.object.InterrogationCommand(
-                InformationObjectAddress.of(0),
-                com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation.STATION)));
+            new InterrogationCommand(
+                InformationObjectAddress.of(0), QualifierOfInterrogation.STATION)));
   }
 
   private Asdu measured(Cause cause, short value) {

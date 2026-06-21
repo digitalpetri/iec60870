@@ -13,17 +13,26 @@ import com.digitalpetri.iec104.asdu.Asdu;
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.asdu.InformationObject;
+import com.digitalpetri.iec104.asdu.element.CauseOfInitialization;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand;
+import com.digitalpetri.iec104.asdu.object.EndOfInitialization;
 import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
+import com.digitalpetri.iec104.asdu.object.ReadCommand;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.asdu.object.SinglePointInformation;
+import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec104.point.PointCapability;
 import com.digitalpetri.iec104.point.PointType;
 import com.digitalpetri.iec104.point.PointValue;
 import com.digitalpetri.iec104.point.TimeTagStyle;
+import java.net.SocketAddress;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -255,10 +264,7 @@ class DefaultIec104ServerTest {
             false,
             OriginatorAddress.none(),
             CA,
-            List.of(
-                new com.digitalpetri.iec104.asdu.object.EndOfInitialization(
-                    ZERO,
-                    new com.digitalpetri.iec104.asdu.element.CauseOfInitialization(0, false))));
+            List.of(new EndOfInitialization(ZERO, new CauseOfInitialization(0, false))));
     connection.deliverAsdu(request);
 
     List<Asdu> sent = connection.sentAsdus();
@@ -318,10 +324,7 @@ class DefaultIec104ServerTest {
     connection.startDataTransfer();
 
     connection.deliverAsdu(
-        control(
-            AsduType.C_RD_NA_1,
-            Cause.REQUEST,
-            new com.digitalpetri.iec104.asdu.object.ReadCommand(POINT.objectAddress())));
+        control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress())));
 
     List<Asdu> sent = connection.sentAsdus();
     assertEquals(1, sent.size());
@@ -341,14 +344,9 @@ class DefaultIec104ServerTest {
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    com.digitalpetri.iec104.asdu.time.Cp56Time2a time =
-        com.digitalpetri.iec104.asdu.time.Cp56Time2a.from(
-            java.time.Instant.parse("2024-01-02T03:04:05Z"), java.time.ZoneOffset.UTC);
+    Cp56Time2a time = Cp56Time2a.from(Instant.parse("2024-01-02T03:04:05Z"), ZoneOffset.UTC);
     connection.deliverAsdu(
-        control(
-            AsduType.C_CS_NA_1,
-            Cause.ACTIVATION,
-            new com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand(ZERO, time)));
+        control(AsduType.C_CS_NA_1, Cause.ACTIVATION, new ClockSynchronizationCommand(ZERO, time)));
 
     List<Asdu> sent = connection.sentAsdus();
     assertEquals(1, sent.size());
@@ -373,14 +371,9 @@ class DefaultIec104ServerTest {
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    com.digitalpetri.iec104.asdu.time.Cp56Time2a time =
-        com.digitalpetri.iec104.asdu.time.Cp56Time2a.from(
-            java.time.Instant.parse("2024-01-02T03:04:05Z"), java.time.ZoneOffset.UTC);
+    Cp56Time2a time = Cp56Time2a.from(Instant.parse("2024-01-02T03:04:05Z"), ZoneOffset.UTC);
     connection.deliverAsdu(
-        control(
-            AsduType.C_CS_NA_1,
-            Cause.ACTIVATION,
-            new com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand(ZERO, time)));
+        control(AsduType.C_CS_NA_1, Cause.ACTIVATION, new ClockSynchronizationCommand(ZERO, time)));
 
     List<Asdu> sent = connection.sentAsdus();
     assertEquals(1, sent.size());
@@ -392,10 +385,8 @@ class DefaultIec104ServerTest {
 
   @Test
   void requestContextIsPopulatedWithRemoteAddressAndStation() {
-    java.util.concurrent.atomic.AtomicReference<java.net.@Nullable SocketAddress> seenRemote =
-        new java.util.concurrent.atomic.AtomicReference<>();
-    java.util.concurrent.atomic.AtomicReference<@Nullable CommonAddress> seenStation =
-        new java.util.concurrent.atomic.AtomicReference<>();
+    AtomicReference<@Nullable SocketAddress> seenRemote = new AtomicReference<>();
+    AtomicReference<@Nullable CommonAddress> seenStation = new AtomicReference<>();
 
     ServerHandler handler =
         new ServerHandler() {

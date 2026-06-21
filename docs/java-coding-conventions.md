@@ -61,41 +61,37 @@ var callback = createHandler(); // What functional interface?
 
 ## Imports
 
-Prefer importing classes and using their simple names over inline fully qualified class names.
-Fully qualified names add visual clutter and make code harder to read.
+Import the classes you use and refer to them by their simple names. An inline fully qualified name
+adds visual clutter and makes code harder to read, so reserve it for the one case that earns it:
+resolving a genuine ambiguity (below). Everywhere else, add the import.
 
-**Use imports and simple names:**
-
-```java
-import com.inductiveautomation.ignition.gateway.redundancy.types.ProjectState;
-import com.inductiveautomation.ignition.gateway.redundancy.types.HistoryLevel;
-
-// Good: Clean and readable
-return new RedundancyState(
-    NodeRole.Backup,
-    ProjectState.Unknown,
-    HistoryLevel.Partial,
-    activityLevel);
-```
-
-**Avoid inline fully qualified names:**
+Use imports and simple names — including inside annotations, generics, and `catch` clauses, which
+are the spots most often left qualified out of habit:
 
 ```java
-// Avoid: Verbose and cluttered
-return new RedundancyState(
-    NodeRole.Backup,
-    com.inductiveautomation.ignition.gateway.redundancy.types.ProjectState.Unknown,
-    com.inductiveautomation.ignition.gateway.redundancy.types.HistoryLevel.Partial,
-    activityLevel);
+import com.digitalpetri.iec104.asdu.object.ReadCommand;
+import java.net.SocketAddress;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicReference;
+
+var command = new ReadCommand(point.objectAddress());
+
+AtomicReference<@Nullable SocketAddress> remote = new AtomicReference<>();
+
+try {
+  result.join();
+} catch (CompletionException e) {
+  // ...
+}
 ```
 
-**Exception:** Use fully qualified names only when necessary to resolve ambiguity between classes
-with the same simple name:
+**Exception — disambiguation only.** When two types share a simple name and both are needed in the
+same file, import one and fully qualify the other:
 
 ```java
 import java.util.Date;
 
-// Acceptable: Resolves ambiguity with java.util.Date
+// java.util.Date is imported; qualify the SQL type to disambiguate.
 java.sql.Date sqlDate = new java.sql.Date(timestamp);
 ```
 

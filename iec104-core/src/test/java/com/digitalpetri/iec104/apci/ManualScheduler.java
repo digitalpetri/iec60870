@@ -4,8 +4,10 @@ import java.util.Collection;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -132,28 +134,27 @@ final class ManualScheduler implements ScheduledExecutorService {
   }
 
   @Override
-  public <T> java.util.concurrent.Future<T> submit(Callable<T> task) {
+  public <T> Future<T> submit(Callable<T> task) {
     throw new UnsupportedOperationException("submit");
   }
 
   @Override
-  public <T> java.util.concurrent.Future<T> submit(Runnable task, T result) {
+  public <T> Future<T> submit(Runnable task, T result) {
     throw new UnsupportedOperationException("submit");
   }
 
   @Override
-  public java.util.concurrent.Future<?> submit(Runnable task) {
+  public Future<?> submit(Runnable task) {
     throw new UnsupportedOperationException("submit");
   }
 
   @Override
-  public <T> List<java.util.concurrent.Future<T>> invokeAll(
-      Collection<? extends Callable<T>> tasks) {
+  public <T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks) {
     throw new UnsupportedOperationException("invokeAll");
   }
 
   @Override
-  public <T> List<java.util.concurrent.Future<T>> invokeAll(
+  public <T> List<Future<T>> invokeAll(
       Collection<? extends Callable<T>> tasks, long timeout, TimeUnit unit) {
     throw new UnsupportedOperationException("invokeAll");
   }
@@ -231,7 +232,7 @@ final class ManualScheduler implements ScheduledExecutorService {
     @Override
     public @Nullable V get() throws ExecutionException {
       if (cancelled) {
-        throw new java.util.concurrent.CancellationException();
+        throw new CancellationException();
       }
       return result;
     }

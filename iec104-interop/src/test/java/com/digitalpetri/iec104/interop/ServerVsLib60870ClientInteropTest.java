@@ -24,6 +24,7 @@ import com.digitalpetri.iec104.server.Station;
 import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -270,7 +271,7 @@ class ServerVsLib60870ClientInteropTest {
     try (GenericContainer<?> client =
         new GenericContainer<>(
                 new ImageFromDockerfile("iec104-interop/lib60870c-interop", false)
-                    .withFileFromPath(".", java.nio.file.Path.of("docker/lib60870c")))
+                    .withFileFromPath(".", Path.of("docker/lib60870c")))
             .withStartupTimeout(IMAGE_BUILD_TIMEOUT)
             // One-shot: the client runs the script and exits; do not wait for a listening port.
             .withStartupCheckStrategy(new OneShotStartupCheckStrategy())

@@ -14,16 +14,24 @@ import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand;
+import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
+import com.digitalpetri.iec104.asdu.object.ReadCommand;
+import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec104.point.MonitorMapping;
 import com.digitalpetri.iec104.point.PointValueExtraction;
 import com.digitalpetri.iec104.transport.ClientTransport;
 import com.digitalpetri.iec104.transport.TransportListener;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -222,7 +230,7 @@ public final class DefaultIec104Client implements Iec104Client {
     Objects.requireNonNull(station, "station");
     Objects.requireNonNull(qoi, "qoi");
 
-    var command = new com.digitalpetri.iec104.asdu.object.InterrogationCommand(ZERO_ADDRESS, qoi);
+    var command = new InterrogationCommand(ZERO_ADDRESS, qoi);
     Asdu asdu =
         new Asdu(
             AsduType.C_IC_NA_1,
@@ -251,7 +259,7 @@ public final class DefaultIec104Client implements Iec104Client {
   public CompletionStage<List<InformationObject>> readAsync(PointAddress point) {
     Objects.requireNonNull(point, "point");
 
-    var command = new com.digitalpetri.iec104.asdu.object.ReadCommand(point.objectAddress());
+    var command = new ReadCommand(point.objectAddress());
     Asdu asdu =
         new Asdu(
             AsduType.C_RD_NA_1,
@@ -289,9 +297,7 @@ public final class DefaultIec104Client implements Iec104Client {
     Objects.requireNonNull(time, "time");
 
     var command =
-        new com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand(
-            ZERO_ADDRESS,
-            com.digitalpetri.iec104.asdu.time.Cp56Time2a.from(time, java.time.ZoneOffset.UTC));
+        new ClockSynchronizationCommand(ZERO_ADDRESS, Cp56Time2a.from(time, ZoneOffset.UTC));
     Asdu asdu =
         new Asdu(
             AsduType.C_CS_NA_1,
@@ -457,7 +463,7 @@ public final class DefaultIec104Client implements Iec104Client {
    * @param future the user-facing future, failed if the send fails.
    */
   private void registerAndSend(
-      PendingRequest request, Asdu asdu, java.time.Duration timeout, CompletableFuture<?> future) {
+      PendingRequest request, Asdu asdu, Duration timeout, CompletableFuture<?> future) {
 
     lock.lock();
     try {
@@ -589,9 +595,9 @@ public final class DefaultIec104Client implements Iec104Client {
   private static <T> T await(CompletionStage<T> stage) {
     try {
       return stage.toCompletableFuture().join();
-    } catch (java.util.concurrent.CompletionException e) {
+    } catch (CompletionException e) {
       throw unwrap(e.getCause());
-    } catch (java.util.concurrent.CancellationException e) {
+    } catch (CancellationException e) {
       throw new ConnectionClosedException("request cancelled", e);
     }
   }

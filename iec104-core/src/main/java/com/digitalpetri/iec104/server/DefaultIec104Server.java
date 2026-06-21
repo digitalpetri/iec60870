@@ -23,6 +23,7 @@ import com.digitalpetri.iec104.point.MonitorMapping;
 import com.digitalpetri.iec104.point.PointCapability;
 import com.digitalpetri.iec104.point.PointType;
 import com.digitalpetri.iec104.point.PointValue;
+import com.digitalpetri.iec104.point.TimeTagStyle;
 import com.digitalpetri.iec104.transport.ServerTransport;
 import com.digitalpetri.iec104.transport.ServerTransportConnection;
 import com.digitalpetri.iec104.transport.TransportListener;
@@ -32,7 +33,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -283,9 +286,9 @@ public final class DefaultIec104Server implements Iec104Server {
   private static <T> T await(CompletionStage<T> stage) {
     try {
       return stage.toCompletableFuture().join();
-    } catch (java.util.concurrent.CompletionException e) {
+    } catch (CompletionException e) {
       throw unwrap(e.getCause());
-    } catch (java.util.concurrent.CancellationException e) {
+    } catch (CancellationException e) {
       throw new ConnectionClosedException("operation cancelled", e);
     }
   }
@@ -950,7 +953,7 @@ public final class DefaultIec104Server implements Iec104Server {
    * @param object the monitor object.
    * @return the matching time-tag style.
    */
-  private static com.digitalpetri.iec104.point.TimeTagStyle styleOf(InformationObject object) {
+  private static TimeTagStyle styleOf(InformationObject object) {
     return MonitorTypes.styleOf(object);
   }
 

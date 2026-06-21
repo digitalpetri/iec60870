@@ -1,5 +1,6 @@
 package com.digitalpetri.iec104.catalog;
 
+import com.digitalpetri.iec104.address.CommonAddress;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
@@ -56,8 +57,7 @@ public sealed interface CatalogSource
    * @param station the common address of the station the point was observed on.
    * @param observedAt the instant at which the observation was made, if known.
    */
-  record ObservedCatalogSource(
-      com.digitalpetri.iec104.address.CommonAddress station, Optional<Instant> observedAt)
+  record ObservedCatalogSource(CommonAddress station, Optional<Instant> observedAt)
       implements CatalogSource {
 
     /**

@@ -13,6 +13,7 @@ import com.digitalpetri.netty.fsm.Event;
 import com.digitalpetri.netty.fsm.State;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -184,7 +185,7 @@ public class NettyClientTransport implements ClientTransport {
 
       InetSocketAddress remote = InetSocketAddress.createUnresolved(config.host(), config.port());
 
-      io.netty.channel.ChannelFuture connectFuture =
+      ChannelFuture connectFuture =
           config.localBindOptional().isPresent()
               ? bootstrap.connect(remote, config.localBindOptional().get())
               : bootstrap.connect(remote);

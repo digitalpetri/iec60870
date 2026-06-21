@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec104.TlsOptions;
+import com.digitalpetri.iec104.apci.Apdu;
 import com.digitalpetri.iec104.transport.ServerTransportConnection;
 import com.digitalpetri.iec104.transport.TransportListener;
 import java.io.IOException;
@@ -138,7 +139,7 @@ class TlsHandshakeTest {
   private static final TransportListener NOOP_LISTENER =
       new TransportListener() {
         @Override
-        public void onApdu(com.digitalpetri.iec104.apci.Apdu apdu) {}
+        public void onApdu(Apdu apdu) {}
 
         @Override
         public void onConnectionLost(@Nullable Throwable cause) {}

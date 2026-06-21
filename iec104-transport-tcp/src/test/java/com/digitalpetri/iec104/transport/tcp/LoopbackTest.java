@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.PointAddress;
+import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.client.CommandResult;
 import com.digitalpetri.iec104.client.Iec104Client;
 import com.digitalpetri.iec104.client.InterrogationResult;
@@ -18,6 +19,7 @@ import com.digitalpetri.iec104.server.Iec104Server;
 import com.digitalpetri.iec104.server.PointDefinition;
 import com.digitalpetri.iec104.server.ServerContext;
 import com.digitalpetri.iec104.server.ServerHandler;
+import com.digitalpetri.iec104.server.Station;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.List;
@@ -55,8 +57,7 @@ class LoopbackTest {
           if (request.target().equals(COMMAND_POINT)) {
             return CommandDecision.acceptAndUpdate(PointValue.single(true));
           }
-          return CommandDecision.reject(
-              com.digitalpetri.iec104.asdu.Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS);
+          return CommandDecision.reject(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS);
         }
       };
 
@@ -80,10 +81,7 @@ class LoopbackTest {
             PointCapability.COMMANDABLE);
 
     var station =
-        com.digitalpetri.iec104.server.Station.builder(STATION)
-            .point(monitorDefinition)
-            .point(commandDefinition)
-            .build();
+        Station.builder(STATION).point(monitorDefinition).point(commandDefinition).build();
 
     Iec104Server server =
         TcpIec104Server.builder()

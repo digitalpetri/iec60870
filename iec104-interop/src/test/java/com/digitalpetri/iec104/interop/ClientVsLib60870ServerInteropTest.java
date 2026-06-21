@@ -39,8 +39,10 @@ import com.digitalpetri.iec104.point.MonitorMapping;
 import com.digitalpetri.iec104.point.PointValue;
 import com.digitalpetri.iec104.point.PointValueExtraction;
 import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -49,6 +51,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -146,7 +149,7 @@ class ClientVsLib60870ServerInteropTest {
   private static final GenericContainer<?> SERVER =
       new GenericContainer<>(
               new ImageFromDockerfile("iec104-interop/lib60870c-interop", false)
-                  .withFileFromPath(".", java.nio.file.Path.of("docker/lib60870c")))
+                  .withFileFromPath(".", Path.of("docker/lib60870c")))
           .withExposedPorts(2404)
           .withCommand("stdbuf", "-oL", "-eL", "interop_server")
           .withStartupTimeout(STARTUP_TIMEOUT)
@@ -730,16 +733,16 @@ class ClientVsLib60870ServerInteropTest {
   private static Map<Long, PointValue<?>> byIoa(InterrogationResult result) {
     return result.pointValues().stream()
         .collect(
-            java.util.stream.Collectors.toMap(
+            Collectors.toMap(
                 e -> e.address().objectAddress().value().longValue(),
                 InterrogationResult.PointEntry::value,
                 (a, b) -> b,
-                java.util.LinkedHashMap::new));
+                LinkedHashMap::new));
   }
 
   /** Projects an integrated-totals ASDU onto {@code IOA -> BinaryCounterReading}. */
   private static Map<Long, BinaryCounterReading> countersByIoa(Asdu asdu) {
-    java.util.Map<Long, BinaryCounterReading> out = new java.util.LinkedHashMap<>();
+    Map<Long, BinaryCounterReading> out = new LinkedHashMap<>();
     for (InformationObject o : asdu.objects()) {
       if (o instanceof IntegratedTotals it) {
         out.put(it.address().value().longValue(), it.counter());
