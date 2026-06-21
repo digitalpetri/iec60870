@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Smoke test: start the lib60870-C CS104 server peer, run the CS104 client peer
 # against it on a private Docker network, and confirm a full APCI/ASDU exchange

@@ -114,3 +114,15 @@ mise exec -- mvn -pl iec104-interop test   # -> Tests run: 0
   stream in real time for Testcontainers `Wait.forLogMessage(...)`.
 - lib60870-C is GPLv3. It is consumed here only as a standalone network peer binary inside the
   Docker image, never linked into the library.
+
+## License
+
+This module's Java sources are licensed under the **Eclipse Public License 2.0**, like the rest of
+the project — they only build the peer image and talk to it over TCP, which does not create a
+combined work under the GPL.
+
+The `docker/` subtree is the exception. The custom C drivers (`docker/lib60870c/interop_server.c`,
+`docker/lib60870c/interop_client.c`) `#include` lib60870-C headers and statically link
+`liblib60870.a`, so they form a combined work with the GPLv3 lib60870-C library. Everything under
+`docker/` is therefore licensed under the **GNU General Public License v3.0 or later**; see
+[`docker/LICENSE.md`](docker/LICENSE.md) and the `SPDX-License-Identifier` headers on those files.

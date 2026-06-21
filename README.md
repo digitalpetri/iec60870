@@ -21,7 +21,7 @@ details.
 
 ## Documentation
 
-Architecture and design documentation lives under [`docs/architecture/`](docs/architecture/): the
+Architecture and design documentation lives under [`docs/architecture/`](docs/architecture): the
 two-layer API, the core-vs-transport split, the protocol coverage matrix, the APCI lifecycle and
 timers, buffer ownership and threading, TLS and configuration, and the error model and extensibility
 points.
@@ -96,3 +96,14 @@ Dependency sources are unpacked under `external/src`.
 
 Build configuration is centralized in the parent `pom.xml`. Keep core protocol APIs free of Netty
 runtime types unless a future design explicitly chooses a Netty-buffer-facing codec boundary.
+
+## License
+
+This project is licensed under the [Eclipse Public License 2.0](LICENSE.md).
+
+The sole exception is the [`iec104-interop/docker/`](iec104-interop/docker) subtree, which is
+licensed under the [GNU General Public License v3.0 or later](iec104-interop/docker/LICENSE.md). Those
+files build custom C drivers that link the GPLv3 [lib60870-C](https://github.com/mz-automation/lib60870)
+library into the interop test peer image. The library itself never links lib60870-C — it only speaks
+to the resulting container over the network — so the EPL-licensed code and the GPL-licensed
+`docker/` content stay cleanly separated.

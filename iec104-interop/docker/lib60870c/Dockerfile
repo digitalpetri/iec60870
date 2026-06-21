@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
 # lib60870-C (MZ Automation) IEC 60870-5-104 reference peer.
 #
 # Used by the iec104-interop module as a separate-process network peer for
