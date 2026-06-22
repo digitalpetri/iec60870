@@ -9,8 +9,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * A logical point value: a typed value paired with its {@link Quality} and an optional acquisition
- * timestamp.
+ * A logical point value: a {@link PointType}, a typed value paired with its {@link Quality}, and an
+ * optional acquisition timestamp.
  *
  * <p>The type parameter {@code T} is the natural Java representation of the value for the point's
  * {@link PointType}: {@link Boolean} for single-point, {@link DoublePointState} for double-point,
@@ -28,24 +28,40 @@ import java.util.Optional;
  * }</pre>
  *
  * @param <T> the natural Java type of the value.
+ * @param type the point type, which determines the natural Java type {@code T} of {@code value}.
  * @param value the point value.
  * @param quality the quality of the value.
  * @param timestamp the optional acquisition timestamp.
  */
-public record PointValue<T>(T value, Quality quality, Optional<Instant> timestamp) {
+public record PointValue<T>(PointType type, T value, Quality quality, Optional<Instant> timestamp) {
 
   /**
    * Validates the components of a point value.
    *
+   * @param type the point type, which determines the natural Java type {@code T} of {@code value}.
    * @param value the point value.
    * @param quality the quality of the value.
    * @param timestamp the optional acquisition timestamp.
-   * @throws NullPointerException if {@code value}, {@code quality}, or {@code timestamp} is null.
+   * @throws NullPointerException if {@code type}, {@code value}, {@code quality}, or {@code
+   *     timestamp} is null.
+   * @throws IllegalArgumentException if {@code value} is not an instance of {@link
+   *     PointType#valueClass() type.valueClass()}.
    */
   public PointValue {
+    Objects.requireNonNull(type, "type");
     Objects.requireNonNull(value, "value");
     Objects.requireNonNull(quality, "quality");
     Objects.requireNonNull(timestamp, "timestamp");
+    if (!type.valueClass().isInstance(value)) {
+      throw new IllegalArgumentException(
+          "value of type "
+              + value.getClass().getName()
+              + " is not valid for point type "
+              + type
+              + " (expected "
+              + type.valueClass().getName()
+              + ")");
+    }
   }
 
   /**
@@ -55,7 +71,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<Boolean> single(boolean on) {
-    return new PointValue<>(on, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.SINGLE_POINT, on, Quality.good(), Optional.empty());
   }
 
   /**
@@ -65,7 +81,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<DoublePointState> doublePoint(DoublePointState state) {
-    return new PointValue<>(state, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.DOUBLE_POINT, state, Quality.good(), Optional.empty());
   }
 
   /**
@@ -75,7 +91,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<Vti> stepPosition(Vti value) {
-    return new PointValue<>(value, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.STEP_POSITION, value, Quality.good(), Optional.empty());
   }
 
   /**
@@ -85,7 +101,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<Integer> bitstring(int bits) {
-    return new PointValue<>(bits, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.BITSTRING32, bits, Quality.good(), Optional.empty());
   }
 
   /**
@@ -95,7 +111,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<Short> scaled(short value) {
-    return new PointValue<>(value, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.SCALED, value, Quality.good(), Optional.empty());
   }
 
   /**
@@ -105,7 +121,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<NormalizedValue> normalized(NormalizedValue value) {
-    return new PointValue<>(value, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.NORMALIZED, value, Quality.good(), Optional.empty());
   }
 
   /**
@@ -115,7 +131,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<Float> shortFloat(float value) {
-    return new PointValue<>(value, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.SHORT_FLOAT, value, Quality.good(), Optional.empty());
   }
 
   /**
@@ -125,7 +141,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return the point value.
    */
   public static PointValue<BinaryCounterReading> counter(BinaryCounterReading counter) {
-    return new PointValue<>(counter, Quality.good(), Optional.empty());
+    return new PointValue<>(PointType.INTEGRATED_TOTALS, counter, Quality.good(), Optional.empty());
   }
 
   /**
@@ -135,7 +151,7 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return a point value equal to this one but with the given quality.
    */
   public PointValue<T> withQuality(Quality quality) {
-    return new PointValue<>(value, quality, timestamp);
+    return new PointValue<>(type, value, quality, timestamp);
   }
 
   /**
@@ -145,6 +161,6 @@ public record PointValue<T>(T value, Quality quality, Optional<Instant> timestam
    * @return a point value equal to this one but carrying the given timestamp.
    */
   public PointValue<T> withTimestamp(Instant timestamp) {
-    return new PointValue<>(value, quality, Optional.of(timestamp));
+    return new PointValue<>(type, value, quality, Optional.of(timestamp));
   }
 }

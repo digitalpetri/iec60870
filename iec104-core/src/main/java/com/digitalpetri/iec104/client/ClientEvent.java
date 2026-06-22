@@ -2,6 +2,7 @@ package com.digitalpetri.iec104.client;
 
 import com.digitalpetri.iec104.address.PointAddress;
 import com.digitalpetri.iec104.asdu.Asdu;
+import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.point.PointValue;
 import java.time.Instant;
@@ -67,13 +68,23 @@ public sealed interface ClientEvent
   /**
    * Published once per information object carried by a received monitor ASDU.
    *
+   * <p>The logical kind of the value is available from {@link PointValue#type() value.type()}; the
+   * {@code asduType} additionally reports the exact wire type identification that carried this
+   * update, which distinguishes time-tag variants that the point value otherwise collapses (for
+   * example untimed {@code M_SP_NA_1} from CP24-tagged {@code M_SP_TA_1}).
+   *
    * @param address the fully qualified address of the updated point.
    * @param value the decoded point value, including its quality.
+   * @param asduType the type identification of the ASDU that carried this update.
    * @param cause the cause of transmission of the carrying ASDU.
    * @param timestamp the acquisition timestamp recovered from the object's time tag, if present.
    */
   record PointUpdated(
-      PointAddress address, PointValue<?> value, Cause cause, Optional<Instant> timestamp)
+      PointAddress address,
+      PointValue<?> value,
+      AsduType asduType,
+      Cause cause,
+      Optional<Instant> timestamp)
       implements ClientEvent {
 
     /**
@@ -81,14 +92,16 @@ public sealed interface ClientEvent
      *
      * @param address the fully qualified address of the updated point.
      * @param value the decoded point value, including its quality.
+     * @param asduType the type identification of the ASDU that carried this update.
      * @param cause the cause of transmission of the carrying ASDU.
      * @param timestamp the acquisition timestamp recovered from the object's time tag, if present.
-     * @throws NullPointerException if {@code address}, {@code value}, {@code cause}, or {@code
-     *     timestamp} is null.
+     * @throws NullPointerException if {@code address}, {@code value}, {@code asduType}, {@code
+     *     cause}, or {@code timestamp} is null.
      */
     public PointUpdated {
       Objects.requireNonNull(address, "address");
       Objects.requireNonNull(value, "value");
+      Objects.requireNonNull(asduType, "asduType");
       Objects.requireNonNull(cause, "cause");
       Objects.requireNonNull(timestamp, "timestamp");
     }

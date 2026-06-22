@@ -407,7 +407,8 @@ public final class DefaultIec104Client implements Iec104Client {
         PointValueExtraction value = extraction.get();
         PointAddress address = new PointAddress(asdu.commonAddress(), object.address());
         publish(
-            new ClientEvent.PointUpdated(address, value.value(), asdu.cause(), value.timestamp()));
+            new ClientEvent.PointUpdated(
+                address, value.value(), asdu.type(), asdu.cause(), value.timestamp()));
       }
     }
   }

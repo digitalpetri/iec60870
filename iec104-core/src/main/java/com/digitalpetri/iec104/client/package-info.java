@@ -24,8 +24,9 @@
  * java.util.concurrent.Flow.Publisher} of {@link com.digitalpetri.iec104.client.ClientEvent}. Every
  * received monitor ASDU yields one {@link com.digitalpetri.iec104.client.ClientEvent.PointUpdated}
  * per information object, and an {@link com.digitalpetri.iec104.client.ClientEvent.AsduReceived} is
- * always published as well. Events are delivered serially on the configured callback executor, so a
- * subscriber never sees two callbacks at once.
+ * always published as well. Each {@code PointUpdated} reports the value's point type and the wire
+ * type identification that carried it. Events are delivered serially on the configured callback
+ * executor, so a subscriber never sees two callbacks at once.
  *
  * <h2>Requests and correlation</h2>
  *

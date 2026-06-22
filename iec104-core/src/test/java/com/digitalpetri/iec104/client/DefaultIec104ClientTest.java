@@ -23,6 +23,7 @@ import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.MeasuredValueScaled;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.client.ClientEvent.PointUpdated;
+import com.digitalpetri.iec104.point.PointType;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -169,6 +170,8 @@ class DefaultIec104ClientTest {
             .orElseThrow();
     assertTrue(sawAsduReceived);
     assertEquals((short) 7, update.value().value());
+    assertEquals(PointType.SCALED, update.value().type());
+    assertEquals(AsduType.M_ME_NB_1, update.asduType());
     assertEquals(Cause.SPONTANEOUS, update.cause());
   }
 

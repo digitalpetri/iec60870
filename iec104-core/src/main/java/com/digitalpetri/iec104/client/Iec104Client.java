@@ -21,7 +21,9 @@ import java.util.concurrent.Flow;
  *
  * <p>Received data is delivered through {@link #events()}: every monitor ASDU yields one {@link
  * ClientEvent.PointUpdated} per information object, alongside an always-published {@link
- * ClientEvent.AsduReceived}. Events are delivered serially on the client's callback executor.
+ * ClientEvent.AsduReceived}. Each {@code PointUpdated} reports the value's point type and the wire
+ * type identification that carried it. Events are delivered serially on the client's callback
+ * executor.
  *
  * <pre>{@code
  * try (Iec104Client client = TcpIec104Client.builder()
