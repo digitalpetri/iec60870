@@ -37,6 +37,7 @@ import com.digitalpetri.iec104.client.CommandResult;
 import com.digitalpetri.iec104.client.Iec104Client;
 import com.digitalpetri.iec104.client.InterrogationResult;
 import com.digitalpetri.iec104.point.MonitorMapping;
+import com.digitalpetri.iec104.point.PointType;
 import com.digitalpetri.iec104.point.PointValue;
 import com.digitalpetri.iec104.point.PointValueExtraction;
 import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
@@ -93,8 +94,11 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
  * types and group&nbsp;2 delivers all seven time-tagged points (reported, per CS101, with their
  * non-time TypeIDs at the time-tagged IOAs). The CP56Time2a-tagged TypeIDs themselves are
  * round-tripped through the <em>read</em> command, which returns each IOA at its native (time or
- * non-time) TypeID. The interrogation and read tests below decode and assert the value (and, for
- * reads, the TypeID) of every documented monitor point.
+ * non-time) TypeID. The interrogation and read tests below decode and assert the value and logical
+ * {@link PointType} (and, for reads, the wire TypeID) of every documented monitor point; the
+ * periodic-update test additionally asserts the {@link
+ * com.digitalpetri.iec104.client.ClientEvent.PointUpdated#asduType() wire TypeID} reported on the
+ * point-update event.
  */
 @Tag("interop")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -350,6 +354,13 @@ class ClientVsLib60870ServerInteropTest {
                         && !a.objects().isEmpty(),
                 WAIT_TIMEOUT);
     assertNotNull(data, "expected M_IT_NA_1 counter data with COT REQUESTED_BY_GENERAL_COUNTER");
+
+    // Integrated totals decode to a PointValue whose logical type is INTEGRATED_TOTALS.
+    PointValue<?> counterValue =
+        MonitorMapping.extract(data.objects().get(0))
+            .map(PointValueExtraction::value)
+            .orElseThrow(() -> new AssertionError("counter data object did not decode"));
+    assertEquals(PointType.INTEGRATED_TOTALS, counterValue.type(), "counter point type");
 
     // Also confirm the positive ACT_CON for the counter interrogation was received.
     Asdu actCon =
@@ -615,6 +626,8 @@ class ClientVsLib60870ServerInteropTest {
     assertNotNull(update, "expected a periodic PointUpdated for IOA 1050");
     assertInstanceOf(
         Short.class, update.value().value(), "periodic 1050 value must be a scaled Short");
+    assertEquals(PointType.SCALED, update.value().type(), "periodic 1050 logical point type");
+    assertEquals(AsduType.M_ME_NB_1, update.asduType(), "periodic 1050 carrying wire type");
   }
 
   // --- Coverage notes -------------------------------------------------------------------------
@@ -688,6 +701,7 @@ class ClientVsLib60870ServerInteropTest {
 
   private static void assertSinglePoint(PointValue<?> value, boolean expected) {
     assertNotNull(value, "missing single-point value");
+    assertEquals(PointType.SINGLE_POINT, value.type(), "single-point type");
     assertEquals(expected, value.value(), "single-point state");
   }
 
@@ -695,12 +709,14 @@ class ClientVsLib60870ServerInteropTest {
   @SuppressWarnings("SameParameterValue")
   private static void assertDoublePoint(PointValue<?> value, DoublePointState expected) {
     assertNotNull(value, "missing double-point value");
+    assertEquals(PointType.DOUBLE_POINT, value.type(), "double-point type");
     assertEquals(expected, value.value(), "double-point state");
   }
 
   @SuppressWarnings("SameParameterValue")
   private static void assertStep(PointValue<?> value, int expected) {
     assertNotNull(value, "missing step-position value");
+    assertEquals(PointType.STEP_POSITION, value.type(), "step-position type");
     Vti vti = assertInstanceOf(Vti.class, value.value(), "step value should be a Vti");
     assertEquals(expected, vti.value(), "step position value");
     assertFalse(vti.transientState(), "step transient flag should be false");
@@ -709,12 +725,14 @@ class ClientVsLib60870ServerInteropTest {
   @SuppressWarnings("SameParameterValue")
   private static void assertBits(PointValue<?> value, int expected) {
     assertNotNull(value, "missing bitstring value");
+    assertEquals(PointType.BITSTRING32, value.type(), "bitstring type");
     assertEquals(expected, value.value(), "bitstring 32 value");
   }
 
   @SuppressWarnings("SameParameterValue")
   private static void assertNormalized(PointValue<?> value, double expected) {
     assertNotNull(value, "missing normalized value");
+    assertEquals(PointType.NORMALIZED, value.type(), "normalized type");
     NormalizedValue normalized =
         assertInstanceOf(NormalizedValue.class, value.value(), "normalized value type");
     double actual = normalized.doubleValue();
@@ -727,12 +745,14 @@ class ClientVsLib60870ServerInteropTest {
   @SuppressWarnings("SameParameterValue")
   private static void assertScaled(PointValue<?> value, short expected) {
     assertNotNull(value, "missing scaled value");
+    assertEquals(PointType.SCALED, value.type(), "scaled type");
     assertEquals(expected, value.value(), "scaled value");
   }
 
   @SuppressWarnings("SameParameterValue")
   private static void assertShortFloat(PointValue<?> value, float expected) {
     assertNotNull(value, "missing short-float value");
+    assertEquals(PointType.SHORT_FLOAT, value.type(), "short-float type");
     Float actual = assertInstanceOf(Float.class, value.value(), "short-float value type");
     assertEquals(expected, actual, 1e-4f, "short-float value");
   }

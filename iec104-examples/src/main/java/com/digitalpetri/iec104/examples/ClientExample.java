@@ -23,7 +23,9 @@ import java.util.concurrent.Flow;
  *
  * <p>A {@link Flow.Subscriber} subscribed to {@link Iec104Client#events()} prints {@link
  * ClientEvent.PointUpdated} and {@link ClientEvent.AsduReceived} events as they arrive; events are
- * delivered serially on the client's callback executor.
+ * delivered serially on the client's callback executor. The example server reports one point of
+ * every logical point type, so each printed update carries the value's logical point type and the
+ * wire type identification of the ASDU that carried it.
  */
 public final class ClientExample {
 
@@ -58,7 +60,13 @@ public final class ClientExample {
       System.out.println(
           "[client] interrogation reported " + snapshot.pointValues().size() + " points");
       for (InterrogationResult.PointEntry entry : snapshot.pointValues()) {
-        System.out.println("[client]   " + entry.address() + " = " + entry.value().value());
+        System.out.println(
+            "[client]   "
+                + entry.address()
+                + " ["
+                + entry.value().type()
+                + "] = "
+                + entry.value().value());
       }
 
       CommandResult command = client.commands().single(SWITCH, true);
@@ -80,7 +88,7 @@ public final class ClientExample {
    * @param args ignored.
    */
   public static void main(String[] args) {
-    run("127.0.0.1", 2404, Duration.ofSeconds(3));
+    run("127.0.0.1", 2404, Duration.ofSeconds(30));
   }
 
   private static void sleep(Duration duration) {
@@ -104,10 +112,16 @@ public final class ClientExample {
     @Override
     public void onNext(ClientEvent event) {
       if (event instanceof ClientEvent.PointUpdated updated) {
+        // value().type() is the logical point type; asduType() is the exact wire type
+        // identification that carried the update (it distinguishes the time-tag variants).
         System.out.println(
             "[client] point updated "
                 + updated.address()
-                + " = "
+                + " ["
+                + updated.value().type()
+                + " via "
+                + updated.asduType()
+                + "] = "
                 + updated.value().value()
                 + " ("
                 + updated.cause()

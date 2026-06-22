@@ -6,11 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.digitalpetri.iec104.client.CommandResult;
 import com.digitalpetri.iec104.client.Iec104Client;
 import com.digitalpetri.iec104.client.InterrogationResult;
+import com.digitalpetri.iec104.point.PointType;
 import com.digitalpetri.iec104.server.Iec104Server;
 import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Instant;
+import java.util.EnumSet;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -21,8 +25,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The test starts the server example programmatically on an ephemeral port, connects a client
  * built the same way the client example builds it, and asserts that a general interrogation
- * succeeds and reports the example's points, that the commandable point accepts a command, and that
- * the clock synchronization is confirmed without throwing.
+ * succeeds and reports every reported monitor point type, that the commandable point accepts a
+ * command, and that the clock synchronization is confirmed without throwing.
  */
 class ExampleInteropTest {
 
@@ -59,6 +63,24 @@ class ExampleInteropTest {
     assertTrue(snapshot.terminated(), "interrogation should end with an activation termination");
     assertFalse(
         snapshot.pointValues().isEmpty(), "interrogation should report the station's points");
+
+    // The example server reports one point of every monitor type; a station interrogation should
+    // surface each of them (the integrated-totals counter is delivered out-of-band, not here).
+    Set<PointType> reportedTypes =
+        snapshot.pointValues().stream()
+            .map(entry -> entry.value().type())
+            .collect(Collectors.toCollection(() -> EnumSet.noneOf(PointType.class)));
+    assertTrue(
+        reportedTypes.containsAll(
+            EnumSet.of(
+                PointType.SINGLE_POINT,
+                PointType.DOUBLE_POINT,
+                PointType.STEP_POSITION,
+                PointType.BITSTRING32,
+                PointType.NORMALIZED,
+                PointType.SCALED,
+                PointType.SHORT_FLOAT)),
+        "interrogation should report every reported monitor point type; saw " + reportedTypes);
 
     CommandResult command = client.commands().single(ServerExample.SWITCH, true);
     assertTrue(command.positive(), "the commandable point should accept the command");

@@ -3,6 +3,10 @@ package com.digitalpetri.iec104.examples;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.PointAddress;
 import com.digitalpetri.iec104.asdu.Cause;
+import com.digitalpetri.iec104.asdu.element.BinaryCounterReading;
+import com.digitalpetri.iec104.asdu.element.DoublePointState;
+import com.digitalpetri.iec104.asdu.element.NormalizedValue;
+import com.digitalpetri.iec104.asdu.element.Vti;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.point.PointCapability;
 import com.digitalpetri.iec104.point.PointType;
@@ -25,17 +29,22 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A controlled station (server) that hosts a handful of points, answers control-direction requests,
- * and spontaneously publishes a measured value on a timer.
+ * A controlled station (server) that hosts one monitor point of every logical point type, answers
+ * control-direction requests, and spontaneously republishes a fresh value for each point on a
+ * timer.
  *
- * <p>The station defines three points on common address {@code 1}:
+ * <p>The station defines, on common address {@code 1}, one reported point of each monitor type
+ * (single-point, double-point, step position, 32-bit bit string, normalized / scaled / short-float
+ * measured value) at IOAs {@code 100}..{@code 160}, an integrated-totals counter at IOA {@code 170}
+ * (readable; delivered spontaneously and by counter interrogation rather than general
+ * interrogation), and a commandable single point at IOA {@code 300} whose handler accepts the
+ * command and updates the station image, so the controlling station receives the new value as
+ * return information. The seven reported monitor points belong to interrogation group {@code 1} and
+ * the commandable point to group {@code 2}.
  *
- * <ul>
- *   <li>a single-point status at IOA {@code 100} (reported);
- *   <li>a scaled measured value at IOA {@code 200} (reported), republished every two seconds; and
- *   <li>a commandable single point at IOA {@code 300} whose handler accepts the command and updates
- *       the station image, so the controlling station receives the new value as return information.
- * </ul>
+ * <p>A periodic task republishes a fresh value for every point (including the counter) every two
+ * seconds with cause {@link Cause#SPONTANEOUS}, so a connected controlling station observes a point
+ * update of each {@link PointType}.
  *
  * <p>Run it with {@code main}; it binds port 2404 on all interfaces and runs until interrupted (for
  * example with Ctrl+C), at which point the shutdown hook stops the server cleanly. The {@link
@@ -47,10 +56,28 @@ public final class ServerExample {
   static final CommonAddress STATION = CommonAddress.of(1);
 
   /** Single-point status indication, reported in the monitor direction. */
-  static final PointAddress STATUS = PointAddress.of(1, 100);
+  static final PointAddress SINGLE = PointAddress.of(1, 100);
 
-  /** Scaled measured value, republished periodically. */
-  static final PointAddress MEASURAND = PointAddress.of(1, 200);
+  /** Double-point status indication, reported in the monitor direction. */
+  static final PointAddress DOUBLE = PointAddress.of(1, 110);
+
+  /** Step-position (tap) information, reported in the monitor direction. */
+  static final PointAddress STEP = PointAddress.of(1, 120);
+
+  /** 32-bit bit string, reported in the monitor direction. */
+  static final PointAddress BITSTRING = PointAddress.of(1, 130);
+
+  /** Normalized measured value, reported in the monitor direction. */
+  static final PointAddress NORMALIZED = PointAddress.of(1, 140);
+
+  /** Scaled measured value, reported in the monitor direction. */
+  static final PointAddress SCALED = PointAddress.of(1, 150);
+
+  /** Short floating-point measured value, reported in the monitor direction. */
+  static final PointAddress SHORT_FLOAT = PointAddress.of(1, 160);
+
+  /** Integrated-totals counter, readable and republished spontaneously. */
+  static final PointAddress COUNTER = PointAddress.of(1, 170);
 
   /** Commandable single point; its handler accepts the command and updates the image. */
   static final PointAddress SWITCH = PointAddress.of(1, 300);
@@ -61,9 +88,9 @@ public final class ServerExample {
    * Builds and starts a server on the given port, wiring the station, handler, and periodic
    * publisher.
    *
-   * <p>The returned server is already started and registers a periodic task that republishes the
-   * measured value; closing the server cancels that task. The caller owns the returned server and
-   * must {@link Iec104Server#close() close} it.
+   * <p>The returned server is already started and registers a periodic task that republishes a
+   * fresh value for every point; closing the server cancels that task. The caller owns the returned
+   * server and must {@link Iec104Server#close() close} it.
    *
    * @param port the TCP port to bind on the loopback interface.
    * @return the started server.
@@ -73,16 +100,52 @@ public final class ServerExample {
         Station.builder(STATION)
             .point(
                 PointDefinition.of(
-                    STATUS,
+                    SINGLE,
                     PointType.SINGLE_POINT,
                     PointValue.single(false),
                     PointCapability.REPORTED))
             .point(
                 PointDefinition.of(
-                    MEASURAND,
+                    DOUBLE,
+                    PointType.DOUBLE_POINT,
+                    PointValue.doublePoint(DoublePointState.OFF),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    STEP,
+                    PointType.STEP_POSITION,
+                    PointValue.stepPosition(new Vti(0, false)),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    BITSTRING,
+                    PointType.BITSTRING32,
+                    PointValue.bitstring(0),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    NORMALIZED,
+                    PointType.NORMALIZED,
+                    PointValue.normalized(NormalizedValue.of(0.0)),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    SCALED,
                     PointType.SCALED,
                     PointValue.scaled((short) 0),
                     PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    SHORT_FLOAT,
+                    PointType.SHORT_FLOAT,
+                    PointValue.shortFloat(0f),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    COUNTER,
+                    PointType.INTEGRATED_TOTALS,
+                    PointValue.counter(new BinaryCounterReading(0, 0, false, false, false)),
+                    PointCapability.READABLE))
             .point(
                 PointDefinition.of(
                     SWITCH,
@@ -90,8 +153,14 @@ public final class ServerExample {
                     PointValue.single(false),
                     PointCapability.REPORTED,
                     PointCapability.COMMANDABLE))
-            .group(1, STATUS)
-            .group(2, MEASURAND)
+            .group(1, SINGLE)
+            .group(1, DOUBLE)
+            .group(1, STEP)
+            .group(1, BITSTRING)
+            .group(1, NORMALIZED)
+            .group(1, SCALED)
+            .group(1, SHORT_FLOAT)
+            .group(2, SWITCH)
             .build();
 
     Iec104Server server =
@@ -116,9 +185,10 @@ public final class ServerExample {
     AtomicInteger counter = new AtomicInteger();
     publisher.scheduleAtFixedRate(
         () -> {
-          short value = (short) counter.incrementAndGet();
-          server.publish(MEASURAND, PointValue.scaled(value), Cause.SPONTANEOUS);
-          System.out.println("[server] published measured value " + value);
+          int tick = counter.incrementAndGet();
+          publishEveryType(server, tick);
+          System.out.println(
+              "[server] published a spontaneous value for every point (tick " + tick + ")");
         },
         2,
         2,
@@ -126,6 +196,35 @@ public final class ServerExample {
 
     // Stop the publisher when the server is closed so the daemon thread does not outlive it.
     return new PublishingServer(server, publisher);
+  }
+
+  /**
+   * Publishes a fresh value for every hosted monitor point, deriving each value from {@code tick}
+   * so the data changes on every cycle. Each update is sent spontaneously ({@link
+   * Cause#SPONTANEOUS}), so a connected controlling station observes a point update of every {@link
+   * PointType}.
+   *
+   * @param server the server to publish through.
+   * @param tick the monotonically increasing cycle counter used to vary the values.
+   */
+  private static void publishEveryType(Iec104Server server, int tick) {
+    server.publish(SINGLE, PointValue.single(tick % 2 == 0), Cause.SPONTANEOUS);
+    server.publish(
+        DOUBLE,
+        PointValue.doublePoint(tick % 2 == 0 ? DoublePointState.ON : DoublePointState.OFF),
+        Cause.SPONTANEOUS);
+    server.publish(STEP, PointValue.stepPosition(new Vti(tick % 64, false)), Cause.SPONTANEOUS);
+    server.publish(BITSTRING, PointValue.bitstring(tick), Cause.SPONTANEOUS);
+    server.publish(
+        NORMALIZED,
+        PointValue.normalized(NormalizedValue.of((tick % 100) / 100.0)),
+        Cause.SPONTANEOUS);
+    server.publish(SCALED, PointValue.scaled((short) tick), Cause.SPONTANEOUS);
+    server.publish(SHORT_FLOAT, PointValue.shortFloat(tick / 10.0f), Cause.SPONTANEOUS);
+    server.publish(
+        COUNTER,
+        PointValue.counter(new BinaryCounterReading(tick, 0, false, false, false)),
+        Cause.SPONTANEOUS);
   }
 
   /**
