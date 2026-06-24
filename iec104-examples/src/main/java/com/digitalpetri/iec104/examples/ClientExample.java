@@ -82,7 +82,7 @@ public final class ClientExample {
   }
 
   /**
-   * Connects to {@code 127.0.0.1:2404} and runs the example, lingering three seconds for
+   * Connects to {@code 127.0.0.1:2404} and runs the example, lingering 30 seconds for
    * spontaneous updates.
    *
    * @param args ignored.
