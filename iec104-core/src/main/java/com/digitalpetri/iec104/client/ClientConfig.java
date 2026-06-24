@@ -4,8 +4,6 @@ import com.digitalpetri.iec104.ApciSettings;
 import com.digitalpetri.iec104.ProtocolProfile;
 import com.digitalpetri.iec104.address.OriginatorAddress;
 import com.digitalpetri.iec104.catalog.PointCatalog;
-import com.digitalpetri.iec104.codec.MutableTypeCodecRegistry;
-import com.digitalpetri.iec104.codec.TypeCodecRegistry;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
@@ -18,9 +16,9 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>This configuration covers the protocol-layer behavior of the client: the wire profile, the
  * APCI flow-control parameters, the originator address, an optional point catalog, whether to start
- * data transfer automatically on connect, the request and command timeouts, the executor that
- * delivers events and completes blocking calls, and the codec registry for private TypeIDs.
- * Transport concerns (host, port, TLS) are configured on the transport, not here.
+ * data transfer automatically on connect, the request and command timeouts, and the executor that
+ * delivers events and completes blocking calls. Transport concerns (host, port, TLS) are configured
+ * on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -41,7 +39,6 @@ import org.jspecify.annotations.Nullable;
  * @param commandTimeout the maximum time to await a command confirmation.
  * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
  * @param callbackExecutor the executor used to deliver events and complete blocking calls.
- * @param typeCodecRegistry the registry of codecs for private or uncommon TypeIDs.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -51,8 +48,7 @@ public record ClientConfig(
     boolean startDataTransferOnConnect,
     Duration commandTimeout,
     Duration requestTimeout,
-    Executor callbackExecutor,
-    TypeCodecRegistry typeCodecRegistry) {
+    Executor callbackExecutor) {
 
   /**
    * Validates the components.
@@ -67,7 +63,6 @@ public record ClientConfig(
    * @param commandTimeout the maximum time to await a command confirmation.
    * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
    * @param callbackExecutor the executor used to deliver events and complete blocking calls.
-   * @param typeCodecRegistry the registry of codecs for private or uncommon TypeIDs.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
    *     negative.
@@ -79,7 +74,6 @@ public record ClientConfig(
     Objects.requireNonNull(commandTimeout, "commandTimeout");
     Objects.requireNonNull(requestTimeout, "requestTimeout");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
-    Objects.requireNonNull(typeCodecRegistry, "typeCodecRegistry");
     requirePositive(commandTimeout, "commandTimeout");
     requirePositive(requestTimeout, "requestTimeout");
   }
@@ -125,7 +119,6 @@ public record ClientConfig(
     private Duration commandTimeout = Duration.ofSeconds(10);
     private Duration requestTimeout = Duration.ofSeconds(30);
     private Executor callbackExecutor = ForkJoinPool.commonPool();
-    private TypeCodecRegistry typeCodecRegistry = new MutableTypeCodecRegistry();
 
     private Builder() {}
 
@@ -224,17 +217,6 @@ public record ClientConfig(
     }
 
     /**
-     * Sets the registry of codecs for private or uncommon TypeIDs. Defaults to an empty registry.
-     *
-     * @param typeCodecRegistry the codec registry.
-     * @return this builder.
-     */
-    public Builder typeCodecRegistry(TypeCodecRegistry typeCodecRegistry) {
-      this.typeCodecRegistry = Objects.requireNonNull(typeCodecRegistry, "typeCodecRegistry");
-      return this;
-    }
-
-    /**
      * Builds an immutable {@link ClientConfig} from the current builder state.
      *
      * @return the configuration.
@@ -250,8 +232,7 @@ public record ClientConfig(
           startDataTransferOnConnect,
           commandTimeout,
           requestTimeout,
-          callbackExecutor,
-          typeCodecRegistry);
+          callbackExecutor);
     }
   }
 }

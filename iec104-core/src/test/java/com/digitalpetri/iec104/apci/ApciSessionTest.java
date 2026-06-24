@@ -423,6 +423,176 @@ class ApciSessionTest {
     assertNull(events.closeCause.get(), "close() must not invoke onClosed");
   }
 
+  // --- F3: stale t1 task must not close a re-armed session -------------------------------------
+
+  @Test
+  void staleT1TaskDoesNotCloseReArmedSession() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // Arm a first t1 and capture its (now stale) task.
+    session.sendAsdu(asdu(1));
+    Runnable staleT1 = scheduler.lastRunnableWithDelay(T1_MILLIS);
+
+    // Acknowledge the first frame, then send a second that re-arms a fresh t1.
+    session.onApdu(sFrame(1));
+    session.sendAsdu(asdu(2));
+
+    // Running the captured stale t1 task must be a no-op: the session stays open and uncosed.
+    staleT1.run();
+
+    assertNull(
+        events.closeCause.get(), "a stale t1 task must not close a healthy re-armed session");
+    // The fresh t1 still works: it must be able to time out the genuinely unacknowledged frame.
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(ProtocolTimeoutException.class, events.closeCause.get());
+  }
+
+  // --- F10: a bad N(R) self-close must stop delivery on the same I-frame ------------------------
+
+  @Test
+  void badAcknowledgementOnIFrameClosesWithoutDelivering() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1)); // V(S) advances to 1; one frame outstanding
+
+    // Valid N(S)=0 but N(R)=5 acknowledges more frames than were ever sent.
+    session.onApdu(iFrame(0, 5, asdu(2)));
+
+    assertInstanceOf(SequenceNumberException.class, events.closeCause.get());
+    assertTrue(
+        events.asdus.isEmpty(),
+        "the ASDU on a frame whose N(R) self-closed the session must not be delivered");
+
+    // No supervisory S-frame is emitted on the closed session even as the clock advances.
+    scheduler.advance(T2_MILLIS, TimeUnit.MILLISECONDS);
+    assertTrue(output.sFrames().isEmpty());
+  }
+
+  // --- F20: a synchronous send failure that closes the session must not leak timers -------------
+
+  @Test
+  void synchronousSendFailureClosingSessionLeavesNoLiveTimers() {
+    ManualScheduler local = new ManualScheduler();
+    RecordingEvents localEvents = new RecordingEvents();
+    AtomicReference<@Nullable ApciSession> ref = new AtomicReference<>();
+    // An Output that closes the session synchronously on the very first I-frame send (mirrors a
+    // transport send future that has already failed and re-enters handleConnectionLost -> close()).
+    ApciSession.Output closingOutput =
+        apdu -> {
+          if (apdu.control() instanceof ControlField.TypeI) {
+            ApciSession s = ref.get();
+            if (s != null) {
+              s.close();
+            }
+          }
+        };
+    ApciSession session =
+        new ApciSession(ApciSession.Role.CLIENT, SETTINGS, local, closingOutput, localEvents);
+    ref.set(session);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+
+    // The re-entrant close must have stopped flushSendQueue before arming t1/t3 on a closed
+    // session.
+    assertEquals(
+        0, local.pendingTaskCount(), "a re-entrant close during send must leave no live timers");
+  }
+
+  // --- F5: bounded outbound send queue honors the overflow policy ------------------------------
+
+  @Test
+  void boundedSendQueueDropsOldestOnOverflow() {
+    // bound = 2; k-window stuck closed (server, never started) so nothing drains.
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.SERVER,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            2,
+            OutboundQueuePolicy.DROP_OLDEST);
+    session.onConnected();
+
+    for (int i = 0; i < 5; i++) {
+      session.sendAsdu(asdu(i));
+    }
+
+    assertEquals(2, session.pendingSendCount(), "DROP_OLDEST must never exceed the bound");
+    assertTrue(output.iFrames().isEmpty(), "server withholds I-frames before STARTDT");
+
+    // Start data transfer; the two retained ASDUs are the most recent (ioa 3 and 4).
+    session.onApdu(uFrame(UFunction.STARTDT_ACT));
+    List<ControlField.TypeI> frames = output.iFrames();
+    assertEquals(2, frames.size());
+  }
+
+  @Test
+  void boundedSendQueueDropsNewestOnOverflow() {
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.SERVER,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            2,
+            OutboundQueuePolicy.DROP_NEWEST);
+    session.onConnected();
+
+    for (int i = 0; i < 5; i++) {
+      session.sendAsdu(asdu(i));
+    }
+
+    assertEquals(2, session.pendingSendCount(), "DROP_NEWEST must never exceed the bound");
+  }
+
+  @Test
+  void blockPolicyParkedPublisherUnblocksWhenQueueDrains() throws Exception {
+    // bound = 1, k = 3 so the window is open: the first ASDU transmits immediately, the publisher
+    // then awaits capacity for the next while the queue is empty -> returns true without parking.
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.CLIENT,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            1,
+            OutboundQueuePolicy.BLOCK);
+    session.onConnected();
+
+    // Stuff the queue beyond the bound while the window stays closed by acking nothing: send k=3
+    // frames (all transmit) then a fourth queues, reaching the bound.
+    session.sendAsdu(asdu(1));
+    session.sendAsdu(asdu(2));
+    session.sendAsdu(asdu(3));
+    session.sendAsdu(asdu(4)); // queued; pending == 1 == bound
+
+    assertEquals(1, session.pendingSendCount());
+
+    // A publisher thread parks awaiting capacity; a peer ack drains a slot and wakes it.
+    CompletableFuture<Boolean> parked =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                return session.awaitSendCapacity(5_000);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+              }
+            });
+
+    // Give the publisher a moment to park, then acknowledge so the queued frame flushes.
+    Thread.sleep(50);
+    session.onApdu(sFrame(1)); // acks one frame; window reopens; queued asdu(4) flushes
+
+    assertTrue(parked.get(5, TimeUnit.SECONDS), "the parked publisher must unblock, not deadlock");
+  }
+
   // --- Fixtures --------------------------------------------------------------------------------
 
   private static Asdu asdu(int ioa) {
@@ -440,6 +610,10 @@ class ApciSessionTest {
 
   private static Apdu iFrame(int ns, Asdu asdu) {
     return new Apdu(new ControlField.TypeI(ns, 0), asdu);
+  }
+
+  private static Apdu iFrame(int ns, int nr, Asdu asdu) {
+    return new Apdu(new ControlField.TypeI(ns, nr), asdu);
   }
 
   private static Apdu sFrame(int nr) {

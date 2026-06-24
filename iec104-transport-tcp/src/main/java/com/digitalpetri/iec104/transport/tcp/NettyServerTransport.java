@@ -18,6 +18,7 @@ import io.netty.util.concurrent.GlobalEventExecutor;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
@@ -51,6 +52,9 @@ public class NettyServerTransport implements ServerTransport {
 
   private final ChannelGroup childChannels =
       new DefaultChannelGroup("iec104-server-children", GlobalEventExecutor.INSTANCE);
+
+  /** Atomic admission counter so the {@code maxConnections} cap cannot be overshot under a race. */
+  private final AtomicInteger childCount = new AtomicInteger();
 
   private final NettyServerTransportConfig config;
   private final EventLoopGroup bossGroup;
@@ -173,7 +177,10 @@ public class NettyServerTransport implements ServerTransport {
    * @param channel the accepted child channel.
    */
   private void initChildChannel(Channel channel) {
-    if (childChannels.size() >= config.maxConnections()) {
+    // Reserve a slot atomically: increment first, roll back on overshoot, so concurrent accepts on
+    // different event-loop threads cannot both pass a size() check and exceed the cap.
+    if (childCount.incrementAndGet() > config.maxConnections()) {
+      childCount.decrementAndGet();
       LOGGER.debug(
           "rejecting connection from {}; maxConnections={} reached",
           channel.remoteAddress(),
@@ -183,6 +190,8 @@ public class NettyServerTransport implements ServerTransport {
     }
 
     childChannels.add(channel);
+    // Free the reserved slot once the channel closes, registered exactly once here at admission.
+    channel.closeFuture().addListener(future -> childCount.decrementAndGet());
 
     NettyServerConnection connection = new NettyServerConnection(channel);
 

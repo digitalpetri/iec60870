@@ -12,6 +12,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -128,6 +129,11 @@ public final class ApciSession {
 
   private final ReentrantLock lock = new ReentrantLock();
 
+  /**
+   * Signalled whenever the outbound send queue drains, so a parked publisher can re-check space.
+   */
+  private final Condition queueDrained = lock.newCondition();
+
   private final Role role;
   private final ScheduledExecutorService scheduler;
   private final Output output;
@@ -157,12 +163,22 @@ public final class ApciSession {
   private @Nullable ScheduledFuture<?> t1Future;
   private @Nullable ScheduledFuture<?> t2Future;
   private @Nullable ScheduledFuture<?> t3Future;
+  // Generation counters that invalidate timer tasks already dispatched (and possibly blocked on the
+  // lock) when the corresponding timer is re-armed or cancelled. A timer callback that finds its
+  // captured generation stale must do nothing.
+  private int t1Generation;
+  private int t2Generation;
+  private int t3Generation;
   private boolean testFrameOutstanding;
+
+  // Outbound send-queue bound and overflow policy (0 == unbounded, the client default).
+  private final int maxOutboundQueue;
+  private final OutboundQueuePolicy queuePolicy;
 
   private boolean closed;
 
   /**
-   * Creates an APCI session.
+   * Creates an APCI session with an unbounded outbound send queue.
    *
    * @param role the role this session plays in the STARTDT/STOPDT handshake.
    * @param settings the APCI flow-control parameters ({@code k}, {@code w}, and the timers).
@@ -178,11 +194,41 @@ public final class ApciSession {
       Output output,
       Events events) {
 
+    this(role, settings, scheduler, output, events, 0, OutboundQueuePolicy.DROP_OLDEST);
+  }
+
+  /**
+   * Creates an APCI session with a bounded outbound send queue and an overflow policy.
+   *
+   * @param role the role this session plays in the STARTDT/STOPDT handshake.
+   * @param settings the APCI flow-control parameters ({@code k}, {@code w}, and the timers).
+   * @param scheduler the executor used to schedule the {@code t1}/{@code t2}/{@code t3} timers;
+   *     callbacks run under the session lock.
+   * @param output the sink for outbound APDUs.
+   * @param events the callbacks for delivered ASDUs and lifecycle transitions.
+   * @param maxOutboundQueue the maximum number of ASDUs held in the send queue while the window is
+   *     closed, or {@code 0} for an unbounded queue.
+   * @param queuePolicy the action taken when a bounded queue overflows.
+   */
+  public ApciSession(
+      Role role,
+      ApciSettings settings,
+      ScheduledExecutorService scheduler,
+      Output output,
+      Events events,
+      int maxOutboundQueue,
+      OutboundQueuePolicy queuePolicy) {
+
     this.role = Objects.requireNonNull(role, "role");
     Objects.requireNonNull(settings, "settings");
     this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     this.output = Objects.requireNonNull(output, "output");
     this.events = Objects.requireNonNull(events, "events");
+    if (maxOutboundQueue < 0) {
+      throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
+    }
+    this.maxOutboundQueue = maxOutboundQueue;
+    this.queuePolicy = Objects.requireNonNull(queuePolicy, "queuePolicy");
 
     this.t1Millis = settings.t1().toMillis();
     this.t2Millis = settings.t2().toMillis();
@@ -280,8 +326,77 @@ public final class ApciSession {
       if (closed) {
         return;
       }
-      sendQueue.addLast(asdu);
+      // Enforce the configured outbound queue bound (0 == unbounded). The bound applies to ASDUs
+      // that cannot be transmitted immediately; flushSendQueue below drains as many as the window
+      // allows. BLOCK is never honored by parking here (that would block the caller under the
+      // lock);
+      // the publisher is expected to have awaited capacity via awaitSendCapacity(...) first, and as
+      // a last-resort guard a full BLOCK queue drops the newest so the bound is never exceeded.
+      if (maxOutboundQueue > 0 && sendQueue.size() >= maxOutboundQueue) {
+        switch (queuePolicy) {
+          case DROP_OLDEST -> {
+            sendQueue.pollFirst();
+            sendQueue.addLast(asdu);
+          }
+          case DROP_NEWEST, BLOCK -> {
+            // Drop the newly offered ASDU; keep the already accepted history.
+          }
+        }
+      } else {
+        sendQueue.addLast(asdu);
+      }
       flushSendQueue();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Returns the number of ASDUs currently waiting in the outbound send queue (not yet handed to the
+   * transport as I-frames).
+   *
+   * @return the pending send-queue depth.
+   */
+  public int pendingSendCount() {
+    lock.lock();
+    try {
+      return sendQueue.size();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Awaits free capacity in the outbound send queue, off the session's hot path, for the {@link
+   * OutboundQueuePolicy#BLOCK} policy.
+   *
+   * <p>Called by a publishing application thread before offering another ASDU when the queue is
+   * bounded and the policy is {@code BLOCK}. It parks on the drain signal until the queue depth
+   * falls below the bound, the session closes, or the deadline elapses. It never runs on the
+   * session/I-O thread and acquires the session lock only to wait.
+   *
+   * @param timeoutMillis the maximum time to wait, in milliseconds.
+   * @return {@code true} if capacity is available (or the queue is unbounded / session closed),
+   *     {@code false} if the wait timed out with the queue still full.
+   * @throws InterruptedException if the current thread is interrupted while waiting.
+   */
+  public boolean awaitSendCapacity(long timeoutMillis) throws InterruptedException {
+    if (maxOutboundQueue <= 0) {
+      return true;
+    }
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+    lock.lock();
+    try {
+      while (!closed && sendQueue.size() >= maxOutboundQueue) {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+          return false;
+        }
+        if (!queueDrained.await(remaining, TimeUnit.NANOSECONDS)) {
+          return false;
+        }
+      }
+      return true;
     } finally {
       lock.unlock();
     }
@@ -390,6 +505,7 @@ public final class ApciSession {
       }
       closed = true;
       cancelAllTimers();
+      queueDrained.signalAll();
       failPending(new ConnectionClosedException("session closed"));
     } finally {
       lock.unlock();
@@ -409,11 +525,24 @@ public final class ApciSession {
 
     // Acknowledge any of our sent frames the peer confirmed via N(R).
     processReceiveSequenceNumber(i.receiveSequenceNumber());
+    // A bad N(R) self-closes the session; do not deliver, advance V(R), or arm timers on it.
+    if (closed) {
+      return;
+    }
 
-    // Deliver and advance V(R).
-    events.onAsdu(asdu);
+    // Advance V(R) BEFORE delivering, so any I-frame the application sends synchronously from the
+    // delivery callback (e.g. a SELECT_BEFORE_OPERATE execute that re-enters sendAsdu) acknowledges
+    // this just-received frame with the correct N(R), rather than a stale one.
     receiveSequenceNumber = increment(receiveSequenceNumber);
     unackedReceivedCount++;
+
+    // Deliver to the application.
+    events.onAsdu(asdu);
+    // Delivery may have synchronously closed the session (an application send failure); if so, do
+    // not acknowledge or arm timers on a closed session.
+    if (closed) {
+      return;
+    }
 
     if (unackedReceivedCount >= w) {
       sendSupervisoryAck();
@@ -549,10 +678,22 @@ public final class ApciSession {
       return;
     }
     while (!sendQueue.isEmpty() && sequenceDistance(ackSequenceNumber, sendSequenceNumber) < k) {
+      // output.send(...) may re-enter and close the session (a synchronous transport-send failure);
+      // stop draining and arming timers if that happens.
+      if (closed) {
+        break;
+      }
       Asdu asdu = sendQueue.removeFirst();
+      // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
+      queueDrained.signalAll();
       ControlField.TypeI control =
           new ControlField.TypeI(sendSequenceNumber, receiveSequenceNumber);
       output.send(new Apdu(control, asdu));
+      // output.send(...) may have synchronously closed the session; if so, do not advance state or
+      // arm t1/t3 on a now-closed session.
+      if (closed) {
+        break;
+      }
       // Sending an I-frame piggybacks the acknowledgement of received frames.
       onReceiveAcknowledged();
       sendSequenceNumber = increment(sendSequenceNumber);
@@ -581,10 +722,13 @@ public final class ApciSession {
 
   private void armT1() {
     cancelT1();
-    t1Future = schedule(this::onT1Expired, t1Millis);
+    int generation = ++t1Generation;
+    t1Future = schedule(() -> onT1Expired(generation), t1Millis);
   }
 
   private void cancelT1() {
+    // Bump the generation so an already-dispatched task (possibly blocked on the lock) is a no-op.
+    t1Generation++;
     if (t1Future != null) {
       t1Future.cancel(false);
       t1Future = null;
@@ -595,10 +739,12 @@ public final class ApciSession {
     if (t2Future != null) {
       return; // already pending; do not restart on every received frame
     }
-    t2Future = schedule(this::onT2Expired, t2Millis);
+    int generation = ++t2Generation;
+    t2Future = schedule(() -> onT2Expired(generation), t2Millis);
   }
 
   private void cancelT2() {
+    t2Generation++;
     if (t2Future != null) {
       t2Future.cancel(false);
       t2Future = null;
@@ -607,10 +753,12 @@ public final class ApciSession {
 
   private void armT3() {
     cancelT3();
-    t3Future = schedule(this::onT3Expired, t3Millis);
+    int generation = ++t3Generation;
+    t3Future = schedule(() -> onT3Expired(generation), t3Millis);
   }
 
   private void cancelT3() {
+    t3Generation++;
     if (t3Future != null) {
       t3Future.cancel(false);
       t3Future = null;
@@ -623,10 +771,12 @@ public final class ApciSession {
     cancelT3();
   }
 
-  private void onT1Expired() {
+  private void onT1Expired(int generation) {
     lock.lock();
     try {
-      if (closed) {
+      // Ignore a stale task: the session closed, or t1 was re-armed/cancelled after this task was
+      // dispatched (it may have been blocked on the lock while a fresh t1 was armed).
+      if (closed || generation != t1Generation) {
         return;
       }
       t1Future = null;
@@ -638,10 +788,10 @@ public final class ApciSession {
     }
   }
 
-  private void onT2Expired() {
+  private void onT2Expired(int generation) {
     lock.lock();
     try {
-      if (closed) {
+      if (closed || generation != t2Generation) {
         return;
       }
       t2Future = null;
@@ -653,10 +803,10 @@ public final class ApciSession {
     }
   }
 
-  private void onT3Expired() {
+  private void onT3Expired(int generation) {
     lock.lock();
     try {
-      if (closed) {
+      if (closed || generation != t3Generation) {
         return;
       }
       t3Future = null;
@@ -683,6 +833,7 @@ public final class ApciSession {
     }
     closed = true;
     cancelAllTimers();
+    queueDrained.signalAll();
     failPending(cause);
     events.onClosed(cause);
   }

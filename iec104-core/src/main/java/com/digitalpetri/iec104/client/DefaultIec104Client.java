@@ -42,6 +42,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
@@ -73,12 +74,18 @@ public final class DefaultIec104Client implements Iec104Client {
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
 
+  private final Executor callbackExecutor;
   private final SubmissionPublisher<ClientEvent> publisher;
   private final ApciSession session;
   private final CommandService commandService;
 
   private final ReentrantLock lock = new ReentrantLock();
   private final List<PendingRequest> pending = new ArrayList<>();
+
+  /**
+   * Guards against publishing {@link ClientEvent.ConnectionClosed} more than once per connection.
+   */
+  private final AtomicBoolean connectionClosedPublished = new AtomicBoolean(true);
 
   /**
    * Creates a client over the given transport and configuration.
@@ -123,7 +130,7 @@ public final class DefaultIec104Client implements Iec104Client {
       this.scheduler = Executors.newSingleThreadScheduledExecutor(new SchedulerThreadFactory());
       this.ownsScheduler = true;
     }
-    Executor callbackExecutor = config.callbackExecutor();
+    this.callbackExecutor = config.callbackExecutor();
     this.publisher = new SubmissionPublisher<>(callbackExecutor, Flow.defaultBufferSize());
 
     this.session =
@@ -152,6 +159,8 @@ public final class DefaultIec104Client implements Iec104Client {
         .connect()
         .thenCompose(
             ignored -> {
+              // Arm the one-shot ConnectionClosed guard for this connection.
+              connectionClosedPublished.set(false);
               session.onConnected();
               publish(new ClientEvent.ConnectionOpened());
               if (config.startDataTransferOnConnect()) {
@@ -374,7 +383,9 @@ public final class DefaultIec104Client implements Iec104Client {
             (ignored, error) -> {
               if (error != null) {
                 LOGGER.debug("transport send failed", error);
-                handleConnectionLost(error);
+                // A synchronous send failure runs this inline under the session lock; defer the
+                // close off the lock so the session does not re-enter and re-arm timers on itself.
+                callbackExecutor.execute(() -> handleConnectionLost(error));
               }
             });
   }
@@ -462,12 +473,20 @@ public final class DefaultIec104Client implements Iec104Client {
     }
 
     if (finished != null) {
-      finished.cancelTimeout();
-      if (outcome == PendingRequest.Outcome.COMPLETED) {
-        finished.deliver();
-      } else {
-        finished.deliverFailure();
-      }
+      PendingRequest request = finished;
+      PendingRequest.Outcome finalOutcome = outcome;
+      request.cancelTimeout();
+      // Complete off the I/O thread and off the session lock: a SELECT_BEFORE_OPERATE continuation
+      // re-enters session.sendAsdu, which must observe the already-advanced V(R) and must not run
+      // under the session lock.
+      callbackExecutor.execute(
+          () -> {
+            if (finalOutcome == PendingRequest.Outcome.COMPLETED) {
+              request.deliver();
+            } else {
+              request.deliverFailure();
+            }
+          });
     }
     return consumed;
   }
@@ -540,7 +559,7 @@ public final class DefaultIec104Client implements Iec104Client {
             (ignored, error) -> {
               if (error != null) {
                 removePending(request);
-                request.fail(error);
+                callbackExecutor.execute(() -> request.fail(error));
               }
             });
   }
@@ -552,7 +571,9 @@ public final class DefaultIec104Client implements Iec104Client {
    */
   private void timeoutRequest(PendingRequest request) {
     if (removePending(request)) {
-      request.fail(new ProtocolTimeoutException("request timed out awaiting a response"));
+      callbackExecutor.execute(
+          () ->
+              request.fail(new ProtocolTimeoutException("request timed out awaiting a response")));
     }
   }
 
@@ -592,7 +613,7 @@ public final class DefaultIec104Client implements Iec104Client {
     }
     for (PendingRequest request : snapshot) {
       request.cancelTimeout();
-      request.fail(cause);
+      callbackExecutor.execute(() -> request.fail(cause));
     }
   }
 
@@ -625,7 +646,24 @@ public final class DefaultIec104Client implements Iec104Client {
         cause != null
             ? new ConnectionClosedException("connection lost", cause)
             : new ConnectionClosedException("connection lost"));
-    publish(new ClientEvent.ConnectionClosed(cause));
+    publishConnectionClosed(cause);
+  }
+
+  /**
+   * Publishes a {@link ClientEvent.ConnectionClosed} exactly once per connection.
+   *
+   * <p>An error close runs two teardown paths — {@code ApciSession.closeWithError} -&gt; {@link
+   * SessionEvents#onClosed(Throwable)} first (carrying the real cause), then {@code
+   * transport.disconnect()} -&gt; {@code channelInactive} -&gt; {@link
+   * #handleConnectionLost(Throwable)} with a {@code null} cause. Only the first wins, so the real
+   * cause is not masked by a later {@code null}.
+   *
+   * @param cause the failure that closed the connection, or {@code null} for an orderly close.
+   */
+  private void publishConnectionClosed(@Nullable Throwable cause) {
+    if (connectionClosedPublished.compareAndSet(false, true)) {
+      publish(new ClientEvent.ConnectionClosed(cause));
+    }
   }
 
   // --- Helpers --------------------------------------------------------------------------------
@@ -1009,6 +1047,12 @@ public final class DefaultIec104Client implements Iec104Client {
         }
         return Outcome.IGNORED;
       }
+      // A read response carries cause REQUEST; a spontaneous/periodic update on the same CA+IOA
+      // must
+      // not complete the read early. Gate on the cause before matching the addressed object.
+      if (asdu.cause() != Cause.REQUEST) {
+        return Outcome.IGNORED;
+      }
       // Otherwise correlate by the addressed object, delivering only the matching object(s) rather
       // than the whole ASDU, so a response carrying several objects does not hand unrelated points
       // back to this read. Test for a match first so an unrelated response (the common case on this
@@ -1062,7 +1106,7 @@ public final class DefaultIec104Client implements Iec104Client {
           cause != null
               ? new ConnectionClosedException("session closed", cause)
               : new ConnectionClosedException("session closed"));
-      publish(new ClientEvent.ConnectionClosed(cause));
+      publishConnectionClosed(cause);
       try {
         transport.disconnect();
       } catch (RuntimeException e) {

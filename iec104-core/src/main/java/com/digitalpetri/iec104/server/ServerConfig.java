@@ -2,8 +2,6 @@ package com.digitalpetri.iec104.server;
 
 import com.digitalpetri.iec104.ApciSettings;
 import com.digitalpetri.iec104.ProtocolProfile;
-import com.digitalpetri.iec104.codec.MutableTypeCodecRegistry;
-import com.digitalpetri.iec104.codec.TypeCodecRegistry;
 import com.digitalpetri.iec104.point.TimeTagStyle;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,10 +14,10 @@ import java.util.concurrent.ForkJoinPool;
  *
  * <p>This configuration covers the protocol-layer behavior of the server: the wire profile, the
  * APCI flow-control parameters, the hosted stations, the request handler, the policy for a full
- * outbound queue, the time-tag style used when reporting monitor data, the maximum number of
- * concurrent connections, the executor that delivers events and runs handler callbacks, and the
- * codec registry for private TypeIDs. Transport concerns (host, port, TLS) are configured on the
- * transport, not here.
+ * outbound queue, the bound on each connection's outbound queue, the time-tag style used when
+ * reporting monitor data, the maximum number of concurrent connections, and the executor that
+ * delivers events and runs handler callbacks. Transport concerns (host, port, TLS) are configured
+ * on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -36,11 +34,12 @@ import java.util.concurrent.ForkJoinPool;
  * @param stations the stations hosted by the server; each must have a distinct common address.
  * @param handler the handler that answers control-direction requests.
  * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
+ * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code 0}
+ *     for an unbounded queue.
  * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
  *     and published updates).
  * @param maxConnections the maximum number of concurrent controlling-station connections.
  * @param callbackExecutor the executor used to deliver events and run handler callbacks.
- * @param typeCodecRegistry the registry of codecs for private or uncommon TypeIDs.
  */
 public record ServerConfig(
     ProtocolProfile protocolProfile,
@@ -48,10 +47,10 @@ public record ServerConfig(
     List<Station> stations,
     ServerHandler handler,
     EventQueuePolicy eventQueuePolicy,
+    int maxOutboundQueue,
     TimeTagStyle timeTagStyle,
     int maxConnections,
-    Executor callbackExecutor,
-    TypeCodecRegistry typeCodecRegistry) {
+    Executor callbackExecutor) {
 
   /**
    * Validates the configuration and defensively copies the station list.
@@ -61,13 +60,15 @@ public record ServerConfig(
    * @param stations the stations hosted by the server; each must have a distinct common address.
    * @param handler the handler that answers control-direction requests.
    * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
+   * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code
+   *     0} for an unbounded queue.
    * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
    *     and published updates).
    * @param maxConnections the maximum number of concurrent controlling-station connections.
    * @param callbackExecutor the executor used to deliver events and run handler callbacks.
-   * @param typeCodecRegistry the registry of codecs for private or uncommon TypeIDs.
    * @throws NullPointerException if any non-primitive component is null.
-   * @throws IllegalArgumentException if {@code maxConnections} is not positive.
+   * @throws IllegalArgumentException if {@code maxConnections} is not positive or {@code
+   *     maxOutboundQueue} is negative.
    */
   public ServerConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -77,9 +78,11 @@ public record ServerConfig(
     Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
     Objects.requireNonNull(timeTagStyle, "timeTagStyle");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
-    Objects.requireNonNull(typeCodecRegistry, "typeCodecRegistry");
     if (maxConnections < 1) {
       throw new IllegalArgumentException("maxConnections must be positive: " + maxConnections);
+    }
+    if (maxOutboundQueue < 0) {
+      throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     stations = List.copyOf(stations);
   }
@@ -106,10 +109,10 @@ public record ServerConfig(
     private final List<Station> stations = new ArrayList<>();
     private ServerHandler handler = new ServerHandler() {};
     private EventQueuePolicy eventQueuePolicy = EventQueuePolicy.DEFAULT;
+    private int maxOutboundQueue = 1000;
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
     private int maxConnections = 16;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
-    private TypeCodecRegistry typeCodecRegistry = new MutableTypeCodecRegistry();
 
     private Builder() {}
 
@@ -187,6 +190,20 @@ public record ServerConfig(
     }
 
     /**
+     * Sets the bound on each started connection's outbound send queue. Defaults to {@code 1000}; a
+     * value of {@code 0} leaves the queue unbounded. When the queue reaches this bound the
+     * configured {@link EventQueuePolicy} decides the fate of a newly published value.
+     *
+     * @param maxOutboundQueue the outbound queue bound, or {@code 0} for unbounded; must not be
+     *     negative.
+     * @return this builder.
+     */
+    public Builder maxOutboundQueue(int maxOutboundQueue) {
+      this.maxOutboundQueue = maxOutboundQueue;
+      return this;
+    }
+
+    /**
      * Sets the time-tag style used when reporting monitor data. Defaults to {@link
      * TimeTagStyle#CP56}.
      *
@@ -227,21 +244,11 @@ public record ServerConfig(
     }
 
     /**
-     * Sets the registry of codecs for private or uncommon TypeIDs. Defaults to an empty registry.
-     *
-     * @param typeCodecRegistry the codec registry.
-     * @return this builder.
-     */
-    public Builder typeCodecRegistry(TypeCodecRegistry typeCodecRegistry) {
-      this.typeCodecRegistry = Objects.requireNonNull(typeCodecRegistry, "typeCodecRegistry");
-      return this;
-    }
-
-    /**
      * Builds an immutable {@link ServerConfig} from the current builder state.
      *
      * @return the configuration.
-     * @throws IllegalArgumentException if {@code maxConnections} is not positive.
+     * @throws IllegalArgumentException if {@code maxConnections} is not positive or {@code
+     *     maxOutboundQueue} is negative.
      */
     public ServerConfig build() {
       return new ServerConfig(
@@ -250,10 +257,10 @@ public record ServerConfig(
           stations,
           handler,
           eventQueuePolicy,
+          maxOutboundQueue,
           timeTagStyle,
           maxConnections,
-          callbackExecutor,
-          typeCodecRegistry);
+          callbackExecutor);
     }
   }
 }

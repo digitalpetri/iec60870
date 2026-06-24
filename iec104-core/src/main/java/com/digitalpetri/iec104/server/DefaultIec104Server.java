@@ -8,6 +8,7 @@ import com.digitalpetri.iec104.address.OriginatorAddress;
 import com.digitalpetri.iec104.address.PointAddress;
 import com.digitalpetri.iec104.apci.ApciSession;
 import com.digitalpetri.iec104.apci.Apdu;
+import com.digitalpetri.iec104.apci.OutboundQueuePolicy;
 import com.digitalpetri.iec104.asdu.Asdu;
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
@@ -16,9 +17,12 @@ import com.digitalpetri.iec104.asdu.element.FixedTestBitPattern;
 import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec104.asdu.element.QualifierOfResetProcess;
 import com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand;
+import com.digitalpetri.iec104.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.ResetProcessCommand;
 import com.digitalpetri.iec104.asdu.object.TestCommand;
+import com.digitalpetri.iec104.asdu.object.TestCommandWithCp56Time;
+import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec104.point.MonitorMapping;
 import com.digitalpetri.iec104.point.PointCapability;
 import com.digitalpetri.iec104.point.PointType;
@@ -28,6 +32,8 @@ import com.digitalpetri.iec104.transport.ServerTransport;
 import com.digitalpetri.iec104.transport.ServerTransportConnection;
 import com.digitalpetri.iec104.transport.TransportListener;
 import java.net.SocketAddress;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -44,7 +50,9 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,6 +81,9 @@ public final class DefaultIec104Server implements Iec104Server {
    */
   private static final InformationObjectAddress ZERO_ADDRESS = InformationObjectAddress.of(0);
 
+  /** A fixed instant within the CP56Time2a 2000..2099 century, for synthesized timed echoes. */
+  private static final Instant EPOCH_2000 = Instant.parse("2000-01-01T00:00:00Z");
+
   private final ServerTransport transport;
   private final ServerConfig config;
 
@@ -84,6 +95,9 @@ public final class DefaultIec104Server implements Iec104Server {
   private final StationRegistry registry;
 
   private final Set<ServerConnection> connections = ConcurrentHashMap.newKeySet();
+
+  /** Atomic admission counter so the {@code maxConnections} cap cannot be overshot under a race. */
+  private final AtomicInteger connectionCount = new AtomicInteger();
 
   /**
    * Creates a server over the given transport and configuration.
@@ -243,7 +257,10 @@ public final class DefaultIec104Server implements Iec104Server {
    * @param transportConnection the accepted connection.
    */
   private void onAccept(ServerTransportConnection transportConnection) {
-    if (connections.size() >= config.maxConnections()) {
+    // Reserve a slot atomically: increment first, roll back on overshoot, so concurrent accepts
+    // cannot both pass a size()>=max check and exceed the cap.
+    if (connectionCount.incrementAndGet() > config.maxConnections()) {
+      connectionCount.decrementAndGet();
       LOGGER.debug(
           "rejecting connection from {}: max connections ({}) reached",
           transportConnection.remoteAddress(),
@@ -336,7 +353,7 @@ public final class DefaultIec104Server implements Iec104Server {
     // Serializes handler dispatch for this connection: each dispatched ASDU chains off the
     // previous.
     private volatile CompletableFuture<Void> dispatchTail = CompletableFuture.completedFuture(null);
-    private volatile boolean closed;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     ServerConnection(ServerTransportConnection transportConnection) {
       this.transportConnection = transportConnection;
@@ -347,7 +364,9 @@ public final class DefaultIec104Server implements Iec104Server {
               config.apciSettings(),
               scheduler,
               this::onSessionOutput,
-              new SessionEvents());
+              new SessionEvents(),
+              config.maxOutboundQueue(),
+              outboundQueuePolicy(config.eventQueuePolicy()));
     }
 
     SocketAddress remoteAddress() {
@@ -379,20 +398,32 @@ public final class DefaultIec104Server implements Iec104Server {
      * Enqueues a monitor ASDU produced by {@link #publish}; only started connections transmit it.
      */
     void enqueueMonitor(Asdu asdu) {
-      if (closed) {
+      if (closed.get()) {
         return;
       }
       if (!session.isDataTransferStarted()) {
         return;
       }
-      // EventQueuePolicy is honored by the session's bounded send queue plus the k-window; for the
-      // core in-memory transport-agnostic path, hand the ASDU to the session which queues it.
+      // Apply backpressure for the BLOCK policy on the publishing thread, OUTSIDE the session lock,
+      // before offering the ASDU. DROP_OLDEST / DROP_NEWEST are enforced inside the session's
+      // bounded send queue together with the k-window.
+      if (config.eventQueuePolicy() == EventQueuePolicy.BLOCK && config.maxOutboundQueue() > 0) {
+        try {
+          session.awaitSendCapacity(config.apciSettings().t1().toMillis());
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+        if (closed.get()) {
+          return;
+        }
+      }
       session.sendAsdu(asdu);
     }
 
     /** Sends an ASDU on behalf of a handler (the ServerContext escape hatch). */
     private void send(Asdu asdu) {
-      if (!closed) {
+      if (!closed.get()) {
         session.sendAsdu(asdu);
       }
     }
@@ -523,15 +554,23 @@ public final class DefaultIec104Server implements Iec104Server {
         send(activationConfirmation(asdu, true, Cause.UNKNOWN_COMMON_ADDRESS));
         return done();
       }
+      if (asdu.objects().isEmpty()
+          || !(asdu.objects().get(0) instanceof CounterInterrogationCommand command)) {
+        send(activationConfirmation(asdu, true, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return done();
+      }
 
       send(activationConfirmation(asdu, false, Cause.ACTIVATION_CONFIRMATION));
 
-      // Default behavior: report every integrated-totals point currently in the station image.
-      for (Station.InterrogatedPoint point :
-          station.get().select(QualifierOfInterrogation.STATION)) {
-        if (point.type() != PointType.INTEGRATED_TOTALS) {
-          continue;
-        }
+      // RQT selects the requested counter group: 1..4 a specific group, 5 (or any other value) a
+      // general counter request reporting every integrated-totals point.
+      int rqt = command.qualifier().request();
+      Cause monitorCause = counterCause(rqt);
+      List<Station.InterrogatedPoint> points =
+          rqt >= 1 && rqt <= 4
+              ? station.get().selectCounterGroup(rqt)
+              : station.get().selectCounterGroup(0);
+      for (Station.InterrogatedPoint point : points) {
         InformationObject object =
             MonitorMapping.toMonitorObject(
                 PointType.INTEGRATED_TOTALS, point.address(), point.value(), config.timeTagStyle());
@@ -539,7 +578,7 @@ public final class DefaultIec104Server implements Iec104Server {
             new Asdu(
                 MonitorTypes.of(PointType.INTEGRATED_TOTALS, config.timeTagStyle()),
                 false,
-                Cause.REQUESTED_BY_GENERAL_COUNTER,
+                monitorCause,
                 false,
                 false,
                 OriginatorAddress.none(),
@@ -626,11 +665,22 @@ public final class DefaultIec104Server implements Iec104Server {
     // --- Test command -------------------------------------------------------------------------
 
     private CompletionStage<Void> handleTest(Asdu asdu) {
-      // Echo the fixed test bit pattern in the activation confirmation.
-      InformationObject echo =
-          asdu.objects().isEmpty()
-              ? new TestCommand(ZERO_ADDRESS, FixedTestBitPattern.DEFAULT)
-              : asdu.objects().get(0);
+      // Echo the test object in the activation confirmation. When the request carried no object,
+      // synthesize one whose concrete record matches the type identification so the codec does not
+      // fail at encode: C_TS_TA_1 expects a TestCommandWithCp56Time, C_TS_NA_1 a plain TestCommand.
+      InformationObject echo;
+      if (!asdu.objects().isEmpty()) {
+        echo = asdu.objects().get(0);
+      } else if (asdu.type() == AsduType.C_TS_TA_1) {
+        // CP56Time2a carries a two-digit year mapped to 2000..2099, so synthesize a time within
+        // that
+        // century (the epoch year 1970 is out of range and would throw at construction).
+        echo =
+            new TestCommandWithCp56Time(
+                ZERO_ADDRESS, UShort.valueOf(0), Cp56Time2a.from(EPOCH_2000, ZoneOffset.UTC));
+      } else {
+        echo = new TestCommand(ZERO_ADDRESS, FixedTestBitPattern.DEFAULT);
+      }
       send(
           new Asdu(
               asdu.type(),
@@ -722,12 +772,17 @@ public final class DefaultIec104Server implements Iec104Server {
               request.commonAddress(),
               request.objects()));
 
-      // Image update + return information apply only to an executing command.
+      // Image update + return information apply only to an executing command. ACT_TERM must always
+      // be sent, even if building the return information throws (for example a type-mismatched
+      // accepted value), so the controlling station is not left awaiting termination.
       if (mode == CommandMode.EXECUTE) {
-        decision
-            .updatedValueOptional()
-            .ifPresent(value -> applyUpdateAndReturn(request, target, value));
-        send(activationTermination(request, request.type()));
+        try {
+          decision
+              .updatedValueOptional()
+              .ifPresent(value -> applyUpdateAndReturn(request, target, value));
+        } finally {
+          send(activationTermination(request, request.type()));
+        }
       }
     }
 
@@ -741,11 +796,16 @@ public final class DefaultIec104Server implements Iec104Server {
         return;
       }
       PointType type = definition.get().type();
-      station.get().updateValue(target.objectAddress(), value);
 
+      // Build the monitor object FIRST so a runtime type mismatch (an accepted value whose type
+      // does
+      // not match the point definition) throws before the station image is mutated, leaving the
+      // image uncorrupted.
       InformationObject monitor =
           MonitorMapping.toMonitorObject(
               type, target.objectAddress(), value, config.timeTagStyle());
+      station.get().updateValue(target.objectAddress(), value);
+
       send(
           new Asdu(
               MonitorTypes.of(type, config.timeTagStyle()),
@@ -818,12 +878,15 @@ public final class DefaultIec104Server implements Iec104Server {
     // --- Lifecycle ----------------------------------------------------------------------------
 
     void close(@Nullable Throwable cause) {
-      if (closed) {
+      // Atomic check-then-set so two racing close paths (session.onClosed and the transport's
+      // onConnectionLost) cannot both tear the connection down or publish ConnectionClosed twice.
+      if (!closed.compareAndSet(false, true)) {
         return;
       }
-      closed = true;
       session.close();
-      connections.remove(this);
+      if (connections.remove(this)) {
+        connectionCount.decrementAndGet();
+      }
       try {
         transportConnection.close();
       } catch (RuntimeException e) {
@@ -961,6 +1024,21 @@ public final class DefaultIec104Server implements Iec104Server {
   }
 
   /**
+   * Maps the server-facing {@link EventQueuePolicy} onto the core-level {@link OutboundQueuePolicy}
+   * understood by {@link ApciSession}.
+   *
+   * @param policy the configured event-queue policy.
+   * @return the equivalent session-level outbound queue policy.
+   */
+  private static OutboundQueuePolicy outboundQueuePolicy(EventQueuePolicy policy) {
+    return switch (policy) {
+      case DROP_OLDEST -> OutboundQueuePolicy.DROP_OLDEST;
+      case DROP_NEWEST -> OutboundQueuePolicy.DROP_NEWEST;
+      case BLOCK -> OutboundQueuePolicy.BLOCK;
+    };
+  }
+
+  /**
    * Returns the interrogation-response cause of transmission for a qualifier of interrogation.
    *
    * <p>The station qualifier ({@code 20}) maps to {@link Cause#INTERROGATED_BY_STATION}; group
@@ -996,6 +1074,25 @@ public final class DefaultIec104Server implements Iec104Server {
       case 15 -> Cause.INTERROGATED_BY_GROUP_15;
       case 16 -> Cause.INTERROGATED_BY_GROUP_16;
       default -> Cause.INTERROGATED_BY_STATION;
+    };
+  }
+
+  /**
+   * Returns the counter-interrogation-response cause of transmission for a QCC request field.
+   *
+   * <p>RQT values {@code 1..4} map to the corresponding {@code REQUESTED_BY_GROUP_n_COUNTER} cause;
+   * RQT {@code 5} (general) and any other value map to {@link Cause#REQUESTED_BY_GENERAL_COUNTER}.
+   *
+   * @param rqt the QCC request field.
+   * @return the cause to carry on the reported integrated-totals ASDUs.
+   */
+  private static Cause counterCause(int rqt) {
+    return switch (rqt) {
+      case 1 -> Cause.REQUESTED_BY_GROUP_1_COUNTER;
+      case 2 -> Cause.REQUESTED_BY_GROUP_2_COUNTER;
+      case 3 -> Cause.REQUESTED_BY_GROUP_3_COUNTER;
+      case 4 -> Cause.REQUESTED_BY_GROUP_4_COUNTER;
+      default -> Cause.REQUESTED_BY_GENERAL_COUNTER;
     };
   }
 

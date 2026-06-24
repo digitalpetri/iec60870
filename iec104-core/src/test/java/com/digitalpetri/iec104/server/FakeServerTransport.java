@@ -79,6 +79,7 @@ final class FakeServerTransport implements ServerTransport {
     private final List<Apdu> sent = new ArrayList<>();
     private @Nullable TransportListener listener;
     private boolean closed;
+    private int closeCount;
     private int peerSendSequence;
 
     FakeConnection(SocketAddress remoteAddress) {
@@ -99,6 +100,17 @@ final class FakeServerTransport implements ServerTransport {
     @Override
     public void close() {
       closed = true;
+      closeCount++;
+    }
+
+    /**
+     * Returns how many times {@link #close()} has been invoked, so a test can assert idempotent
+     * teardown.
+     *
+     * @return the number of close() calls.
+     */
+    int closeCount() {
+      return closeCount;
     }
 
     @Override
@@ -136,9 +148,19 @@ final class FakeServerTransport implements ServerTransport {
     }
 
     /** Signals connection loss to the server's listener. */
-    @SuppressWarnings("unused") // test-fixture affordance mirroring the real transport's API
     void loseConnection() {
       requireListener().onConnectionLost(new RuntimeException("connection lost"));
+    }
+
+    /**
+     * Delivers an I-frame whose N(R) acknowledges far more frames than the server ever sent,
+     * driving a fatal {@code SequenceNumberException} self-close in the session.
+     *
+     * @param asdu any valid ASDU to carry (the session closes before delivering it).
+     */
+    void deliverBadAcknowledgement(Asdu asdu) {
+      int ns = peerSendSequence++;
+      deliver(new Apdu(new ControlField.TypeI(ns, 9999), asdu));
     }
 
     /**

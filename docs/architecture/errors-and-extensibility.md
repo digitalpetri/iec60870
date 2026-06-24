@@ -68,41 +68,12 @@ on.
 
 ## Extensibility
 
-The raw layer is the extension surface. Two mechanisms let an application handle type identifications
-the library does not model with a typed record.
-
-### TypeCodecRegistry and private TypeIDs
-
-`com.digitalpetri.iec104.codec.TypeCodecRegistry` maps an `AsduType` to the
-`InformationObjectCodec` used to encode and decode that type's information elements. The standard,
-built-in codecs for the supported TypeIDs live in the model itself; the registry is the seam for
-*adding* coverage. The default implementation, `MutableTypeCodecRegistry`, is thread-safe and is the
-registry referenced by `ClientConfig` / `ServerConfig`.
-
-```java
-TypeCodecRegistry registry = new MutableTypeCodecRegistry();
-registry.register(privateType, new InformationObjectCodec<MyObject>() {
-  @Override public void encodeElements(MyObject o, ByteBuf buffer) { /* write elements after the IOA */ }
-  @Override public MyObject decode(InformationObjectAddress address, ByteBuf buffer) { /* read elements */ }
-});
-
-ClientConfig config = ClientConfig.builder()
-    .typeCodecRegistry(registry)
-    .build();
-```
-
-This is exactly how the **out-of-scope file-transfer types** (`F_*`, TypeIDs 120–127) and the
-**private-range TypeIDs** are made usable. The standard reserves `128..255`, with `136..255` for
-private use; these have no `AsduType` constant and no built-in codec. To exchange them:
-
-1. register a codec for the type in a `TypeCodecRegistry`, and
-2. use the raw send/receive surface — `Iec104Client.send(Asdu)` and `events()` on the client,
-   `ServerContext.send(Asdu)` and `ServerHandler.onRawAsdu(...)` on the server.
-
-The custom `InformationObjectCodec` follows the same buffer contract as the built-in ones: it encodes
-and decodes only the elements *after* the information object address (the IOA is framed centrally by
-`Asdu.Serde`), and it never allocates or releases the buffer — see
-[buffers-and-threading.md](buffers-and-threading.md).
+The raw layer is the extension surface. The high-level facade (`Iec104Client` / `Iec104Server`,
+the station/point model, commands, and events) supports the standard, modeled TypeIDs. There is no
+pluggable codec registry: the encode/decode dispatch is driven by `AsduType`, and `AsduType.fromId`
+rejects any undefined type identification with `UnsupportedAsduTypeException` before any codec could
+be consulted. An unsupported or unmodeled TypeID is therefore surfaced as a decode failure
+(`AsduDecodeException` / `UnsupportedAsduTypeException`), not delivered as a raw event.
 
 ### Raw send/receive hooks
 
@@ -117,6 +88,8 @@ Even without a custom codec, an application can drop to the raw layer at any tim
   defers to standard handling. This is the server-side hook for private TypeIDs and any bespoke
   procedure (including a file-transfer state machine built on the `F_*` types).
 
-Together these make the library complete-by-construction: a type that has no typed record is never
-silently dropped, because it is always reachable as a raw `Asdu` and decodable through a registered
-codec.
+Together these cover the modeled procedures and the bespoke ones built on standard TypeIDs: a
+received ASDU of a supported type that the facade does not act on is still surfaced as a raw `Asdu`
+(via `ClientEvent.AsduReceived` or `ServerHandler.onRawAsdu`), so it is never silently dropped. A
+TypeID the library does not model at all cannot be decoded and is reported as a decode failure
+rather than delivered.

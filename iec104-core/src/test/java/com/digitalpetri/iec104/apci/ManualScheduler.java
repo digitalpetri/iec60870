@@ -1,7 +1,9 @@
 package com.digitalpetri.iec104.apci;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -24,11 +26,14 @@ import org.jspecify.annotations.Nullable;
  * <p>Only the scheduling methods used by {@code ApciSession} are implemented; the remaining {@link
  * ScheduledExecutorService} members throw {@link UnsupportedOperationException}.
  */
-final class ManualScheduler implements ScheduledExecutorService {
+class ManualScheduler implements ScheduledExecutorService {
 
   private long nowMillis;
   private long sequence;
   private final PriorityQueue<ScheduledTask<?>> queue = new PriorityQueue<>();
+
+  /** Records, per scheduling delay (ms), the most recently scheduled {@link Runnable}. */
+  private final Map<Long, Runnable> lastRunnableByDelay = new HashMap<>();
 
   /**
    * Advances the virtual clock, running every task whose deadline is at or before the new time.
@@ -54,6 +59,7 @@ final class ManualScheduler implements ScheduledExecutorService {
 
   @Override
   public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+    this.lastRunnableByDelay.put(unit.toMillis(delay), command);
     ScheduledTask<@Nullable Void> task =
         new ScheduledTask<@Nullable Void>(
             () -> {
@@ -64,6 +70,36 @@ final class ManualScheduler implements ScheduledExecutorService {
             sequence++);
     queue.add(task);
     return task;
+  }
+
+  /**
+   * Returns the most recently scheduled {@link Runnable} whose delay equals {@code delayMillis},
+   * for tests that need a specific timer task (e.g. t1) rather than the last-scheduled one.
+   *
+   * @param delayMillis the scheduling delay in milliseconds.
+   * @return the most recent runnable scheduled at that delay.
+   */
+  Runnable lastRunnableWithDelay(long delayMillis) {
+    Runnable runnable = lastRunnableByDelay.get(delayMillis);
+    if (runnable == null) {
+      throw new IllegalStateException("no runnable scheduled with delay " + delayMillis);
+    }
+    return runnable;
+  }
+
+  /**
+   * Returns the number of queued tasks that are still live (neither run nor cancelled).
+   *
+   * @return the count of pending, non-cancelled tasks.
+   */
+  int pendingTaskCount() {
+    int count = 0;
+    for (ScheduledTask<?> task : queue) {
+      if (!task.cancelled && !task.done) {
+        count++;
+      }
+    }
+    return count;
   }
 
   @Override

@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.digitalpetri.iec104.ApciSettings;
+import com.digitalpetri.iec104.ProtocolProfile;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.address.OriginatorAddress;
@@ -13,26 +15,38 @@ import com.digitalpetri.iec104.asdu.Asdu;
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
 import com.digitalpetri.iec104.asdu.InformationObject;
+import com.digitalpetri.iec104.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec104.asdu.element.CauseOfInitialization;
+import com.digitalpetri.iec104.asdu.element.FreezeMode;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
+import com.digitalpetri.iec104.asdu.element.QualifierOfCounterInterrogation;
 import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec104.asdu.object.ClockSynchronizationCommand;
+import com.digitalpetri.iec104.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.EndOfInitialization;
 import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec104.asdu.object.ReadCommand;
 import com.digitalpetri.iec104.asdu.object.SingleCommand;
 import com.digitalpetri.iec104.asdu.object.SinglePointInformation;
+import com.digitalpetri.iec104.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec104.point.PointCapability;
 import com.digitalpetri.iec104.point.PointType;
 import com.digitalpetri.iec104.point.PointValue;
 import com.digitalpetri.iec104.point.TimeTagStyle;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -410,6 +424,283 @@ class DefaultIec104ServerTest {
     assertEquals(CA, seenStation.get());
 
     server.close();
+  }
+
+  // --- F11: idempotent connection close --------------------------------------------------------
+
+  @Test
+  void connectionCloseIsIdempotentAcrossBothPaths() {
+    DefaultIec104Server server = server(new ServerHandler() {});
+    server.start();
+    List<ServerEvent> events = new CopyOnWriteArrayList<>();
+    subscribe(server, events);
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // Path A: a fatal protocol error self-closes the session -> SessionEvents.onClosed -> close().
+    connection.deliverBadAcknowledgement(
+        control(AsduType.C_SC_NA_1, Cause.SPONTANEOUS, singleCommand()));
+    // Path B: the transport later reports the loss -> Listener.onConnectionLost -> close() again.
+    connection.loseConnection();
+
+    long closedEvents =
+        events.stream().filter(e -> e instanceof ServerEvent.ConnectionClosed).count();
+    assertEquals(1, closedEvents, "ConnectionClosed must be published exactly once");
+    assertEquals(
+        1, connection.closeCount(), "the transport connection must be closed exactly once");
+
+    server.close();
+  }
+
+  // --- F21: maxConnections admission frees a slot on close -------------------------------------
+
+  @Test
+  void maxConnectionsRejectsThenAdmitsAfterClose() {
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(new ServerHandler() {})
+            .timeTagStyle(TimeTagStyle.NONE)
+            .callbackExecutor(DIRECT)
+            .maxConnections(1)
+            .build();
+    DefaultIec104Server server = new DefaultIec104Server(transport, config);
+    server.start();
+
+    FakeServerTransport.FakeConnection first = transport.accept("client-1");
+    // The cap is 1: the second connection is rejected (closed immediately, no listener wired).
+    FakeServerTransport.FakeConnection second = transport.accept("client-2");
+    assertTrue(second.isClosed(), "a connection past the cap must be rejected");
+
+    // Close the first, freeing its slot, then a third connection is admitted.
+    first.loseConnection();
+    FakeServerTransport.FakeConnection third = transport.accept("client-3");
+    assertFalse(third.isClosed(), "a slot freed by close must admit a new connection");
+
+    server.close();
+  }
+
+  // --- F13: type-mismatched acceptAndUpdate must not corrupt the image; ACT_TERM still sent -----
+
+  @Test
+  void typeMismatchedAcceptedValueLeavesImageIntactAndStillSendsTermination() {
+    ServerHandler handler =
+        new ServerHandler() {
+          @Override
+          public CommandDecision onCommand(ServerContext context, CommandRequest request) {
+            // The point is SINGLE_POINT but the accepted value is a scaled (Short) value: a runtime
+            // type mismatch that must be rejected before the image is mutated.
+            return CommandDecision.acceptAndUpdate(PointValue.scaled((short) 7));
+          }
+        };
+    DefaultIec104Server server = server(handler);
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    SingleCommand command =
+        new SingleCommand(POINT.objectAddress(), false, new QualifierOfCommand(0, false));
+    connection.deliverAsdu(control(AsduType.C_SC_NA_1, Cause.ACTIVATION, command));
+
+    // The station image still holds the original value (true), not the wrong-typed scaled value.
+    assertSame(
+        true,
+        server
+            .stations()
+            .station(CA)
+            .orElseThrow()
+            .currentValue(POINT.objectAddress())
+            .orElseThrow()
+            .value());
+
+    // ACT_TERM is still sent despite the type-mismatch throw building the return information.
+    List<Asdu> sent = connection.sentAsdus();
+    assertTrue(
+        sent.stream().anyMatch(a -> a.cause() == Cause.ACTIVATION_TERMINATION),
+        "ACT_TERM must be sent even when building return information throws");
+
+    server.close();
+  }
+
+  // --- F19: empty C_TS_TA_1 echo must encode cleanly -------------------------------------------
+
+  @Test
+  void emptyTimedTestCommandReplyEncodesCleanly() {
+    DefaultIec104Server server = server(new ServerHandler() {});
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // C_TS_TA_1 with no information objects: the synthesized echo must be a TestCommandWithCp56Time
+    // so the codec does not throw a ClassCastException at encode time.
+    Asdu request =
+        new Asdu(
+            AsduType.C_TS_TA_1,
+            false,
+            Cause.ACTIVATION,
+            false,
+            false,
+            OriginatorAddress.none(),
+            CA,
+            List.of());
+    connection.deliverAsdu(request);
+
+    List<Asdu> sent = connection.sentAsdus();
+    assertEquals(1, sent.size());
+    Asdu reply = sent.get(0);
+    assertEquals(AsduType.C_TS_TA_1, reply.type());
+    assertTrue(reply.objects().get(0) instanceof TestCommandWithCp56Time);
+
+    // Encoding the reply through the real codec must not throw (the original bug threw here).
+    ByteBuf buffer = Unpooled.buffer();
+    try {
+      Asdu.Serde.encode(reply, ProtocolProfile.iec104Default(), buffer);
+    } finally {
+      buffer.release();
+    }
+
+    server.close();
+  }
+
+  // --- F24: counter interrogation honors the QCC request field --------------------------------
+
+  @Test
+  void counterInterrogationSelectsRequestedGroupAndCause() {
+    PointAddress counter1 = PointAddress.of(1, 200);
+    PointAddress counter2 = PointAddress.of(1, 201);
+    Station station =
+        Station.builder(CA)
+            .point(
+                PointDefinition.of(
+                    counter1,
+                    PointType.INTEGRATED_TOTALS,
+                    PointValue.counter(new BinaryCounterReading(11, 0, false, false, false)),
+                    PointCapability.REPORTED))
+            .point(
+                PointDefinition.of(
+                    counter2,
+                    PointType.INTEGRATED_TOTALS,
+                    PointValue.counter(new BinaryCounterReading(22, 0, false, false, false)),
+                    PointCapability.REPORTED))
+            .counterGroup(1, counter1)
+            .counterGroup(2, counter2)
+            .build();
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(station)
+            .handler(new ServerHandler() {})
+            .timeTagStyle(TimeTagStyle.NONE)
+            .callbackExecutor(DIRECT)
+            .build();
+    DefaultIec104Server server = new DefaultIec104Server(transport, config);
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // A group-2 counter request must report only the group-2 point with the group-2 counter cause.
+    connection.deliverAsdu(
+        control(
+            AsduType.C_CI_NA_1,
+            Cause.ACTIVATION,
+            new CounterInterrogationCommand(
+                ZERO, new QualifierOfCounterInterrogation(2, FreezeMode.READ))));
+
+    List<Asdu> group2 = connection.sentAsdus();
+    List<Asdu> group2Monitors =
+        group2.stream()
+            .filter(a -> a.cause() == Cause.REQUESTED_BY_GROUP_2_COUNTER)
+            .collect(Collectors.toList());
+    assertEquals(1, group2Monitors.size(), "only the group-2 counter is reported");
+    assertEquals(counter2.objectAddress(), group2Monitors.get(0).objects().get(0).address());
+    assertTrue(
+        group2.stream().noneMatch(a -> a.cause() == Cause.REQUESTED_BY_GROUP_1_COUNTER),
+        "the group-1 counter must not be reported for a group-2 request");
+
+    // A general (RQT=5) request reports every counter with the general counter cause.
+    FakeServerTransport.FakeConnection general = transport.accept("client-general");
+    general.startDataTransfer();
+    general.deliverAsdu(
+        control(
+            AsduType.C_CI_NA_1,
+            Cause.ACTIVATION,
+            new CounterInterrogationCommand(
+                ZERO, new QualifierOfCounterInterrogation(5, FreezeMode.READ))));
+
+    long generalMonitors =
+        general.sentAsdus().stream()
+            .filter(a -> a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER)
+            .count();
+    assertEquals(2, generalMonitors, "a general request reports every integrated-totals point");
+
+    server.close();
+  }
+
+  // --- F5: bounded outbound queue honors DROP_NEWEST under server publish ----------------------
+
+  @Test
+  void serverBoundedQueueHonorsDropNewest() {
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(new ServerHandler() {})
+            .timeTagStyle(TimeTagStyle.NONE)
+            .callbackExecutor(DIRECT)
+            .eventQueuePolicy(EventQueuePolicy.DROP_NEWEST)
+            .maxOutboundQueue(2)
+            // k = 1 so a single in-flight frame fills the window and the rest queue.
+            .apciSettings(
+                new ApciSettings(
+                    UShort.valueOf(1),
+                    UShort.valueOf(1),
+                    Duration.ofSeconds(30),
+                    Duration.ofSeconds(15),
+                    Duration.ofSeconds(10),
+                    Duration.ofSeconds(20)))
+            .build();
+    DefaultIec104Server server = new DefaultIec104Server(transport, config);
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // The fake transport never acknowledges, so after the first frame transmits the window stays
+    // shut and further publishes pile into the bounded queue (bound 2, DROP_NEWEST).
+    for (int i = 0; i < 10; i++) {
+      server.publish(POINT, PointValue.single(i % 2 == 0), Cause.SPONTANEOUS);
+    }
+
+    // One frame transmitted (k=1) plus at most the bound (2) queued: never the full 10.
+    assertTrue(
+        connection.sentAsdus().size() <= 1 + 2,
+        "DROP_NEWEST must keep the queue bounded: " + connection.sentAsdus().size());
+
+    server.close();
+  }
+
+  private void subscribe(DefaultIec104Server server, List<ServerEvent> sink) {
+    server
+        .events()
+        .subscribe(
+            new Flow.Subscriber<>() {
+              @Override
+              public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+              }
+
+              @Override
+              public void onNext(ServerEvent item) {
+                sink.add(item);
+              }
+
+              @Override
+              public void onError(Throwable throwable) {}
+
+              @Override
+              public void onComplete() {}
+            });
+  }
+
+  private SingleCommand singleCommand() {
+    return new SingleCommand(POINT.objectAddress(), true, new QualifierOfCommand(0, false));
   }
 
   @Test

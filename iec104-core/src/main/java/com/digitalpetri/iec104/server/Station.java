@@ -46,16 +46,19 @@ public final class Station {
   private final CommonAddress commonAddress;
   private final Map<InformationObjectAddress, PointDefinition<?>> definitions;
   private final Map<InformationObjectAddress, Set<Integer>> groups;
+  private final Map<InformationObjectAddress, Set<Integer>> counterGroups;
   private final Map<InformationObjectAddress, PointValue<?>> image = new ConcurrentHashMap<>();
 
   private Station(
       CommonAddress commonAddress,
       Map<InformationObjectAddress, PointDefinition<?>> definitions,
-      Map<InformationObjectAddress, Set<Integer>> groups) {
+      Map<InformationObjectAddress, Set<Integer>> groups,
+      Map<InformationObjectAddress, Set<Integer>> counterGroups) {
 
     this.commonAddress = commonAddress;
     this.definitions = definitions;
     this.groups = groups;
+    this.counterGroups = counterGroups;
     definitions.forEach((ioa, definition) -> image.put(ioa, definition.initialValue()));
   }
 
@@ -151,6 +154,41 @@ public final class Station {
   }
 
   /**
+   * Returns the integrated-totals (counter) points of this station selected by a counter group.
+   *
+   * <p>A {@code group} of {@code 1..4} selects only the {@linkplain PointCapability#REPORTED
+   * reported} integrated-totals points assigned to that counter group (a separate {@code 1..4}
+   * namespace from the interrogation groups). A {@code group} of {@code 0} or less is a general
+   * counter request and selects every reported integrated-totals point.
+   *
+   * @param group the counter group number ({@code 1..4}), or {@code 0} or less for a general
+   *     request.
+   * @return the matching integrated-totals points, each paired with its current value, in
+   *     declaration order.
+   */
+  public List<InterrogatedPoint> selectCounterGroup(int group) {
+    boolean general = group < 1;
+    List<InterrogatedPoint> selected = new ArrayList<>();
+    for (PointDefinition<?> definition : definitions.values()) {
+      if (definition.type() != PointType.INTEGRATED_TOTALS) {
+        continue;
+      }
+      if (!definition.hasCapability(PointCapability.REPORTED)) {
+        continue;
+      }
+      InformationObjectAddress ioa = definition.address().objectAddress();
+      if (!general && !counterGroups.getOrDefault(ioa, Set.of()).contains(group)) {
+        continue;
+      }
+      PointValue<?> current = image.get(ioa);
+      if (current != null) {
+        selected.add(new InterrogatedPoint(definition, current));
+      }
+    }
+    return List.copyOf(selected);
+  }
+
+  /**
    * A point selected by an interrogation: its definition paired with its current value.
    *
    * @param definition the point definition.
@@ -213,6 +251,7 @@ public final class Station {
     private final Map<InformationObjectAddress, PointDefinition<?>> definitions =
         new LinkedHashMap<>();
     private final Map<InformationObjectAddress, Set<Integer>> groups = new LinkedHashMap<>();
+    private final Map<InformationObjectAddress, Set<Integer>> counterGroups = new LinkedHashMap<>();
 
     private Builder(CommonAddress commonAddress) {
       this.commonAddress = commonAddress;
@@ -270,6 +309,35 @@ public final class Station {
     }
 
     /**
+     * Assigns an integrated-totals point to a counter group.
+     *
+     * <p>Counter groups occupy a separate {@code 1..4} namespace from the interrogation groups: a
+     * counter interrogation of a given group reports the integrated-totals points assigned to that
+     * counter group, while a general counter request reports every integrated-totals point. A point
+     * may belong to multiple counter groups; it must already have been added with {@link
+     * #point(PointDefinition)}.
+     *
+     * @param group the counter group number, in the range {@code 1..4}.
+     * @param point the address of the integrated-totals point to assign.
+     * @return this builder.
+     * @throws IllegalArgumentException if {@code group} is outside {@code 1..4} or no point has
+     *     been added at {@code point}.
+     * @throws NullPointerException if {@code point} is null.
+     */
+    public Builder counterGroup(int group, PointAddress point) {
+      Objects.requireNonNull(point, "point");
+      if (group < 1 || group > 4) {
+        throw new IllegalArgumentException("counter group must be in 1..4: " + group);
+      }
+      InformationObjectAddress ioa = point.objectAddress();
+      if (!definitions.containsKey(ioa)) {
+        throw new IllegalArgumentException("no point defined at " + point);
+      }
+      counterGroups.computeIfAbsent(ioa, ignored -> new HashSet<>()).add(group);
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link Station} from the current builder state.
      *
      * @return the station, seeded with each point's initial value.
@@ -279,7 +347,9 @@ public final class Station {
           new LinkedHashMap<>(definitions);
       Map<InformationObjectAddress, Set<Integer>> copiedGroups = new LinkedHashMap<>();
       groups.forEach((ioa, set) -> copiedGroups.put(ioa, Set.copyOf(set)));
-      return new Station(commonAddress, copiedDefinitions, copiedGroups);
+      Map<InformationObjectAddress, Set<Integer>> copiedCounterGroups = new LinkedHashMap<>();
+      counterGroups.forEach((ioa, set) -> copiedCounterGroups.put(ioa, Set.copyOf(set)));
+      return new Station(commonAddress, copiedDefinitions, copiedGroups, copiedCounterGroups);
     }
   }
 

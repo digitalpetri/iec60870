@@ -11,9 +11,11 @@ import com.digitalpetri.iec104.ConnectionClosedException;
 import com.digitalpetri.iec104.NegativeConfirmationException;
 import com.digitalpetri.iec104.ProtocolTimeoutException;
 import com.digitalpetri.iec104.RequestInProgressException;
+import com.digitalpetri.iec104.SequenceNumberException;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.address.PointAddress;
+import com.digitalpetri.iec104.apci.ControlField;
 import com.digitalpetri.iec104.asdu.Asdu;
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
@@ -518,6 +520,87 @@ class DefaultIec104ClientTest {
     } finally {
       executor.shutdownNow();
     }
+  }
+
+  @Test
+  void selectBeforeOperateExecuteCarriesAdvancedReceiveSequenceNumber() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
+
+    CompletionStage<CommandResult> stage =
+        client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
+
+    // The select-confirmation I-frame the client receives carries a known N(S); after the client
+    // accepts it, V(R) advances by one, so the EXECUTE it sends in response must carry that
+    // advanced value as its N(R).
+    int selectConNs = transport.peerSendSequenceForNext();
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    // Confirm the execute phase so the command completes cleanly.
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    stage.toCompletableFuture().join();
+
+    List<ControlField.TypeI> controls = transport.sentIFrameControls();
+    assertEquals(2, controls.size(), "a select and an execute I-frame were sent");
+    ControlField.TypeI execute = controls.get(1);
+    assertEquals(
+        selectConNs + 1,
+        execute.receiveSequenceNumber(),
+        "the EXECUTE must acknowledge the select-confirmation (N(R) = select-con N(S) + 1)");
+  }
+
+  @Test
+  void errorClosePublishesExactlyOneConnectionClosedWithRealCause() {
+    client.connect();
+
+    List<ClientEvent> events = new CopyOnWriteArrayList<>();
+    subscribe(events);
+
+    // Drive a fatal protocol error close: an I-frame whose N(R) acknowledges more than was sent
+    // self-closes the session with a SequenceNumberException (the real cause).
+    client.interrogateAsync(STATION);
+    transport.deliverBadAcknowledgement(measured(Cause.SPONTANEOUS, (short) 1));
+
+    List<ClientEvent.ConnectionClosed> closes =
+        events.stream()
+            .filter(e -> e instanceof ClientEvent.ConnectionClosed)
+            .map(e -> (ClientEvent.ConnectionClosed) e)
+            .toList();
+    assertEquals(
+        1, closes.size(), "ConnectionClosed must be published exactly once on an error close");
+    assertInstanceOf(SequenceNumberException.class, closes.get(0).cause());
+  }
+
+  @Test
+  void plainTransportDropPublishesExactlyOneConnectionClosed() {
+    client.connect();
+
+    List<ClientEvent> events = new CopyOnWriteArrayList<>();
+    subscribe(events);
+
+    transport.loseConnection();
+
+    long count = events.stream().filter(e -> e instanceof ClientEvent.ConnectionClosed).count();
+    assertEquals(1, count, "a plain transport drop publishes ConnectionClosed exactly once");
+  }
+
+  @Test
+  void readIsNotCompletedBySpontaneousUpdateOnSameAddress() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
+
+    CompletionStage<List<InformationObject>> stage = client.readAsync(point);
+
+    // A spontaneous update on the same CA+IOA must not complete the read (it carries COT
+    // SPONTANEOUS, not REQUEST).
+    transport.deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
+    assertFalse(
+        stage.toCompletableFuture().isDone(), "a SPONTANEOUS update must not complete a read");
+    assertEquals(1, client.pendingRequestCount());
+
+    // The actual read response (COT REQUEST) completes it.
+    transport.deliverAsdu(measured(Cause.REQUEST, (short) 42));
+    List<InformationObject> objects = stage.toCompletableFuture().join();
+    assertEquals(1, objects.size());
   }
 
   private void subscribe(List<ClientEvent> sink) {

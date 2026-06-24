@@ -4,9 +4,10 @@ package com.digitalpetri.iec104.server;
  * The policy applied when a started connection's outbound send window is full and a {@linkplain
  * Iec104Server#publish published} monitor ASDU cannot be transmitted immediately.
  *
- * <p>Each started connection has a bounded buffer of pending outbound monitor ASDUs (the APCI
- * {@code k} window plus the publisher's own queue). When that buffer is full, this policy decides
- * what happens to a newly published value rather than letting the buffer grow without bound.
+ * <p>Each started connection holds outbound monitor ASDUs in the session's send queue, which is
+ * bounded by {@link ServerConfig#maxOutboundQueue()} (the APCI {@code k} window transmits from the
+ * head of that queue). When the queue reaches its bound, this policy decides what happens to a
+ * newly published value rather than letting the queue grow without bound.
  */
 public enum EventQueuePolicy {
 
