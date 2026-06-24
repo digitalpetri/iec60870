@@ -50,12 +50,17 @@ public record PointDefinition<T>(
    * @param capabilities the operations meaningful against the point.
    * @throws NullPointerException if {@code address}, {@code type}, {@code initialValue}, or {@code
    *     capabilities} is null.
+   * @throws IllegalArgumentException if {@code initialValue}'s type does not match {@code type}.
    */
   public PointDefinition {
     Objects.requireNonNull(address, "address");
     Objects.requireNonNull(type, "type");
     Objects.requireNonNull(initialValue, "initialValue");
     Objects.requireNonNull(capabilities, "capabilities");
+    if (initialValue.type() != type) {
+      throw new IllegalArgumentException(
+          "initialValue type " + initialValue.type() + " does not match point type " + type);
+    }
     capabilities = EnumSet.copyOf(capabilities);
   }
 
@@ -94,5 +99,17 @@ public record PointDefinition<T>(
   @SuppressWarnings("BooleanMethodIsAlwaysInverted")
   public boolean hasCapability(PointCapability capability) {
     return capabilities.contains(capability);
+  }
+
+  /**
+   * Returns the declared capabilities as an independent copy that the caller may modify freely.
+   *
+   * @return a copy of the point's capability set.
+   */
+  @Override
+  public EnumSet<PointCapability> capabilities() {
+    return capabilities.isEmpty()
+        ? EnumSet.noneOf(PointCapability.class)
+        : EnumSet.copyOf(capabilities);
   }
 }
