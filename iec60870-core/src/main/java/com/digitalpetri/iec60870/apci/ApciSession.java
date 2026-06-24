@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.session.Session;
 import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -25,8 +26,8 @@ import org.slf4j.LoggerFactory;
  * send and receive state variables V(S) and V(R), the {@code k}/{@code w} sliding window, and the
  * {@code t1}/{@code t2}/{@code t3} timers. It is transport-agnostic — outbound APDUs are handed to
  * the supplied {@link Output}, inbound APDUs are fed in via {@link #onApdu(Apdu)}, and delivered
- * application ASDUs plus lifecycle events are reported through the supplied {@link Events}. The
- * session never touches a socket or a {@code ByteBuf} directly.
+ * application ASDUs plus lifecycle events are reported through the supplied {@link Session.Events}.
+ * The session never touches a socket or a {@code ByteBuf} directly.
  *
  * <p>The session is constructed in a {@link Role} that selects the small handshake differences: a
  * {@link Role#CLIENT} initiates STARTDT/STOPDT and waits for the confirmation, while a {@link
@@ -40,9 +41,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Threading.</b> All mutable state is guarded by a single internal lock, and the timer
  * callbacks scheduled on the injected {@link ScheduledExecutorService} acquire that same lock, so a
- * caller may invoke any method from any thread. The {@link Output} and {@link Events} callbacks are
- * always invoked while the lock is held; they must not call back into the session and should not
- * block.
+ * caller may invoke any method from any thread. The {@link Output} and {@link Session.Events}
+ * callbacks are always invoked while the lock is held; they must not call back into the session and
+ * should not block.
  *
  * <p>Typical wiring:
  *
@@ -50,7 +51,7 @@ import org.slf4j.LoggerFactory;
  * ApciSession session = new ApciSession(
  *     ApciSession.Role.CLIENT, ApciSettings.defaults(), scheduler,
  *     apdu -> transport.send(apdu),
- *     new ApciSession.Events() {
+ *     new Session.Events() {
  *       public void onAsdu(Asdu asdu) { application.deliver(asdu); }
  *       public void onDataTransferStateChanged(boolean started) { ... }
  *       public void onClosed(Throwable cause) { transport.close(); }
@@ -61,7 +62,7 @@ import org.slf4j.LoggerFactory;
  * session.sendAsdu(asdu);
  * }</pre>
  */
-public final class ApciSession {
+public final class ApciSession implements Session {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(ApciSession.class);
 
@@ -92,41 +93,6 @@ public final class ApciSession {
     void send(Apdu apdu);
   }
 
-  /** Callbacks for application ASDUs and lifecycle transitions produced by the session. */
-  public interface Events {
-
-    /**
-     * Delivers an application ASDU received in an I-format APDU.
-     *
-     * <p>Invoked while the session lock is held; implementations must not block or re-enter the
-     * session.
-     *
-     * @param asdu the received ASDU.
-     */
-    void onAsdu(Asdu asdu);
-
-    /**
-     * Reports a change in the data-transfer (STARTDT/STOPDT) state.
-     *
-     * <p>Invoked while the session lock is held; implementations must not block or re-enter the
-     * session.
-     *
-     * @param started {@code true} when data transfer has started, {@code false} when it has
-     *     stopped.
-     */
-    void onDataTransferStateChanged(boolean started);
-
-    /**
-     * Reports that the session has closed itself because of a protocol error or timeout.
-     *
-     * <p>Invoked at most once while the session lock is held. The transport should be torn down in
-     * response; the session has already cancelled its timers.
-     *
-     * @param cause the reason for closure, or {@code null} for an orderly close.
-     */
-    void onClosed(@Nullable Throwable cause);
-  }
-
   private final ReentrantLock lock = new ReentrantLock();
 
   /**
@@ -137,7 +103,7 @@ public final class ApciSession {
   private final Role role;
   private final ScheduledExecutorService scheduler;
   private final Output output;
-  private final Events events;
+  private final Session.Events events;
 
   private final long t1Millis;
   private final long t2Millis;
@@ -192,7 +158,7 @@ public final class ApciSession {
       ApciSettings settings,
       ScheduledExecutorService scheduler,
       Output output,
-      Events events) {
+      Session.Events events) {
 
     this(role, settings, scheduler, output, events, 0, OutboundQueuePolicy.DROP_OLDEST);
   }
@@ -215,7 +181,7 @@ public final class ApciSession {
       ApciSettings settings,
       ScheduledExecutorService scheduler,
       Output output,
-      Events events,
+      Session.Events events,
       int maxOutboundQueue,
       OutboundQueuePolicy queuePolicy) {
 
@@ -258,6 +224,7 @@ public final class ApciSession {
    * <p>Both sequence state variables are set to zero, all pending state is cleared, data transfer
    * returns to the stopped default, and the {@code t3} idle timer is armed.
    */
+  @Override
   public void onConnected() {
     lock.lock();
     try {
@@ -319,6 +286,7 @@ public final class ApciSession {
    *
    * @param asdu the application ASDU to send.
    */
+  @Override
   public void sendAsdu(Asdu asdu) {
     Objects.requireNonNull(asdu, "asdu");
     lock.lock();
@@ -357,6 +325,7 @@ public final class ApciSession {
    *
    * @return the pending send-queue depth.
    */
+  @Override
   public int pendingSendCount() {
     lock.lock();
     try {
@@ -380,6 +349,7 @@ public final class ApciSession {
    *     {@code false} if the wait timed out with the queue still full.
    * @throws InterruptedException if the current thread is interrupted while waiting.
    */
+  @Override
   public boolean awaitSendCapacity(long timeoutMillis) throws InterruptedException {
     if (maxOutboundQueue <= 0) {
       return true;
@@ -407,13 +377,14 @@ public final class ApciSession {
    *
    * <p>Sends a {@code STARTDT act} U-frame and returns a stage that completes when the matching
    * {@code STARTDT con} arrives. If the confirmation does not arrive before {@code t1} elapses the
-   * session closes and the stage — together with the {@link Events#onClosed(Throwable)} callback —
-   * completes exceptionally with a {@link ProtocolTimeoutException}.
+   * session closes and the stage — together with the {@link Session.Events#onClosed(Throwable)}
+   * callback — completes exceptionally with a {@link ProtocolTimeoutException}.
    *
    * @return a stage that completes when data transfer has started, or completes exceptionally on
    *     timeout, session close, or misuse.
    * @throws IllegalStateException if called on a {@link Role#SERVER} session.
    */
+  @Override
   public CompletionStage<Void> startDataTransfer() {
     lock.lock();
     try {
@@ -450,6 +421,7 @@ public final class ApciSession {
    *     timeout, session close, or misuse.
    * @throws IllegalStateException if called on a {@link Role#SERVER} session.
    */
+  @Override
   public CompletionStage<Void> stopDataTransfer() {
     lock.lock();
     try {
@@ -480,6 +452,7 @@ public final class ApciSession {
    *
    * @return {@code true} if STARTDT is in effect.
    */
+  @Override
   public boolean isDataTransferStarted() {
     lock.lock();
     try {
@@ -494,9 +467,10 @@ public final class ApciSession {
    *
    * <p>Cancels all timers, fails any pending STARTDT/STOPDT future with a {@link
    * ConnectionClosedException}, and marks the session closed. This method is idempotent and does
-   * not invoke {@link Events#onClosed(Throwable)} (that callback is reserved for self-initiated
-   * closes triggered by protocol errors and timeouts).
+   * not invoke {@link Session.Events#onClosed(Throwable)} (that callback is reserved for
+   * self-initiated closes triggered by protocol errors and timeouts).
    */
+  @Override
   public void close() {
     lock.lock();
     try {

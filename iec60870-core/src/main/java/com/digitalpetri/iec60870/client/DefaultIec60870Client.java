@@ -21,6 +21,7 @@ import com.digitalpetri.iec60870.asdu.object.ReadCommand;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
+import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import java.time.Duration;
@@ -76,7 +77,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   private final Executor callbackExecutor;
   private final SubmissionPublisher<ClientEvent> publisher;
-  private final ApciSession session;
+  private final Session session;
   private final CommandService commandService;
 
   private final ReentrantLock lock = new ReentrantLock();
@@ -1087,7 +1088,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
   // --- Session callbacks ----------------------------------------------------------------------
 
   /** Bridges {@link ApciSession} events to the client. */
-  private final class SessionEvents implements ApciSession.Events {
+  private final class SessionEvents implements Session.Events {
 
     @Override
     public void onAsdu(Asdu asdu) {
@@ -1120,7 +1121,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     public void onApdu(Apdu apdu) {
-      session.onApdu(apdu);
+      // Transitional Apdu wiring: the facade constructs the concrete ApciSession and feeds inbound
+      // APDUs into its cs104-private downward seam. This wiring leaves the facade in Phases 3/5.
+      ((ApciSession) session).onApdu(apdu);
     }
 
     @Override

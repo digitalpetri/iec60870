@@ -19,6 +19,7 @@ import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
+import com.digitalpetri.iec60870.session.Session;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -325,10 +326,13 @@ class ApciSessionTest {
 
   @Test
   void startDataTransferOnServerThrows() {
-    ApciSession session = newSession(ApciSession.Role.SERVER);
+    // Asserted through the neutral Session contract: a responder/SERVER-role session must reject
+    // startDataTransfer/stopDataTransfer with IllegalStateException.
+    Session session = newSession(ApciSession.Role.SERVER);
     session.onConnected();
 
     assertThrows(IllegalStateException.class, session::startDataTransfer);
+    assertThrows(IllegalStateException.class, session::stopDataTransfer);
   }
 
   // --- Received sequence error -> close --------------------------------------------------------
@@ -674,7 +678,7 @@ class ApciSessionTest {
   }
 
   /** Records delivered ASDUs, data-transfer transitions, and the close cause. */
-  private static final class RecordingEvents implements ApciSession.Events {
+  private static final class RecordingEvents implements Session.Events {
 
     private final List<Asdu> asdus = new ArrayList<>();
     private final List<Boolean> dataTransferChanges = new ArrayList<>();

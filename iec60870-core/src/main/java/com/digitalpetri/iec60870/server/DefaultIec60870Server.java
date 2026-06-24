@@ -28,6 +28,7 @@ import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
+import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
@@ -348,7 +349,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
     private final ServerTransportConnection transportConnection;
     private final SocketAddress remoteAddress;
-    private final ApciSession session;
+    private final Session session;
 
     // Serializes handler dispatch for this connection: each dispatched ASDU chains off the
     // previous.
@@ -900,7 +901,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     }
 
     /** Bridges {@link ApciSession} events for this connection. */
-    private final class SessionEvents implements ApciSession.Events {
+    private final class SessionEvents implements Session.Events {
 
       @Override
       public void onAsdu(Asdu asdu) {
@@ -927,7 +928,10 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
       @Override
       public void onApdu(Apdu apdu) {
-        session.onApdu(apdu);
+        // Transitional Apdu wiring: the connection constructs the concrete ApciSession and feeds
+        // inbound APDUs into its cs104-private downward seam. This wiring leaves the facade in
+        // Phases 3/5.
+        ((ApciSession) session).onApdu(apdu);
       }
 
       @Override
