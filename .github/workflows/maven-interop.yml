@@ -1,0 +1,33 @@
+name: Interop Tests (lib60870-C)
+permissions:
+  contents: read
+
+# The interop suite drives the library against lib60870-C peer images via
+# Testcontainers (Docker). It is excluded from the default build and the PR
+# CI; run it on demand or on a weekly schedule.
+on:
+  workflow_dispatch:
+  schedule:
+    # 06:00 UTC every Monday.
+    - cron: '0 6 * * 1'
+
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Ryuk (the Testcontainers resource reaper) is disabled because the
+      # ephemeral runner is torn down after the job; this matches the
+      # documented local interop command.
+      - name: Run interop tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: true
+        run: mvn -B -pl iec104-interop -am -Pinterop test
