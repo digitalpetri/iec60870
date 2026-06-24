@@ -2,6 +2,7 @@ package com.digitalpetri.iec104.asdu.time;
 
 import com.digitalpetri.iec104.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -72,7 +73,8 @@ public record Cp56Time2a(
    * @throws IllegalArgumentException if any calendar component is outside its specified range:
    *     {@code milliseconds} {@code 0..59999}, {@code minute} {@code 0..59}, {@code hour} {@code
    *     0..23}, {@code dayOfMonth} {@code 1..31}, {@code dayOfWeek} {@code 0..7}, {@code month}
-   *     {@code 1..12}, or {@code year} {@code 0..99}.
+   *     {@code 1..12}, or {@code year} {@code 0..99}; or if the {@code dayOfMonth}/{@code month}
+   *     combination is not a valid calendar date (such as February 31).
    */
   public Cp56Time2a {
     if (milliseconds < 0 || milliseconds > 59999) {
@@ -95,6 +97,15 @@ public record Cp56Time2a(
     }
     if (year < 0 || year > 99) {
       throw new IllegalArgumentException("year out of range [0, 99]: " + year);
+    }
+    // Day and month are independent wire fields, so calendar-impossible dates (e.g. February 31)
+    // are peer-reachable. Reject them here so toInstant never throws for a constructed instance.
+    int seconds = milliseconds / 1000;
+    int nanos = (milliseconds % 1000) * 1_000_000;
+    try {
+      LocalDateTime.of(2000 + year, month, dayOfMonth, hour, minute, seconds, nanos);
+    } catch (DateTimeException e) {
+      throw new IllegalArgumentException("invalid CP56Time2a calendar date: " + e.getMessage());
     }
   }
 

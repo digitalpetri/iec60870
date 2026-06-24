@@ -88,7 +88,8 @@ public record Cp24Time2a(int milliseconds, int minute, boolean invalid, boolean 
      *
      * @param buffer the source buffer positioned at the first octet of the time element.
      * @return the decoded time element.
-     * @throws AsduDecodeException if the decoded milliseconds value is outside {@code 0..59999}.
+     * @throws AsduDecodeException if the decoded milliseconds value is outside {@code 0..59999} or
+     *     the decoded minute value is outside {@code 0..59}.
      */
     public static Cp24Time2a decode(ByteBuf buffer) {
       int milliseconds = buffer.readUnsignedShortLE();
@@ -101,7 +102,11 @@ public record Cp24Time2a(int milliseconds, int minute, boolean invalid, boolean 
       boolean genuine = (octet3 & 0x40) == 0;
       boolean invalid = (octet3 & 0x80) != 0;
 
-      return new Cp24Time2a(milliseconds, minute, invalid, genuine);
+      try {
+        return new Cp24Time2a(milliseconds, minute, invalid, genuine);
+      } catch (IllegalArgumentException e) {
+        throw new AsduDecodeException("malformed CP24Time2a: " + e.getMessage());
+      }
     }
   }
 }

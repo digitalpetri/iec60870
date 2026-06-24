@@ -1,7 +1,9 @@
 package com.digitalpetri.iec104.asdu;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.digitalpetri.iec104.AsduDecodeException;
 import com.digitalpetri.iec104.ProtocolProfile;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
@@ -332,6 +334,32 @@ class AsduRoundTripTest {
                     InformationObjectAddress.of(0), QualifierOfInterrogation.STATION)));
 
     assertEquals(asdu, roundTrip(asdu));
+  }
+
+  @Test
+  void sequenceAddressingOverflowThrowsAsduDecodeException() {
+    // SQ = 1 I-frame body for M_SP_NA_1 (typeId 1) whose leading IOA is 0x00FF_FFFF (the maximum
+    // representable address). With count = 2 the synthetic address for the second element group
+    // would be 0x0100_0000, past the 3-octet ceiling; decode must reject it as a decode failure
+    // rather than letting InformationObjectAddress.of throw IllegalArgumentException.
+    ByteBuf buffer = Unpooled.buffer();
+    try {
+      buffer.writeByte(AsduType.M_SP_NA_1.typeId()); // type = 1
+      buffer.writeByte(0x80 | 2); // VSQ: SQ = 1, count = 2
+      buffer.writeByte(Cause.SPONTANEOUS.value()); // COT
+      buffer.writeByte(0); // originator address
+      buffer.writeByte(0x0A); // common address LE octet 1
+      buffer.writeByte(0x00); // common address LE octet 2
+      buffer.writeByte(0xFF); // leading IOA LE octet 1
+      buffer.writeByte(0xFF); // leading IOA LE octet 2
+      buffer.writeByte(0xFF); // leading IOA LE octet 3 -> 0x00FF_FFFF
+      buffer.writeByte(0x01); // SIQ for element group 0
+      buffer.writeByte(0x01); // SIQ for element group 1
+
+      assertThrows(AsduDecodeException.class, () -> Asdu.Serde.decode(PROFILE, buffer));
+    } finally {
+      buffer.release();
+    }
   }
 
   @Test

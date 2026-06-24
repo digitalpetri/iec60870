@@ -229,8 +229,9 @@ public record Asdu(
      * @param buffer the source buffer to read from.
      * @return the decoded ASDU.
      * @throws AsduDecodeException if the buffer ends before a fixed envelope field is fully read,
-     *     the cause of transmission is undefined, or the variable structure qualifier reports a
-     *     count outside {@code 0..127}.
+     *     the cause of transmission is undefined, the variable structure qualifier reports a count
+     *     outside {@code 0..127}, or sequence addressing would carry an information object address
+     *     past {@code 0x00FF_FFFF}.
      * @throws com.digitalpetri.iec104.UnsupportedAsduTypeException if the type identification is
      *     undefined or no codec is registered for it.
      */
@@ -277,8 +278,17 @@ public record Asdu(
               InformationObjectAddress.Serde.decode(profile.ioaLength(), buffer);
           long baseValue = base.value().longValue();
           for (int i = 0; i < count; i++) {
-            InformationObjectAddress address =
-                (i == 0) ? base : InformationObjectAddress.of(baseValue + i);
+            long value = baseValue + i;
+            if (value > InformationObjectAddress.MAX_VALUE) {
+              throw new AsduDecodeException(
+                  "sequence addressing information object address overflow: base "
+                      + baseValue
+                      + " + "
+                      + i
+                      + " exceeds "
+                      + InformationObjectAddress.MAX_VALUE);
+            }
+            InformationObjectAddress address = (i == 0) ? base : InformationObjectAddress.of(value);
             objects.add(codec.decode(address, buffer));
           }
         }

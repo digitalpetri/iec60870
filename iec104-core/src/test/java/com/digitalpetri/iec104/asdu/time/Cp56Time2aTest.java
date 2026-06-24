@@ -4,8 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.digitalpetri.iec104.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -91,5 +94,49 @@ class Cp56Time2aTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> new Cp56Time2a(0, 0, 0, 1, 0, 13, 0, false, false, true));
+  }
+
+  @Test
+  void decodeRejectsCalendarImpossibleDate() {
+    // Day 31, month 2 (February 31): each field is independently in range but the combination is
+    // not a valid calendar date. Decode must surface this as AsduDecodeException.
+    //   milliseconds = 0 -> LE: 00 00
+    //   octet3 = minute(0) -> 0x00
+    //   octet4 = hour(0) -> 0x00
+    //   octet5 = dayOfMonth(31 = 0x1F) | (dayOfWeek(0) << 5) = 0x1F
+    //   octet6 = month(2) = 0x02
+    //   octet7 = year(0) = 0x00
+    ByteBuf buffer = Unpooled.buffer();
+    try {
+      buffer.writeBytes(new byte[] {0x00, 0x00, 0x00, 0x00, 0x1F, 0x02, 0x00});
+      assertThrows(AsduDecodeException.class, () -> Cp56Time2a.Serde.decode(buffer));
+    } finally {
+      buffer.release();
+    }
+  }
+
+  @Test
+  void constructorRejectsCalendarImpossibleDate() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 0, 31, 0, 2, 0, false, false, true));
+  }
+
+  @Test
+  void validDateRoundTripsAndConvertsToInstant() {
+    // 2026-06-20 14:30:45.500 UTC.
+    Cp56Time2a time = new Cp56Time2a(45500, 30, 14, 20, 6, 6, 26, false, false, true);
+
+    ByteBuf buffer = Unpooled.buffer();
+    try {
+      Cp56Time2a.Serde.encode(time, buffer);
+      Cp56Time2a decoded = Cp56Time2a.Serde.decode(buffer);
+      assertEquals(time, decoded);
+
+      Instant instant = decoded.toInstant(ZoneOffset.UTC);
+      assertEquals(Instant.parse("2026-06-20T14:30:45.500Z"), instant);
+    } finally {
+      buffer.release();
+    }
   }
 }
