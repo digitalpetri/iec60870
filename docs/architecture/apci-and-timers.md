@@ -90,13 +90,15 @@ has not sent `STARTDT` receives nothing.
 
 ## Timers
 
-Four timers come from `ApciSettings` (defaults in parentheses; §5.5). `t0` is enforced at the
-transport/connect layer; `t1`–`t3` are owned by `ApciSession` and scheduled on an injected
-`ScheduledExecutorService`.
+Four timers come from `ApciSettings` (defaults in parentheses; §5.5). `t0` is applied by the client
+transport as the TCP connection-establishment timeout: `TcpIec104Client` projects `apci.t0()` onto
+the bootstrap's `CONNECT_TIMEOUT_MILLIS` channel option on each connect attempt (a
+`bootstrapCustomizer` runs afterward and may override it). `t1`–`t3` are owned by `ApciSession` and
+scheduled on an injected `ScheduledExecutorService`.
 
-| Timer | Default | Meaning | Where enforced |
+| Timer | Default | Meaning | Where applied |
 |---|---|---|---|
-| `t0` | 30 s | Connection-establishment timeout | Transport `connect()` |
+| `t0` | 30 s | Connection-establishment timeout | Client transport connect (`CONNECT_TIMEOUT_MILLIS`) |
 | `t1` | 15 s | Timeout awaiting acknowledgement of a sent I-frame or U-frame (STARTDT/STOPDT/TESTFR act) | `ApciSession` |
 | `t2` | 10 s | Maximum delay before acknowledging received I-frames (must be `< t1`) | `ApciSession` |
 | `t3` | 20 s | Idle timeout after which a `TESTFR act` is sent | `ApciSession` |

@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.TlsOptions;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -14,10 +15,11 @@ import org.jspecify.annotations.Nullable;
  * Immutable transport-layer configuration for a {@link NettyClientTransport}.
  *
  * <p>This holder carries everything the Netty client transport needs to open and frame a single
- * outgoing connection: the remote endpoint, an optional local bind address, the wire profile,
- * optional TLS, an optional shared {@link EventLoopGroup}, and an optional {@link Bootstrap}
- * customizer for advanced socket tuning. Protocol-layer concerns (APCI settings, originator
- * address) belong on the core {@code ClientConfig}, not here.
+ * outgoing connection: the remote endpoint, an optional local bind address, the connect timeout,
+ * the wire profile, optional TLS, an optional shared {@link EventLoopGroup}, and an optional {@link
+ * Bootstrap} customizer for advanced socket tuning. Protocol-layer concerns (APCI flow control,
+ * originator address) belong on the core {@code ClientConfig}, not here; the connect timeout is the
+ * transport-native projection of the IEC 104 {@code t0} parameter.
  *
  * <p>Construct instances through {@link #builder(String, int)}; the optional accessors return empty
  * {@link Optional}s when a value was not supplied.
@@ -25,6 +27,8 @@ import org.jspecify.annotations.Nullable;
  * @param host the remote host name or address to connect to.
  * @param port the remote TCP port to connect to.
  * @param localBind the local address to bind the outgoing socket to, or {@code null} for any.
+ * @param connectTimeout the TCP connection-establishment timeout (IEC 104 {@code t0}) applied to
+ *     each connect attempt; must be positive.
  * @param profile the protocol profile that governs ASDU field widths.
  * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
  * @param sharedEventLoopGroup an externally-owned {@link EventLoopGroup} to run the channel on, or
@@ -36,6 +40,7 @@ public record NettyClientTransportConfig(
     String host,
     int port,
     @Nullable SocketAddress localBind,
+    Duration connectTimeout,
     ProtocolProfile profile,
     @Nullable TlsOptions tlsOptions,
     @Nullable EventLoopGroup sharedEventLoopGroup,
@@ -47,20 +52,28 @@ public record NettyClientTransportConfig(
    * @param host the remote host name or address to connect to.
    * @param port the remote TCP port to connect to.
    * @param localBind the local address to bind the outgoing socket to, or {@code null} for any.
+   * @param connectTimeout the TCP connection-establishment timeout (IEC 104 {@code t0}) applied to
+   *     each connect attempt; must be positive.
    * @param profile the protocol profile that governs ASDU field widths.
    * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
    * @param sharedEventLoopGroup an externally-owned {@link EventLoopGroup} to run the channel on,
    *     or {@code null} to let the transport create and own a private group.
    * @param bootstrapCustomizer a hook to mutate the {@link Bootstrap} before connecting (socket
    *     options, allocators, and the like), or {@code null} for none.
-   * @throws NullPointerException if {@code host} or {@code profile} is null.
-   * @throws IllegalArgumentException if {@code port} is not in the range {@code 1..65535}.
+   * @throws NullPointerException if {@code host}, {@code connectTimeout}, or {@code profile} is
+   *     null.
+   * @throws IllegalArgumentException if {@code port} is not in the range {@code 1..65535}, or
+   *     {@code connectTimeout} is not positive.
    */
   public NettyClientTransportConfig {
     Objects.requireNonNull(host, "host");
+    Objects.requireNonNull(connectTimeout, "connectTimeout");
     Objects.requireNonNull(profile, "profile");
     if (port < 1 || port > 65535) {
       throw new IllegalArgumentException("port must be in 1..65535: " + port);
+    }
+    if (connectTimeout.isZero() || connectTimeout.isNegative()) {
+      throw new IllegalArgumentException("connectTimeout must be positive: " + connectTimeout);
     }
   }
 
@@ -123,6 +136,7 @@ public record NettyClientTransportConfig(
     private final String host;
     private final int port;
     private @Nullable SocketAddress localBind;
+    private Duration connectTimeout = Duration.ofSeconds(30);
     private ProtocolProfile profile = ProtocolProfile.iec104Default();
     private @Nullable TlsOptions tlsOptions;
     private @Nullable EventLoopGroup sharedEventLoopGroup;
@@ -141,6 +155,19 @@ public record NettyClientTransportConfig(
      */
     public Builder localBind(@Nullable SocketAddress localBind) {
       this.localBind = localBind;
+      return this;
+    }
+
+    /**
+     * Sets the TCP connection-establishment timeout (IEC 104 {@code t0}) applied to each connect
+     * attempt. Defaults to 30 seconds. A {@link #bootstrapCustomizer(Consumer) bootstrap
+     * customizer} runs after this option is set and may override it.
+     *
+     * @param connectTimeout the connect timeout; must be positive.
+     * @return this builder.
+     */
+    public Builder connectTimeout(Duration connectTimeout) {
+      this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
       return this;
     }
 
@@ -197,7 +224,14 @@ public record NettyClientTransportConfig(
      */
     public NettyClientTransportConfig build() {
       return new NettyClientTransportConfig(
-          host, port, localBind, profile, tlsOptions, sharedEventLoopGroup, bootstrapCustomizer);
+          host,
+          port,
+          localBind,
+          connectTimeout,
+          profile,
+          tlsOptions,
+          sharedEventLoopGroup,
+          bootstrapCustomizer);
     }
   }
 }
