@@ -34,6 +34,16 @@ final class TestTls {
    */
   static final String OTHER_TRUSTSTORE = "/tls/other-truststore.p12";
 
+  /**
+   * Classpath location of a keystore whose certificate ({@code CN=mismatch.example.com}, SAN {@code
+   * dns:mismatch.example.com}) matches no loopback address, so a client trusting it but dialing
+   * {@code 127.0.0.1} fails hostname identification.
+   */
+  static final String MISMATCH_KEYSTORE = "/tls/mismatch-keystore.p12";
+
+  /** Classpath location of the truststore holding only the mismatch certificate. */
+  static final String MISMATCH_TRUSTSTORE = "/tls/mismatch-truststore.p12";
+
   /** The PKCS#12 store password shared by both test keystores. */
   static final char[] PASSWORD = "changeit".toCharArray();
 
@@ -95,6 +105,47 @@ final class TestTls {
     TrustManagerFactory tmf =
         TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
     tmf.init(otherTrustStore);
+
+    SSLContext context = SSLContext.getInstance("TLS");
+    context.init(null, tmf.getTrustManagers(), new SecureRandom());
+    return context;
+  }
+
+  /**
+   * Builds a server-side {@link SSLContext} whose identity certificate is valid for {@code
+   * mismatch.example.com} only, so a client dialing a loopback address fails hostname
+   * identification.
+   *
+   * @return a server SSL context keyed with the mismatch identity.
+   * @throws GeneralSecurityException if the key material cannot be loaded.
+   * @throws IOException if the keystore resource cannot be read.
+   */
+  static SSLContext mismatchedServerContext() throws GeneralSecurityException, IOException {
+    KeyStore keyStore = load(MISMATCH_KEYSTORE);
+
+    KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    kmf.init(keyStore, PASSWORD);
+
+    SSLContext context = SSLContext.getInstance("TLS");
+    context.init(kmf.getKeyManagers(), null, new SecureRandom());
+    return context;
+  }
+
+  /**
+   * Builds a client {@link SSLContext} that trusts the mismatch certificate, so the handshake
+   * against {@link #mismatchedServerContext()} fails only on hostname identification rather than on
+   * trust.
+   *
+   * @return a client SSL context trusting the mismatch certificate.
+   * @throws GeneralSecurityException if the trust material cannot be loaded.
+   * @throws IOException if the truststore resource cannot be read.
+   */
+  static SSLContext clientTrustingMismatch() throws GeneralSecurityException, IOException {
+    KeyStore trustStore = load(MISMATCH_TRUSTSTORE);
+
+    TrustManagerFactory tmf =
+        TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    tmf.init(trustStore);
 
     SSLContext context = SSLContext.getInstance("TLS");
     context.init(null, tmf.getTrustManagers(), new SecureRandom());

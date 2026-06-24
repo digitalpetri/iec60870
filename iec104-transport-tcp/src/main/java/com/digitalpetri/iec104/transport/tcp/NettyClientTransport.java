@@ -180,7 +180,9 @@ public class NettyClientTransport implements ClientTransport {
                           config.profile(),
                           config.tlsOptionsOptional().orElse(null),
                           true,
-                          listener::get);
+                          listener::get,
+                          config.host(),
+                          config.port());
                     }
                   });
 

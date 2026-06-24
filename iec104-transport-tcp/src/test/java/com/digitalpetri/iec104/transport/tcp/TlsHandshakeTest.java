@@ -137,6 +137,76 @@ class TlsHandshakeTest {
     }
   }
 
+  @Test
+  void hostnameMismatchFailsHandshakeWhenVerifyEnabled() throws Exception {
+    int port = reserveEphemeralPort();
+
+    SSLContext serverSsl = TestTls.mismatchedServerContext();
+    SSLContext clientSsl = TestTls.clientTrustingMismatch();
+
+    TlsOptions serverTls = TlsOptions.builder(serverSsl).build();
+    // Default options: verifyHostname is ON.
+    TlsOptions clientTls = TlsOptions.builder(clientSsl).build();
+
+    NettyServerTransport server =
+        new NettyServerTransport(
+            NettyServerTransportConfig.builder("127.0.0.1", port).tlsOptions(serverTls).build());
+    server.setConnectionHandler(connection -> connection.setListener(NOOP_LISTENER));
+
+    NettyClientTransport client =
+        new NettyClientTransport(
+            NettyClientTransportConfig.builder("127.0.0.1", port).tlsOptions(clientTls).build());
+    client.setListener(NOOP_LISTENER);
+
+    try {
+      await(server.bind());
+
+      // The certificate is trusted but valid only for mismatch.example.com; dialing 127.0.0.1 must
+      // fail HTTPS endpoint identification, so connect() completes exceptionally.
+      ExecutionException failure =
+          assertThrows(ExecutionException.class, () -> await(client.connect()));
+      LOGGER.info("expected TLS hostname mismatch failure: {}", failure.getCause().toString());
+
+      assertFalse(client.isConnected(), "client must not be connected after a hostname mismatch");
+    } finally {
+      await(client.disconnect());
+      await(server.unbind());
+    }
+  }
+
+  @Test
+  void hostnameMismatchPassesWhenVerifyDisabled() throws Exception {
+    int port = reserveEphemeralPort();
+
+    SSLContext serverSsl = TestTls.mismatchedServerContext();
+    SSLContext clientSsl = TestTls.clientTrustingMismatch();
+
+    TlsOptions serverTls = TlsOptions.builder(serverSsl).build();
+    TlsOptions clientTls = TlsOptions.builder(clientSsl).verifyHostname(false).build();
+
+    NettyServerTransport server =
+        new NettyServerTransport(
+            NettyServerTransportConfig.builder("127.0.0.1", port).tlsOptions(serverTls).build());
+    server.setConnectionHandler(connection -> connection.setListener(NOOP_LISTENER));
+
+    NettyClientTransport client =
+        new NettyClientTransport(
+            NettyClientTransportConfig.builder("127.0.0.1", port).tlsOptions(clientTls).build());
+    client.setListener(NOOP_LISTENER);
+
+    try {
+      await(server.bind());
+
+      // With hostname verification disabled the trusted certificate is accepted despite the
+      // mismatch, so the handshake completes.
+      await(client.connect());
+      assertTrue(client.isConnected(), "client should connect when hostname verification is off");
+    } finally {
+      await(client.disconnect());
+      await(server.unbind());
+    }
+  }
+
   private static final TransportListener NOOP_LISTENER =
       new TransportListener() {
         @Override

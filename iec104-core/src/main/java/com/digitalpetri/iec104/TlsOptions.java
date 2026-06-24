@@ -25,9 +25,12 @@ public final class TlsOptions {
 
   private final boolean clientAuthRequired;
 
-  private TlsOptions(SSLContext sslContext, boolean clientAuthRequired) {
+  private final boolean verifyHostname;
+
+  private TlsOptions(SSLContext sslContext, boolean clientAuthRequired, boolean verifyHostname) {
     this.sslContext = sslContext;
     this.clientAuthRequired = clientAuthRequired;
+    this.verifyHostname = verifyHostname;
   }
 
   /**
@@ -50,6 +53,19 @@ public final class TlsOptions {
     return clientAuthRequired;
   }
 
+  /**
+   * Returns whether the client must verify that the server certificate matches the host it dialed.
+   *
+   * <p>On a client this enables JDK endpoint identification (the {@code HTTPS} algorithm) so a
+   * certificate valid for a different host is rejected during the handshake; on a server it has no
+   * effect. Enabled by default.
+   *
+   * @return {@code true} if client hostname verification is enabled, {@code false} otherwise.
+   */
+  public boolean verifyHostname() {
+    return verifyHostname;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -58,17 +74,23 @@ public final class TlsOptions {
     if (!(o instanceof TlsOptions that)) {
       return false;
     }
-    return clientAuthRequired == that.clientAuthRequired && sslContext.equals(that.sslContext);
+    return clientAuthRequired == that.clientAuthRequired
+        && verifyHostname == that.verifyHostname
+        && sslContext.equals(that.sslContext);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(sslContext, clientAuthRequired);
+    return Objects.hash(sslContext, clientAuthRequired, verifyHostname);
   }
 
   @Override
   public String toString() {
-    return "TlsOptions{clientAuthRequired=" + clientAuthRequired + '}';
+    return "TlsOptions{clientAuthRequired="
+        + clientAuthRequired
+        + ", verifyHostname="
+        + verifyHostname
+        + '}';
   }
 
   /**
@@ -94,6 +116,8 @@ public final class TlsOptions {
 
     private boolean clientAuthRequired = false;
 
+    private boolean verifyHostname = true;
+
     private Builder(SSLContext sslContext) {
       this.sslContext = Objects.requireNonNull(sslContext, "sslContext");
     }
@@ -111,12 +135,27 @@ public final class TlsOptions {
     }
 
     /**
+     * Sets whether the client verifies that the server certificate matches the dialed host.
+     *
+     * <p>Enabled by default; disabling it turns off JDK endpoint identification on the client and
+     * has no effect on a server.
+     *
+     * @param verifyHostname {@code true} to verify the server hostname, {@code false} to disable
+     *     verification.
+     * @return this builder.
+     */
+    public Builder verifyHostname(boolean verifyHostname) {
+      this.verifyHostname = verifyHostname;
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link TlsOptions} from the current builder state.
      *
      * @return the configured TLS options.
      */
     public TlsOptions build() {
-      return new TlsOptions(sslContext, clientAuthRequired);
+      return new TlsOptions(sslContext, clientAuthRequired, verifyHostname);
     }
   }
 }
