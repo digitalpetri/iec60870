@@ -138,10 +138,10 @@ The command qualifier and select-vs-execute semantics live on
 
 ## A worked mapping (the example station)
 
-The runnable [`ServerExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java)
+The runnable [`ServerExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java)
 hosts, in one `Station.builder(...)` chain, exactly one point of each of the eight monitor types
 plus one commandable single point — it is the executable companion to the monitor table above. The
-[`ClientExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java)
+[`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
 connects to it and issues a single command against the commandable point. Read those two files when
 you want a "one of every type" reference you can run.
 
@@ -151,11 +151,11 @@ A row in the monitor table becomes a `PointDefinition`. This is the exact idiom 
 `ServerExample`:
 
 ```java
-import com.digitalpetri.iec104.address.PointAddress;
-import com.digitalpetri.iec104.point.PointCapability;
-import com.digitalpetri.iec104.point.PointType;
-import com.digitalpetri.iec104.point.PointValue;
-import com.digitalpetri.iec104.server.PointDefinition;
+import com.digitalpetri.iec60870.address.PointAddress;
+import com.digitalpetri.iec60870.point.PointCapability;
+import com.digitalpetri.iec60870.point.PointType;
+import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.server.PointDefinition;
 
 // An on/off status point at common address 1, IOA 100, reported in the monitor direction.
 PointDefinition<Boolean> status =
@@ -198,8 +198,8 @@ A row in the control table becomes a single helper call. The type you chose *is*
 invoke:
 
 ```java
-import com.digitalpetri.iec104.address.PointAddress;
-import com.digitalpetri.iec104.client.CommandResult;
+import com.digitalpetri.iec60870.address.PointAddress;
+import com.digitalpetri.iec60870.client.CommandResult;
 
 PointAddress target = PointAddress.of(1, 300);
 // Direct-execute single (on/off) command; the helper sends C_SC_NA_1 (untimed).
@@ -248,7 +248,7 @@ interrogation (`C_CI_NA_1`) issued via the raw `send(Asdu)` escape hatch — see
   read-back snippet.
 - [Two-layer API](../../architecture/two-layer-api.md) — the logical `PointType` vs. raw
   `AsduType`/records split, in depth.
-- [`ServerExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java)
+- [`ServerExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java)
   and
-  [`ClientExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java)
+  [`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
   — the runnable companions to the tables.

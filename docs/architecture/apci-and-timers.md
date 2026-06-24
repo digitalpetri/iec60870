@@ -5,7 +5,7 @@ adds on top of TCP. It does three jobs: it gates user-data transfer (`STARTDT`/`
 otherwise-idle connection alive and detects death (`TESTFR` plus the `t3` idle timer), and it
 provides reliable, ordered delivery with a sliding-window acknowledgement scheme on top of the
 byte-stream TCP gives. The library implements all of this in one class, `ApciSession`
-(`com.digitalpetri.iec104.apci`), which is symmetric: the same engine runs in both the client and the
+(`com.digitalpetri.iec60870.apci`), which is symmetric: the same engine runs in both the client and the
 server, parameterized by a `Role`. (Spec references below cite IEC 60870-5-104 §5.1, §5.3, §5.5.)
 
 ## Frame formats
@@ -83,7 +83,7 @@ starts data transfer (§5.3). The small role differences are the only client/ser
   flushes any queued I-frames; on `STOPDT act` it clears the flag and replies `STOPDT con`. A server
   withholds queued monitor I-frames entirely until data transfer is started.
 
-The high-level facade wires this up: `Iec104Client.startDataTransfer()` drives the client session, and
+The high-level facade wires this up: `Iec60870Client.startDataTransfer()` drives the client session, and
 `ClientConfig.startDataTransferOnConnect` (default `true`) makes `connect()` perform the handshake
 automatically. The server's per-connection session gates outbound data so a controlling station that
 has not sent `STARTDT` receives nothing.

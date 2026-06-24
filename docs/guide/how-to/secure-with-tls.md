@@ -7,12 +7,12 @@ transport layer, beneath the protocol. You configure it with a single core type,
 Netty type.
 
 This page is mirror-imaged: the **client** is the
-[controlling station](../reference/glossary.md) (master, an `Iec104Client`) and the **server** is the
-[controlled station](../reference/glossary.md) (outstation, an `Iec104Server`). It is anchored on the
+[controlling station](../reference/glossary.md) (master, an `Iec60870Client`) and the **server** is the
+[controlled station](../reference/glossary.md) (outstation, an `Iec60870Server`). It is anchored on the
 runnable
-[`TlsExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/TlsExample.java),
+[`TlsExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/TlsExample.java),
 which starts a TLS server and client in-process and interrogates over the secured link; see the
-[examples README](../../../iec104-examples/README.md) for run instructions.
+[examples README](../../../iec60870-examples/README.md) for run instructions.
 
 ## At a glance
 
@@ -100,7 +100,7 @@ Attach the server's `SSLContext` by wrapping it in `TlsOptions` and passing it t
 [Host a server](./host-a-server.md) for building the `Station` and `ServerHandler`. Imports omitted.
 
 ```java
-try (Iec104Server server =
+try (Iec60870Server server =
     TcpIec104Server.builder()
         .bindAddress("127.0.0.1")
         .port(19998)
@@ -113,7 +113,7 @@ try (Iec104Server server =
 }
 ```
 
-`Iec104Server` is `AutoCloseable`, so the try-with-resources block stops the server and releases
+`Iec60870Server` is `AutoCloseable`, so the try-with-resources block stops the server and releases
 transport resources on exit. The port is `19998` — a non-default port so it does not clash with a
 plaintext server on 2404, matching the example you can run below.
 
@@ -122,7 +122,7 @@ plaintext server on 2404, matching the example you can run below.
 Mirror the server: wrap the client's `SSLContext` in `TlsOptions` and pass it to `.tls(...)`.
 
 ```java
-try (Iec104Client client =
+try (Iec60870Client client =
     TcpIec104Client.builder()
         .host("127.0.0.1")
         .port(19998)
@@ -188,16 +188,16 @@ material is left to you.)
 
 When you require client certificates, you may want to inspect the certificate the controlling station
 presented. The peer certificate is exposed in **one** place: the transport-layer interface
-`ServerTransportConnection.peerCertificate()` (package `com.digitalpetri.iec104.transport`), which
+`ServerTransportConnection.peerCertificate()` (package `com.digitalpetri.iec60870.transport`), which
 returns an `Optional<java.security.cert.Certificate>` — present only when the connection uses TLS and
 the peer presented a certificate (that is, when `clientAuthRequired(true)` is set).
 
 ```java
-// Transport-layer interface (com.digitalpetri.iec104.transport):
+// Transport-layer interface (com.digitalpetri.iec60870.transport):
 Optional<Certificate> cert = serverTransportConnection.peerCertificate();
 ```
 
-The high-level `Iec104Server` facade does **not** surface the peer certificate. Both `ServerContext`
+The high-level `Iec60870Server` facade does **not** surface the peer certificate. Both `ServerContext`
 (handed to your `ServerHandler`) and the `ServerEvent` records expose only `remoteAddress()`, a
 `java.net.SocketAddress` — there is no `peerCertificate()` accessor on either. So when authorizing a
 controlling station through the facade, you have the remote address; the certificate is reachable
@@ -223,14 +223,14 @@ link. Generate the certificates from Step 1 first, then run it with the four sys
 (it prints instructions and exits if they are unset):
 
 ```bash
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.TlsExample \
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.TlsExample \
     -Dexec.args="" \
     -Diec104.tls.keystore=server.p12 -Diec104.tls.keystorePassword=changeit \
     -Diec104.tls.truststore=truststore.p12 -Diec104.tls.truststorePassword=changeit
 ```
 
-See the [examples README](../../../iec104-examples/README.md) for the full set of runnable examples.
+See the [examples README](../../../iec60870-examples/README.md) for the full set of runnable examples.
 
 ## See also
 
@@ -243,5 +243,5 @@ See the [examples README](../../../iec104-examples/README.md) for the full set o
 - [Reference: Error model](../reference/errors.md) — what a failed handshake throws on `connect()`
 - [Reference: Timers & window](../reference/timers-and-window.md) — STARTDT and the `t0`–`t3` timers
 - [Reference: Glossary](../reference/glossary.md) — controlling/controlled station, STARTDT, Common Address
-- [`TlsExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/TlsExample.java) — the runnable example this page mirrors
+- [`TlsExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/TlsExample.java) — the runnable example this page mirrors
 - Architecture deep-dive: [tls-and-configuration.md](../../architecture/tls-and-configuration.md) and [modules-and-dependencies.md](../../architecture/modules-and-dependencies.md)

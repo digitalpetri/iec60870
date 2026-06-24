@@ -6,7 +6,7 @@ lives in `AsduType.supported()` and is mirrored from the architecture doc
 [Protocol coverage](../../architecture/protocol-coverage.md), the as-built map of which
 [type identifications (TypeIDs)](glossary.md) the library models. This page keeps that matrix and
 adds the columns a *user* needs: the Java record, and — most usefully — **where the high-level
-`Iec104Client` / `Iec104Server` facade actually surfaces each type**, which is not the same thing as
+`Iec60870Client` / `Iec60870Server` facade actually surfaces each type**, which is not the same thing as
 `supported()`.
 
 In the direction column, **Mon** = [monitor direction](glossary.md) (controlled → controlling
@@ -14,7 +14,7 @@ station), **Ctrl** = [control direction](glossary.md) (controlling → controlle
 **Sys** = system information.
 
 > **The one insight this page exists to convey:** `supported() == true` means a typed
-> `com.digitalpetri.iec104.asdu.object` record and a standard codec exist. It does **not** mean the
+> `com.digitalpetri.iec60870.asdu.object` record and a standard codec exist. It does **not** mean the
 > high-level facade has a dedicated method for that type. Some supported types — parameter loading,
 > delay acquisition, end-of-initialization, counter interrogation from the client side — are
 > codec-enabled but reachable only through the **raw** send/receive surface. The **Facade surface**
@@ -30,15 +30,15 @@ The tables stay terse because every column is defined once here:
 - **Modeled** — *yes* = a typed [information object](glossary.md) record plus a standard codec exist
   (`AsduType.supported() == true`); *no* = the type has an `AsduType` constant but no record or
   codec.
-- **Record** — the `com.digitalpetri.iec104.asdu.object` record class (and its nested `Serde`), when
+- **Record** — the `com.digitalpetri.iec60870.asdu.object` record class (and its nested `Serde`), when
   one exists.
-- **Facade surface** — how you reach it through the high-level `Iec104Client` / `Iec104Server`, or
+- **Facade surface** — how you reach it through the high-level `Iec60870Client` / `Iec60870Server`, or
   "raw only at facade" when the facade has no dedicated entry point. **This is the column to read.**
 - **See** — the how-to or reference page for that capability.
 
 Two universal facts hold for every modeled type, so they are not repeated per row:
 
-- Every modeled record lives in package `com.digitalpetri.iec104.asdu.object` and has a nested
+- Every modeled record lives in package `com.digitalpetri.iec60870.asdu.object` and has a nested
   `public static final class Serde`; the codec mapping is registered in `InformationObjectCodecs`.
   See [The two-layer API](../../architecture/two-layer-api.md) for how the raw record layer and the
   high-level facade relate.
@@ -51,7 +51,7 @@ Two universal facts hold for every modeled type, so they are not repeated per ro
 
 These 32 types (TypeIDs 1–40, with gaps) report measured and status values from the controlled
 station. The library models them with the **point/value model**, not as records you construct: the
-server publishes a value with `Iec104Server.publish(...)`, and the client observes it as a
+server publishes a value with `Iec60870Server.publish(...)`, and the client observes it as a
 `ClientEvent.PointUpdated` event or inside the `InterrogationResult` from `client.interrogate(...)`.
 Which time-tag variant (untimed / CP24 / CP56) goes on the wire is selected by the server's
 configured `TimeTagStyle`, not chosen per call.
@@ -75,7 +75,7 @@ value. This sub-table is what you select from; see
 | `INTEGRATED_TOTALS` | `BinaryCounterReading` | M_IT_NA_1 (15) | M_IT_TA_1 (16) | M_IT_TB_1 (37) |
 
 `DoublePointState`, `Vti`, `NormalizedValue`, and `BinaryCounterReading` are in package
-`com.digitalpetri.iec104.asdu.element`.
+`com.digitalpetri.iec60870.asdu.element`.
 
 The remaining monitor types — the protection-equipment and packed types (17, 18, 19, 20, 38, 39, 40)
 and the no-quality normalized value (21) — have records and codecs but **no `PointType`**, so the
@@ -85,7 +85,7 @@ surfaced as `ClientEvent.AsduReceived`, but not `publish`-able and not reported 
 ### Full TypeID table (monitor)
 
 For the 24 `PointType`-backed types the **Facade surface** is the same: publish with
-`Iec104Server.publish`, observe as `ClientEvent.PointUpdated` or inside `InterrogationResult`. The
+`Iec60870Server.publish`, observe as `ClientEvent.PointUpdated` or inside `InterrogationResult`. The
 table marks those "monitor point"; the rows that read "raw only at facade" are the
 protection/packed/no-quality types above.
 
@@ -166,10 +166,10 @@ method — the server answers them automatically, or they are reachable only by 
 | TypeID | Mnemonic | Dir | Record | Facade surface |
 |---|---|---|---|---|
 | 70 | M_EI_NA_1 | Sys/Mon | `EndOfInitialization` | Modeled record; raw only at facade |
-| 100 | C_IC_NA_1 | Ctrl | `InterrogationCommand` | `Iec104Client.interrogate` / server answers ([`onInterrogation`](../how-to/host-a-server.md)) |
+| 100 | C_IC_NA_1 | Ctrl | `InterrogationCommand` | `Iec60870Client.interrogate` / server answers ([`onInterrogation`](../how-to/host-a-server.md)) |
 | 101 | C_CI_NA_1 | Ctrl | `CounterInterrogationCommand` | Server answers automatically; **client raw only** |
-| 102 | C_RD_NA_1 | Ctrl | `ReadCommand` | `Iec104Client.read` / `readAsync` / server answers (`onRead`) |
-| 103 | C_CS_NA_1 | Ctrl | `ClockSynchronizationCommand` | `Iec104Client.synchronizeClock` / server answers (`onClockSync`) |
+| 102 | C_RD_NA_1 | Ctrl | `ReadCommand` | `Iec60870Client.read` / `readAsync` / server answers (`onRead`) |
+| 103 | C_CS_NA_1 | Ctrl | `ClockSynchronizationCommand` | `Iec60870Client.synchronizeClock` / server answers (`onClockSync`) |
 | 104 | C_TS_NA_1 | Ctrl | `TestCommand` | Server answers automatically; **client raw only** |
 | 105 | C_RP_NA_1 | Ctrl | `ResetProcessCommand` | Server answers (`onReset`); **client raw only** |
 | 106 | C_CD_NA_1 | Ctrl | `DelayAcquisitionCommand` | Modeled record; raw only at facade |
@@ -186,18 +186,18 @@ C_RP — but `M_EI_NA_1` (70) and `C_CD_NA_1` (106) fall through to the raw hook
 
 Counter interrogation (C_CI_NA_1) has a typed record but no client facade method, so you send it
 raw. The same pattern works for the other raw-only control types — construct the matching record (or,
-for an unmodeled body, a raw header) and call `Iec104Client.send(Asdu)`:
+for an unmodeled body, a raw header) and call `Iec60870Client.send(Asdu)`:
 
 ```java
-import com.digitalpetri.iec104.address.CommonAddress;
-import com.digitalpetri.iec104.address.InformationObjectAddress;
-import com.digitalpetri.iec104.address.OriginatorAddress;
-import com.digitalpetri.iec104.asdu.Asdu;
-import com.digitalpetri.iec104.asdu.AsduType;
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.asdu.element.FreezeMode;
-import com.digitalpetri.iec104.asdu.element.QualifierOfCounterInterrogation;
-import com.digitalpetri.iec104.asdu.object.CounterInterrogationCommand;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
+import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.AsduType;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.asdu.element.FreezeMode;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
+import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import java.util.List;
 
 // C_CI_NA_1 has a typed record but no client facade method — send it raw.
@@ -220,7 +220,7 @@ client.send(counterInterrogation);
 ```
 
 The `Asdu` constructor field order — `type, sequence, cause, negative, test, originatorAddress,
-commonAddress, objects` — matches the [`RawAsduExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/RawAsduExample.java)
+commonAddress, objects` — matches the [`RawAsduExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/RawAsduExample.java)
 in the examples module. The IOA is `0` for counter interrogation. Use the [common address (CA)](glossary.md)
 of the target station. See [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md) and
 [How-To: Connect & interrogate](../how-to/connect-and-interrogate.md).
@@ -278,7 +278,7 @@ header). See [Protocol coverage](../../architecture/protocol-coverage.md).
 ## Causes of transmission (COT) — note
 
 The [cause of transmission (COT)](glossary.md) field is modeled by the
-`com.digitalpetri.iec104.asdu.Cause` enum, which covers the standard COT range. Private COT values
+`com.digitalpetri.iec60870.asdu.Cause` enum, which covers the standard COT range. Private COT values
 (`48..63`) are not modeled and are rejected on decode: `Cause.fromValue(int)` throws
 `AsduDecodeException` for a private, reserved, or undefined value. For the COT concept see the
 [glossary](glossary.md); for what a bad COT raises see the [error model](errors.md).
@@ -326,5 +326,5 @@ threading rules. On the server, the mirror hook is `ServerHandler.onRawAsdu(...)
 - Architecture: [Protocol coverage](../../architecture/protocol-coverage.md) — the authoritative
   as-built map; [The two-layer API](../../architecture/two-layer-api.md);
   [Errors and extensibility](../../architecture/errors-and-extensibility.md).
-- Examples: [`RawAsduExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/RawAsduExample.java)
-  and the [examples README](../../../iec104-examples/README.md).
+- Examples: [`RawAsduExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/RawAsduExample.java)
+  and the [examples README](../../../iec60870-examples/README.md).

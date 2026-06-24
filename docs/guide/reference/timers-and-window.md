@@ -37,7 +37,7 @@ and `w` are `org.joou.UShort`, and the timeouts are `java.time.Duration`. This s
 default set — it is not a configuration recipe (that belongs to the how-to).
 
 ```java
-import com.digitalpetri.iec104.ApciSettings;
+import com.digitalpetri.iec60870.ApciSettings;
 import java.time.Duration;
 import org.joou.UShort;
 

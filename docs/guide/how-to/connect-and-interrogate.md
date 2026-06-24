@@ -3,12 +3,12 @@
 Connect a client to a controlled station, start data transfer, ask for a full snapshot of its data
 with a general interrogation, pull frozen counter values, and read the results from either the
 returned result or the event stream. See the runnable
-[`ClientExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java)
+[`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
 for the same flow end to end.
 
 ## What you'll build
 
-A connected [`Iec104Client`](../../architecture/two-layer-api.md), a general interrogation snapshot
+A connected [`Iec60870Client`](../../architecture/two-layer-api.md), a general interrogation snapshot
 read two ways (from the returned result and from the event listener), and a counter interrogation
 issued through the raw escape hatch. The client is the **controlling station** (master); the station
 it talks to is the **controlled station** (server), addressed by its
@@ -18,10 +18,10 @@ it talks to is the **controlled station** (server), addressed by its
 
 - A running controlled station to talk to. Start the
   [Getting Started](../getting-started.md) hello-server or the
-  [`ServerExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java)
+  [`ServerExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java)
   on `127.0.0.1:2404`.
-- The Maven coordinate `com.digitalpetri.iec104:iec104-transport-tcp` (version `0.1.0-SNAPSHOT`),
-  which transitively brings in `iec104-core`.
+- The Maven coordinate `com.digitalpetri.iec60870:iec60870-transport-tcp` (version `0.1.0-SNAPSHOT`),
+  which transitively brings in `iec60870-core`.
 - Java 17.
 
 If you have not yet run the end-to-end happy path, read [Getting Started](../getting-started.md)
@@ -30,14 +30,14 @@ first; this page assumes you know how the client and server fit together.
 ## Step 1 — Build and connect the client
 
 Build a client with [`TcpIec104Client.builder()`](../../architecture/modules-and-dependencies.md) and
-open the connection inside a try-with-resources block. `build()` returns the core `Iec104Client`
+open the connection inside a try-with-resources block. `build()` returns the core `Iec60870Client`
 interface (it has no Netty types on its surface), and the client is `AutoCloseable`, so it closes the
 connection and releases transport resources when the block exits.
 
 Imports omitted.
 
 ```java
-try (Iec104Client client =
+try (Iec60870Client client =
     TcpIec104Client.builder()
         .host("127.0.0.1")
         .port(2404)
@@ -105,7 +105,7 @@ individual confirmations for a general interrogation. At the protocol level the 
 - An interrogation that does not complete in time throws `ProtocolTimeoutException`.
 - A closed or lost link throws `ConnectionClosedException`.
 
-All three live in the root package `com.digitalpetri.iec104`; see the
+All three live in the root package `com.digitalpetri.iec60870`; see the
 [error model reference](../reference/errors.md).
 
 ## Step 4 — Read the interrogation result
@@ -232,7 +232,7 @@ in [handle events](./handle-events.md); subscribe before `connect()` so early ev
 
 ## Putting it together / Run the example
 
-[`ClientExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java)
+[`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
 runs this whole flow: it subscribes to events, connects (which starts data transfer because
 `startDataTransferOnConnect` defaults to `true`), interrogates CA 1 and prints its `pointValues()`,
 sends a single command, synchronizes the clock, then lingers so spontaneous updates from the server
@@ -242,15 +242,15 @@ Start the server in one shell and the client in another:
 
 ```bash
 # shell 1
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.ServerExample
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.ServerExample
 
 # shell 2
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.ClientExample
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.ClientExample
 ```
 
-See [`iec104-examples/README.md`](../../../iec104-examples/README.md) for build prerequisites and the
+See [`iec60870-examples/README.md`](../../../iec60870-examples/README.md) for build prerequisites and the
 `java -cp` alternative.
 
 ## See also

@@ -5,7 +5,7 @@ the codecs read and write, and which thread runs application callbacks.
 
 ## Buffer ownership
 
-The only place a `ByteBuf` appears in `iec104-core` is inside the `Serde` classes of the raw model
+The only place a `ByteBuf` appears in `iec60870-core` is inside the `Serde` classes of the raw model
 (`Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`, `CommonAddress.Serde`, the per-type
 `InformationObjectCodec`s, and the element/time `Serde`s). They follow one uniform rule:
 
@@ -45,7 +45,7 @@ buffer's default byte order.
                                                the cumulative inbound buffer
 ```
 
-In `iec104-transport-tcp`, `Iec104FrameEncoder` allocates (or is handed) the outbound buffer, calls
+In `iec60870-transport-tcp`, `Iec104FrameEncoder` allocates (or is handed) the outbound buffer, calls
 `encode`, and lets Netty release it after the channel write; `Iec104FrameDecoder` performs the
 length-field framing on the `0x68` start octet and length octet, slices exactly one frame with a
 non-retained `in.readSlice(frameLength)` (no `retain`/`release`), and calls `decode` on that slice to
@@ -78,7 +78,7 @@ threading contract so application code never has to reason about transport I/O t
 
 ### Serialization guarantees
 
-Event delivery is **serial**. A subscriber to `Iec104Client.events()` or `Iec104Server.events()`
+Event delivery is **serial**. A subscriber to `Iec60870Client.events()` or `Iec60870Server.events()`
 never observes two events concurrently; events arrive in order on the callback executor. The
 configuration docs note that the executor should preserve submission order — a single-threaded
 executor is the simplest choice that does. On the server, `ServerHandler` callbacks for a single
@@ -97,7 +97,7 @@ The practical rule for application code:
 
 | Resource | Owner | Rule |
 |---|---|---|
-| Outbound/inbound `ByteBuf` | Transport (`iec104-transport-tcp`) | Allocates and releases; codecs only read/write |
+| Outbound/inbound `ByteBuf` | Transport (`iec60870-transport-tcp`) | Allocates and releases; codecs only read/write |
 | One connection's protocol state | `ApciSession` | Single internal lock; callbacks run under it, must not block |
 | Application callback thread | `callbackExecutor` (client/server config) | Serial event delivery; safe to block here |
 | Blocking-call completion | `callbackExecutor` | Blocking facade methods complete on this executor |

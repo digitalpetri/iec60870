@@ -4,8 +4,8 @@
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.digitalpetri.iec104</groupId>
-  <artifactId>iec104-parent</artifactId>
+  <groupId>com.digitalpetri.iec60870</groupId>
+  <artifactId>iec60870-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
@@ -37,11 +37,11 @@
   </scm>
 
   <modules>
-    <module>iec104-core</module>
-    <module>iec104-transport-tcp</module>
-    <module>iec104-examples</module>
-    <module>iec104-tests</module>
-    <module>iec104-interop</module>
+    <module>iec60870-core</module>
+    <module>iec60870-transport-tcp</module>
+    <module>iec60870-examples</module>
+    <module>iec60870-tests</module>
+    <module>iec60870-interop</module>
   </modules>
 
   <properties>

@@ -3,7 +3,7 @@
 ## TLS
 
 TLS is configured in core but applied by the transport. The core type is `TlsOptions`
-(`com.digitalpetri.iec104.TlsOptions`), a small immutable holder that carries:
+(`com.digitalpetri.iec60870.TlsOptions`), a small immutable holder that carries:
 
 - an `javax.net.ssl.SSLContext` supplying the key and trust material, and
 - a `clientAuthRequired` flag selecting mutual authentication.
@@ -18,7 +18,7 @@ TlsOptions options = TlsOptions.builder(sslContext)
 
 `TlsOptions` contains **no transport-specific types** — just the standard `SSLContext`. This is what
 lets TLS be configured against the core API while the actual engine (Netty's `SslHandler`) lives only
-in `iec104-transport-tcp`. The transport translates `TlsOptions` into its concrete TLS engine; the
+in `iec60870-transport-tcp`. The transport translates `TlsOptions` into its concrete TLS engine; the
 `clientAuthRequired` flag requires client authentication on a server and has no effect on a client.
 `TlsOptions` is passed to the transport-module builders (`TcpIec104Client.builder().tls(...)` /
 `TcpIec104Server.builder().tls(...)`), not to `ClientConfig`/`ServerConfig`, because transport
@@ -30,7 +30,7 @@ The connection is not considered established until the TLS handshake completes. 
 contract states it plainly: `ClientTransport.connect()`'s returned stage completes **only after the
 handshake succeeds** when TLS is configured. In the Netty implementation this means waiting on the
 `SslHandler`'s handshake future before completing the connect stage. Consequently
-`Iec104Client.connect()` (which blocks on `connectAsync()`) returns only once the secure channel is
+`Iec60870Client.connect()` (which blocks on `connectAsync()`) returns only once the secure channel is
 fully up — and, when `startDataTransferOnConnect` is set, after the `STARTDT` handshake as well. A
 handshake or trust failure surfaces as a failed connect, mapped to the typed exceptions described in
 [errors-and-extensibility.md](errors-and-extensibility.md).

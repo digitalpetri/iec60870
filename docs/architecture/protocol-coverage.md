@@ -2,9 +2,9 @@
 
 This is the authoritative map of which ASDU type identifications the library models, and how. Every
 type identification in the IEC 60870-5-101 tables and the IEC 60870-5-104 control-direction-with-time
-extension has a constant in `com.digitalpetri.iec104.asdu.AsduType`. A constant's `supported()` flag
+extension has a constant in `com.digitalpetri.iec60870.asdu.AsduType`. A constant's `supported()` flag
 reports whether the library provides a typed information object record (a record in
-`com.digitalpetri.iec104.asdu.object` implementing `InformationObject`):
+`com.digitalpetri.iec60870.asdu.object` implementing `InformationObject`):
 
 - `supported() == true` — a typed record exists; the standard codec encodes/decodes it, and the
   high-level facade can work with it directly.
@@ -21,7 +21,7 @@ control direction (controlling → controlled station), **Sys** = system informa
 
 ## Process information, monitor direction (Table 8)
 
-| TypeID | Mnemonic | Description | Dir | Record (`com.digitalpetri.iec104.asdu.object`) |
+| TypeID | Mnemonic | Description | Dir | Record (`com.digitalpetri.iec60870.asdu.object`) |
 |---|---|---|---|---|
 | 1 | M_SP_NA_1 | Single-point information | Mon | `SinglePointInformation` |
 | 2 | M_SP_TA_1 | Single-point with CP24Time2a | Mon | `SinglePointWithCp24Time` |
@@ -132,7 +132,7 @@ stateless encode/decode the rest of the type table needs. Rather than ship a par
 implementation, the library leaves these types present-but-unsupported.
 
 They remain fully reachable through the raw layer. A caller who needs file transfer can send and
-receive them as raw `Asdu`s with `Iec104Client.send(Asdu)` / `events()` (or `ServerContext.send(Asdu)`
+receive them as raw `Asdu`s with `Iec60870Client.send(Asdu)` / `events()` (or `ServerContext.send(Asdu)`
 / `ServerHandler.onRawAsdu(...)`), parsing the `F_*` object bodies directly from the raw `Asdu` and
 driving the multi-ASDU procedure from application code.
 

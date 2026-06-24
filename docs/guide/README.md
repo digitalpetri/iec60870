@@ -1,10 +1,10 @@
 # IEC 60870-5-104 — User Guide
 
-This is the task-oriented guide for *using* the `com.digitalpetri.iec104` library, a Java 17
+This is the task-oriented guide for *using* the `com.digitalpetri.iec60870` library, a Java 17
 implementation of IEC 60870-5-104. Throughout the guide a **client** is the
 [controlling station](reference/glossary.md) (the master) and a **server** is the
 [controlled station](reference/glossary.md) (the outstation, or slave). Most users work through the
-high-level facade — `Iec104Client` and `Iec104Server`, built with the Netty-backed `TcpIec104Client`
+high-level facade — `Iec60870Client` and `Iec60870Server`, built with the Netty-backed `TcpIec104Client`
 and `TcpIec104Server` — while a raw ASDU layer sits underneath for protocol types the facade does not
 model. These pages are task-oriented and caller-focused; for the as-built internals (the wire model,
 the APCI engine, the core-vs-transport split) see [`docs/architecture/`](../architecture/README.md).
@@ -21,7 +21,7 @@ The guide is split into three layers, following the familiar tutorial / how-to /
 - **Reference** — lookup material you return to: the coverage matrix, the glossary, how to choose a
   point type, the timers and window, and the error model.
 
-The runnable examples live under [`iec104-examples/`](../../iec104-examples/README.md), and each
+The runnable examples live under [`iec60870-examples/`](../../iec60870-examples/README.md), and each
 How-To links the example it builds on.
 
 ## Recommended reading order
@@ -104,6 +104,6 @@ If you are new to the library, read in this order:
 For the **as-built internals** — the wire/ASDU model, the `ApciSession` engine, buffer ownership and
 threading, and the core-vs-transport split — read [`docs/architecture/`](../architecture/README.md),
 starting with its [overview](../architecture/overview.md). The
-[runnable examples](../../iec104-examples/README.md) are the executable companion to this guide:
+[runnable examples](../../iec60870-examples/README.md) are the executable companion to this guide:
 `ServerExample`, `ClientExample`, `RawAsduExample`, and `TlsExample`. The project
 [README](../../README.md) has the Maven coordinates and the one-paragraph "what is this."

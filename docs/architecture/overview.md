@@ -29,21 +29,21 @@ The library deliberately exposes two levels of abstraction, and a caller can mov
 them on the same connection.
 
 **The raw protocol layer** models the wire faithfully. `Asdu`, `AsduType`, `Cause`, and the
-per-type `InformationObject` records in `com.digitalpetri.iec104.asdu.object` are direct,
+per-type `InformationObject` records in `com.digitalpetri.iec60870.asdu.object` are direct,
 immutable representations of what travels on the wire, each with a co-located `Serde` that
 encodes and decodes it. A caller who needs full control — conformance testing, private TypeIDs,
-unusual cause/qualifier combinations — builds an `Asdu` and sends it with `Iec104Client.send(Asdu)`,
+unusual cause/qualifier combinations — builds an `Asdu` and sends it with `Iec60870Client.send(Asdu)`,
 and observes every inbound `Asdu` through the event stream. Nothing is hidden at this layer.
 
-**The high-level facade** turns that wire model into a domain API. `Iec104Client` offers
-`interrogate`, `read`, `commands().single(...)`, and `synchronizeClock`; `Iec104Server` hosts
+**The high-level facade** turns that wire model into a domain API. `Iec60870Client` offers
+`interrogate`, `read`, `commands().single(...)`, and `synchronizeClock`; `Iec60870Server` hosts
 `Station`s with `PointDefinition`s and answers requests from a current-value image. Values are
 expressed as `PointValue<T>` with `Quality`, addressed by `PointAddress`, and delivered as typed
 `ClientEvent`/`ServerEvent` records. This layer correlates request/response, manages the command
 select-before-operate sequence, projects monitor objects onto domain point values, and serializes
 event delivery onto a callback executor.
 
-The escape hatch is always present: `Iec104Client.send(Asdu)` / `events()` on the client, and
+The escape hatch is always present: `Iec60870Client.send(Asdu)` / `events()` on the client, and
 `ServerContext.send(Asdu)` / `ServerHandler.onRawAsdu(...)` on the server, let an application drop
 to the raw layer for anything the facade does not model — without leaving the high-level API.
 
@@ -52,21 +52,21 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
 ## Component map
 
 ```
-                         iec104-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
+                         iec60870-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
                          ┌───────────────────────────────────────────────────────────────┐
                          │  TcpIec104Client.builder()        TcpIec104Server.builder()    │
    user-facing  ───────► │  host/port/tls  ──► NettyClientTransport / NettyServerTransport │
    entry points          │  Iec104FrameDecoder / Iec104FrameEncoder  (the ByteBuf boundary)│
                          └───────────────────────────────────────────────────────────────┘
                                  │ implements                       returns the core interface
-                                 ▼ .transport interfaces            (Iec104Client / Iec104Server)
+                                 ▼ .transport interfaces            (Iec60870Client / Iec60870Server)
    ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-   │ iec104-core  (no Netty channel/handler types; ByteBuf only inside .asdu/.apci Serde)       │
+   │ iec60870-core  (no Netty channel/handler types; ByteBuf only inside .asdu/.apci Serde)       │
    │                                                                                            │
    │  HIGH-LEVEL FACADE                                                                          │
-   │   .client   Iec104Client (+ DefaultIec104Client), CommandService, Command, CommandResult,  │
+   │   .client   Iec60870Client (+ DefaultIec60870Client), CommandService, Command, CommandResult,  │
    │             ClientEvent, InterrogationResult, ClientConfig                                 │
-   │   .server   Iec104Server (+ DefaultIec104Server), Station, PointDefinition, StationRegistry,│
+   │   .server   Iec60870Server (+ DefaultIec60870Server), Station, PointDefinition, StationRegistry,│
    │             ServerHandler, ServerContext, ServerEvent, ServerConfig, request/decision types│
    │   .point    PointValue<T>, PointType, Quality, PointCapability, TimeTagStyle, MonitorMapping │
    │   .catalog  PointCatalog, CatalogEntry, ObservedCatalog, ObservationMode, MergePolicy       │
@@ -83,7 +83,7 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │                                                                                            │
    │  CONFIG + ERRORS (package root)                                                             │
    │   ProtocolProfile, ApciSettings, TlsOptions                                                 │
-   │   Iec104Exception (+ AsduDecodeException, ProtocolTimeoutException, ConnectionClosed-,       │
+   │   Iec60870Exception (+ AsduDecodeException, ProtocolTimeoutException, ConnectionClosed-,       │
    │                    NegativeConfirmation-, UnsupportedAsduType-, SequenceNumberException)     │
    │                                                                                            │
    │  TRANSPORT INTERFACES (no Netty)                                                            │

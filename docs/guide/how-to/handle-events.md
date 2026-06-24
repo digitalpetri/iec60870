@@ -11,7 +11,7 @@ it.
 
 If you have not connected a client or hosted a server yet, start with
 [Getting Started](../getting-started.md), then [Host a server](./host-a-server.md). This page assumes
-you already have an `Iec104Client` or `Iec104Server` in hand.
+you already have an `Iec60870Client` or `Iec60870Server` in hand.
 
 ## The two surfaces at a glance
 
@@ -31,8 +31,8 @@ of [`ClientEvent`](../reference/glossary.md). Register a `Flow.Subscriber` with
 `onSubscribe`; for an unbounded stream of events, request `Long.MAX_VALUE`:
 
 ```java
-import com.digitalpetri.iec104.client.ClientEvent;
-import com.digitalpetri.iec104.point.PointValue;
+import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.point.PointValue;
 import java.util.concurrent.Flow;
 
 client.events().subscribe(new Flow.Subscriber<ClientEvent>() {
@@ -145,7 +145,7 @@ A [spontaneous](../reference/glossary.md) update arrives with [cause of transmis
 
 ```java
 if (event instanceof ClientEvent.PointUpdated u) {
-  PointAddress at = u.address();                  // com.digitalpetri.iec104.address.PointAddress
+  PointAddress at = u.address();                  // com.digitalpetri.iec60870.address.PointAddress
   PointValue<?> v = u.value();                    // v.value(), v.type(), v.quality()
   // u.timestamp() is the object's time tag, if any (Optional<Instant>).
   cache.put(at, v);
@@ -170,7 +170,7 @@ The server exposes its own event stream, `server.events()` →
 `ServerEvent` carries `remoteAddress()` so you can tell connections apart.
 
 ```java
-import com.digitalpetri.iec104.server.ServerEvent;
+import com.digitalpetri.iec60870.server.ServerEvent;
 import java.util.concurrent.Flow;
 
 server.events().subscribe(new Flow.Subscriber<ServerEvent>() {
@@ -220,15 +220,15 @@ server.events().subscribe(new Flow.Subscriber<ServerEvent>() {
 has a `default` implementing standard outstation behavior, so you override only what you customize:
 
 ```java
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.asdu.object.SingleCommand;
-import com.digitalpetri.iec104.point.PointValue;
-import com.digitalpetri.iec104.server.CommandDecision;
-import com.digitalpetri.iec104.server.CommandRequest;
-import com.digitalpetri.iec104.server.Iec104Server;
-import com.digitalpetri.iec104.server.ServerContext;
-import com.digitalpetri.iec104.server.ServerHandler;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.asdu.object.SingleCommand;
+import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.server.CommandDecision;
+import com.digitalpetri.iec60870.server.CommandRequest;
+import com.digitalpetri.iec60870.server.Iec60870Server;
+import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerHandler;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
 
 ServerHandler handler = new ServerHandler() {
   @Override
@@ -240,7 +240,7 @@ ServerHandler handler = new ServerHandler() {
   }
 };
 
-Iec104Server server =
+Iec60870Server server =
     TcpIec104Server.builder().port(2404).addStation(station).handler(handler).build();
 ```
 
@@ -326,20 +326,20 @@ For the full ownership and serialization model, read
 ## Where this runs in the examples
 
 - **`ClientExample`** —
-  [`iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java).
+  [`iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java).
   Its inner `PrintingSubscriber` has exactly the shape of the client-event subscriber above: it
   subscribes *before* `connect()`, requests `Long.MAX_VALUE` in `onSubscribe`, and prints
   `PointUpdated`, `AsduReceived`, and `ConnectionClosed` events using `instanceof` chains. Run it
   with
-  `mise exec -- mvn -q -pl iec104-examples exec:java -Dexec.mainClass=com.digitalpetri.iec104.examples.ClientExample`.
+  `mise exec -- mvn -q -pl iec60870-examples exec:java -Dexec.mainClass=com.digitalpetri.iec60870.examples.ClientExample`.
 - **`ServerExample`** —
-  [`iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java).
+  [`iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java).
   Its inner `ExampleHandler` overrides only `onCommand`: it accepts a `SingleCommand` on the
   commandable point with `CommandDecision.acceptAndUpdate(...)` and otherwise rejects, exactly like
   the `ServerHandler` snippet above. Run it with
-  `mise exec -- mvn -q -pl iec104-examples exec:java -Dexec.mainClass=com.digitalpetri.iec104.examples.ServerExample`.
+  `mise exec -- mvn -q -pl iec60870-examples exec:java -Dexec.mainClass=com.digitalpetri.iec60870.examples.ServerExample`.
 
-Both are documented in the [examples README](../../../iec104-examples/README.md).
+Both are documented in the [examples README](../../../iec60870-examples/README.md).
 
 ## See also
 

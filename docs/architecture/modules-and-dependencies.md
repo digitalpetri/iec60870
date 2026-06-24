@@ -1,25 +1,25 @@
 # Modules and Dependencies
 
-The library is a Maven multi-module build under the `iec104-parent` POM. Two modules matter to a
-caller: `iec104-core` (the protocol and the high-level API) and `iec104-transport-tcp` (the Netty
-TCP/TLS transport). A third module, `iec104-tests`, holds cross-module integration tests.
+The library is a Maven multi-module build under the `iec60870-parent` POM. Two modules matter to a
+caller: `iec60870-core` (the protocol and the high-level API) and `iec60870-transport-tcp` (the Netty
+TCP/TLS transport). A third module, `iec60870-tests`, holds cross-module integration tests.
 
 ## The core-vs-transport split
 
-`iec104-core` owns everything that is independent of how bytes reach the network:
+`iec60870-core` owns everything that is independent of how bytes reach the network:
 
 - the raw protocol model and codecs (`.asdu`, `.apci`, `.address`, `.asdu.element`, `.asdu.time`);
-- the APCI session engine (`com.digitalpetri.iec104.apci.ApciSession`) — the symmetric sequence /
+- the APCI session engine (`com.digitalpetri.iec60870.apci.ApciSession`) — the symmetric sequence /
   window / timer state machine used by both client and server;
 - the high-level client and server *interfaces* and their default implementations
-  (`Iec104Client` / `DefaultIec104Client`, `Iec104Server` / `DefaultIec104Server`);
+  (`Iec60870Client` / `DefaultIec60870Client`, `Iec60870Server` / `DefaultIec60870Server`);
 - the point and catalog model (`.point`, `.catalog`), the error model (package-root exceptions),
   and the configuration types (`ProtocolProfile`, `ApciSettings`, `TlsOptions`);
 - the **transport interfaces** (`.transport`) — `ClientTransport`, `ServerTransport`,
   `ServerTransportConnection`, `TransportListener` — which the core implementations drive but do not
   implement.
 
-`iec104-transport-tcp` owns the Netty side:
+`iec60870-transport-tcp` owns the Netty side:
 
 - `NettyClientTransport` / `NettyServerTransport`, the implementations of the core transport
   interfaces;
@@ -30,12 +30,12 @@ TCP/TLS transport). A third module, `iec104-tests`, holds cross-module integrati
 - the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server`, whose builders carry the
   transport knobs (`host`, `port`, `localBind`, `TlsOptions`, bootstrap/event-loop customization).
 
-A builder in the transport module constructs the Netty transport plus a `DefaultIec104Client` /
-`DefaultIec104Server`, and `build()` returns the **core interface** type:
+A builder in the transport module constructs the Netty transport plus a `DefaultIec60870Client` /
+`DefaultIec60870Server`, and `build()` returns the **core interface** type:
 
 ```java
-// Returns com.digitalpetri.iec104.client.Iec104Client — a core type.
-try (Iec104Client client = TcpIec104Client.builder()
+// Returns com.digitalpetri.iec60870.client.Iec60870Client — a core type.
+try (Iec60870Client client = TcpIec104Client.builder()
         .host("127.0.0.1").port(2404)
         .startDataTransferOnConnect(true)
         .build()) {
@@ -46,12 +46,12 @@ try (Iec104Client client = TcpIec104Client.builder()
 
 This is a deliberate placement. The protocol methods on the returned object — `connect`,
 `startDataTransfer`, `interrogate`, `read`, `commands`, `events`, `synchronizeClock`, `send`,
-`close`, and the `*Async` variants — are all defined on the core `Iec104Client` interface. Only the
+`close`, and the `*Async` variants — are all defined on the core `Iec60870Client` interface. Only the
 *transport wiring* (host, port, TLS) lives on the transport-module builder, because the dependency
 rule below forbids transport wiring from appearing in core.
 
 A caller who already has a transport implementation can bypass the builders entirely and construct
-`new DefaultIec104Client(clientTransport, clientConfig)` directly; the high-level behavior is
+`new DefaultIec60870Client(clientTransport, clientConfig)` directly; the high-level behavior is
 identical.
 
 ## Dependency rules (the boundary that keeps core transport-agnostic)
@@ -59,7 +59,7 @@ identical.
 The split is enforced by a strict rule about which types may cross which package boundary.
 
 **No Netty runtime type appears in core or in the high-level public API.** Concretely, the following
-must never appear in any `iec104-core` package:
+must never appear in any `iec60870-core` package:
 
 - `io.netty.channel.*` — `Channel`, `EventLoopGroup`, `ChannelHandler`, `ServerBootstrap`;
 - `io.netty.handler.*` — including `SslHandler` and the TLS engine wiring;
@@ -67,7 +67,7 @@ must never appear in any `iec104-core` package:
 
 The single, *deliberate* exception is `netty-buffer`. The raw codec layer encodes and decodes through
 co-located `Serde` classes that operate on `io.netty.buffer.ByteBuf`, and core declares a direct
-`netty-buffer` dependency for exactly that reason. The `iec104-core` POM documents this in a comment:
+`netty-buffer` dependency for exactly that reason. The `iec60870-core` POM documents this in a comment:
 
 > Deliberate netty-buffer dependency: the raw codec layer encodes/decodes ASDUs through co-located
 > Serde classes that operate on Netty ByteBuf. ByteBuf is confined to the codec layer; it must not
@@ -76,21 +76,21 @@ co-located `Serde` classes that operate on `io.netty.buffer.ByteBuf`, and core d
 
 So `ByteBuf` is allowed, but only inside the nested `Serde` classes of `.asdu`, `.apci`, `.address`,
 `.asdu.element`, and `.asdu.time` (for example `Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`,
-`CommonAddress.Serde`). It must not reach `Iec104Client`, `Iec104Server`, the event/command/point/
+`CommonAddress.Serde`). It must not reach `Iec60870Client`, `Iec60870Server`, the event/command/point/
 catalog types, `ProtocolProfile`, or `ApciSettings`. Above the `Serde` boundary everything is an
 immutable Java object; the `ApciSession` itself never touches a `ByteBuf`.
 
 The transport interfaces in `.transport` are the formal seam. They are expressed entirely in core
 types — they exchange `Apdu` objects, `SocketAddress`, and `java.security.cert.Certificate`, never a
-Netty type — so `iec104-transport-tcp` can implement them with Netty without that detail leaking
+Netty type — so `iec60870-transport-tcp` can implement them with Netty without that detail leaking
 back into core.
 
 ### Dependency table
 
 | Module | Compile dependencies | Notes |
 |---|---|---|
-| `iec104-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`; no channel/handler |
-| `iec104-transport-tcp` | `iec104-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler` |
+| `iec60870-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`; no channel/handler |
+| `iec60870-transport-tcp` | `iec60870-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler` |
 
 Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,
 `netty-channel-fsm` `1.0.x`, SLF4J `2.0.x`). The `netty-channel-fsm` dependency excludes

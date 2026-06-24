@@ -6,7 +6,7 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 
 - Java 17, managed through `mise` using `.mise.toml`.
 - Maven multi-module build; dependency and plugin versions are centralized in the root POM.
-- Netty for the TCP/TLS transport module; `iec104-core` depends only on `netty-buffer` (`ByteBuf` is
+- Netty for the TCP/TLS transport module; `iec60870-core` depends only on `netty-buffer` (`ByteBuf` is
   the codec boundary), not on Netty runtime types.
 - JOOU for unsigned integer types in the protocol model.
 - SLF4J for logging (no binding is shipped to consumers).
@@ -16,29 +16,29 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 
 ## Project Layout
 
-- `pom.xml` is the parent Maven project (group `com.digitalpetri.iec104`, artifact `iec104-parent`).
-- `iec104-core/` owns the protocol model and the Netty-runtime-free public API: the raw ASDU layer
+- `pom.xml` is the parent Maven project (group `com.digitalpetri.iec60870`, artifact `iec60870-parent`).
+- `iec60870-core/` owns the protocol model and the Netty-runtime-free public API: the raw ASDU layer
   (every standard TypeID with a co-located `Serde`), the APCI session engine, the transport
-  interfaces, and the high-level `Iec104Client` / `Iec104Server` facades plus the point/catalog model.
-- `iec104-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
+  interfaces, and the high-level `Iec60870Client` / `Iec60870Server` facades plus the point/catalog model.
+- `iec60870-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
   `TcpIec104Client` / `TcpIec104Server` builders.
-- `iec104-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
-- `iec104-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
-- `iec104-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
+- `iec60870-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
+- `iec60870-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
+- `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
   images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
   Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
 
-Modules are declared in the parent POM in build order: `iec104-core`, `iec104-transport-tcp`,
-`iec104-examples`, `iec104-tests`, `iec104-interop`. Source lives under `com.digitalpetri.iec104`; in
-`iec104-core` the main packages are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `apci`,
+Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-transport-tcp`,
+`iec60870-examples`, `iec60870-tests`, `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; in
+`iec60870-core` the main packages are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `apci`,
 `codec`, `address`, `transport`, `client`, `server`, `point`, and `catalog`.
 
 Keep new modules under the parent build and centralize dependency/plugin versions in the root POM.
 
 ### Architecture invariant
 
-Keep the `iec104-core` public API free of Netty *runtime* types (channels, event loops, TLS
-engines) — those belong to `iec104-transport-tcp`. Core deliberately depends on `netty-buffer`, so
+Keep the `iec60870-core` public API free of Netty *runtime* types (channels, event loops, TLS
+engines) — those belong to `iec60870-transport-tcp`. Core deliberately depends on `netty-buffer`, so
 `ByteBuf` is the one Netty type that appears at the raw ASDU `Serde`/codec boundary. This
 core-vs-transport split is the central design constraint; see `docs/architecture/`.
 
@@ -52,8 +52,8 @@ core-vs-transport split is the central design constraint; see `docs/architecture
 - Run a specific test class: `mise exec -- mvn -q -pl <module> test -Dtest=ClassName`
   (see `docs/running-tests.md` for module-targeting patterns)
 - Run the lib60870-C interop tests (Docker required, excluded by default):
-  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec104-interop -am -Pinterop test`
-  (see `iec104-interop/README.md` for details)
+  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec60870-interop -am -Pinterop test`
+  (see `iec60870-interop/README.md` for details)
 
 ## Additional References
 
@@ -63,7 +63,7 @@ project instructions, not optional background material.
 - Java coding conventions: `docs/java-coding-conventions.md`
 - Documentation guidelines: `docs/documentation-guidelines.md`
 - Running tests / module-targeting flags: `docs/running-tests.md`
-- Interop test setup (Docker/Testcontainers): `iec104-interop/README.md`
+- Interop test setup (Docker/Testcontainers): `iec60870-interop/README.md`
 
 ### Architecture Documentation
 
@@ -74,7 +74,7 @@ indexes the rest. Read the relevant document before changing behavior in that ar
 - `modules-and-dependencies.md` — the core-vs-transport split and the rules that keep Netty runtime
   types out of core.
 - `two-layer-api.md` — the raw layer (`Asdu`, `Cause`, `InformationObject` records, `Serde` codecs)
-  vs. the high-level layer (`Iec104Client` / `Iec104Server`, station/point model, commands, events).
+  vs. the high-level layer (`Iec60870Client` / `Iec60870Server`, station/point model, commands, events).
 - `protocol-coverage.md` — the ASDU TypeID coverage matrix and what is intentionally out of scope.
 - `apci-and-timers.md` — STARTDT/STOPDT/TESTFR, I/S/U frames, the `k`/`w` window, `t0`–`t3` timers,
   and how `ApciSession` implements them.
@@ -108,8 +108,8 @@ location.
 - Run `mise exec -- mvn clean verify` before handing off normal code changes; this also runs the
   Spotless check.
 - While iterating, prefer targeted checks such as
-  `mise exec -- mvn -q -pl iec104-core test -Dtest=ClassName` or
-  `mise exec -- mvn -q -pl iec104-transport-tcp -am test -Dtest=ClassName`.
+  `mise exec -- mvn -q -pl iec60870-core test -Dtest=ClassName` or
+  `mise exec -- mvn -q -pl iec60870-transport-tcp -am test -Dtest=ClassName`.
 - For documentation-only changes, run the relevant lightweight check when one exists and clearly
   state if the full Maven build was skipped.
 - If a verification command cannot be run, report the command, the reason it was skipped or failed,

@@ -46,10 +46,10 @@ widths are a shared wire contract.
 Client — override both records:
 
 ```java
-import com.digitalpetri.iec104.ApciSettings;
-import com.digitalpetri.iec104.ProtocolProfile;
-import com.digitalpetri.iec104.client.Iec104Client;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.ApciSettings;
+import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
 import java.time.Duration;
 import org.joou.UShort;
 
@@ -71,7 +71,7 @@ ApciSettings apci =
         /* t2 */ Duration.ofSeconds(10),
         /* t3 */ Duration.ofSeconds(20));
 
-try (Iec104Client client =
+try (Iec60870Client client =
     TcpIec104Client.builder()
         .host("127.0.0.1")
         .port(2404)
@@ -86,12 +86,12 @@ try (Iec104Client client =
 Server — the controlled station applies the *same* records so the two ends agree:
 
 ```java
-import com.digitalpetri.iec104.server.Iec104Server;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.server.Iec60870Server;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
 
 // Reuse the `profile` and `apci` locals built exactly as in the client recipe above —
 // the field widths are a shared wire contract, so both ends must construct the same profile.
-try (Iec104Server server =
+try (Iec60870Server server =
     TcpIec104Server.builder()
         .bindAddress("0.0.0.0")
         .port(2404)

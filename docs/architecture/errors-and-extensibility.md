@@ -15,12 +15,12 @@ making genuine faults impossible to ignore.
 
 ### Exception hierarchy
 
-All library exceptions are unchecked and extend `Iec104Exception`, so an application can catch that
+All library exceptions are unchecked and extend `Iec60870Exception`, so an application can catch that
 one type to handle any library-specific failure uniformly.
 
 ```
 RuntimeException
-└── Iec104Exception                     base; catch to handle any library failure
+└── Iec60870Exception                     base; catch to handle any library failure
     ├── AsduDecodeException             malformed / truncated / out-of-range wire data on decode
     ├── ProtocolTimeoutException        an expected response did not arrive in time (t1..t3, request deadline)
     ├── ConnectionClosedException       operation on a closed/lost connection; pending requests failed on loss
@@ -68,7 +68,7 @@ on.
 
 ## Extensibility
 
-The raw layer is the extension surface. The high-level facade (`Iec104Client` / `Iec104Server`,
+The raw layer is the extension surface. The high-level facade (`Iec60870Client` / `Iec60870Server`,
 the station/point model, commands, and events) supports the standard, modeled TypeIDs. There is no
 pluggable codec registry: the encode/decode dispatch is driven by `AsduType`, and `AsduType.fromId`
 rejects any undefined type identification with `UnsupportedAsduTypeException` before any codec could
