@@ -5,20 +5,42 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 ## Tech Stack
 
 - Java 17, managed through `mise` using `.mise.toml`.
-- Maven multi-module build.
-- Netty for the TCP/TLS transport module.
-- JUnit 5 for tests.
+- Maven multi-module build; dependency and plugin versions are centralized in the root POM.
+- Netty for the TCP/TLS transport module; `iec104-core` depends only on `netty-buffer` (`ByteBuf` is
+  the codec boundary), not on Netty runtime types.
+- JOOU for unsigned integer types in the protocol model.
+- SLF4J for logging (no binding is shipped to consumers).
+- JUnit 5 for tests; Testcontainers for the lib60870-C interop tests.
 - JSpecify for nullness annotations.
+- Spotless with google-java-format enforces code style; the check runs as part of `mvn verify`.
 
 ## Project Layout
 
-- `pom.xml` is the parent Maven project, artifact `iec104-parent`.
-- `iec104-core/` owns the protocol model, serializers/codecs, client/server APIs, and transport
-  interfaces.
-- `iec104-transport-tcp/` owns the Netty-backed TCP/TLS transport implementation.
-- `iec104-tests/` owns cross-module integration tests.
+- `pom.xml` is the parent Maven project (group `com.digitalpetri.iec104`, artifact `iec104-parent`).
+- `iec104-core/` owns the protocol model and the Netty-runtime-free public API: the raw ASDU layer
+  (every standard TypeID with a co-located `Serde`), the APCI session engine, the transport
+  interfaces, and the high-level `Iec104Client` / `Iec104Server` facades plus the point/catalog model.
+- `iec104-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
+  `TcpIec104Client` / `TcpIec104Server` builders.
+- `iec104-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
+- `iec104-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
+- `iec104-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
+  images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
+  Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
+
+Modules are declared in the parent POM in build order: `iec104-core`, `iec104-transport-tcp`,
+`iec104-examples`, `iec104-tests`, `iec104-interop`. Source lives under `com.digitalpetri.iec104`; in
+`iec104-core` the main packages are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `apci`,
+`codec`, `address`, `transport`, `client`, `server`, `point`, and `catalog`.
 
 Keep new modules under the parent build and centralize dependency/plugin versions in the root POM.
+
+### Architecture invariant
+
+Keep the `iec104-core` public API free of Netty *runtime* types (channels, event loops, TLS
+engines) — those belong to `iec104-transport-tcp`. Core deliberately depends on `netty-buffer`, so
+`ByteBuf` is the one Netty type that appears at the raw ASDU `Serde`/codec boundary. This
+core-vs-transport split is the central design constraint; see `docs/architecture/`.
 
 ## Common Commands
 
@@ -40,6 +62,26 @@ project instructions, not optional background material.
 
 - Java coding conventions: `docs/java-coding-conventions.md`
 - Documentation guidelines: `docs/documentation-guidelines.md`
+- Running tests / module-targeting flags: `docs/running-tests.md`
+- Interop test setup (Docker/Testcontainers): `iec104-interop/README.md`
+
+### Architecture Documentation
+
+`docs/architecture/` documents the system as built; start with `docs/architecture/README.md`, which
+indexes the rest. Read the relevant document before changing behavior in that area:
+
+- `overview.md` — what IEC 104 is, the two-layer API philosophy, and a component map.
+- `modules-and-dependencies.md` — the core-vs-transport split and the rules that keep Netty runtime
+  types out of core.
+- `two-layer-api.md` — the raw layer (`Asdu`, `Cause`, `InformationObject` records, `Serde` codecs)
+  vs. the high-level layer (`Iec104Client` / `Iec104Server`, station/point model, commands, events).
+- `protocol-coverage.md` — the ASDU TypeID coverage matrix and what is intentionally out of scope.
+- `apci-and-timers.md` — STARTDT/STOPDT/TESTFR, I/S/U frames, the `k`/`w` window, `t0`–`t3` timers,
+  and how `ApciSession` implements them.
+- `buffers-and-threading.md` — `ByteBuf` ownership/release rules and the callback-serialization model.
+- `tls-and-configuration.md` — `TlsOptions`, handshake gating, and the `ProtocolProfile` /
+  `ApciSettings` configuration types.
+- `errors-and-extensibility.md` — typed exceptions vs. result objects and extending `TypeCodecRegistry`.
 
 ### Dependency Source Code
 
