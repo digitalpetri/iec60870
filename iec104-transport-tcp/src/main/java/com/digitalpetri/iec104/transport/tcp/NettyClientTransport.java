@@ -166,11 +166,17 @@ public class NettyClientTransport implements ClientTransport {
     public CompletableFuture<Channel> connect(FsmContext<State, Event> ctx) {
       CompletableFuture<Channel> future = new CompletableFuture<>();
 
+      // Apply IEC 104 t0 as the TCP connection-establishment timeout. Clamp to int millis because
+      // CONNECT_TIMEOUT_MILLIS is an int; the config guarantees a positive Duration.
+      int connectTimeoutMillis =
+          (int) Math.min(config.connectTimeout().toMillis(), Integer.MAX_VALUE);
+
       Bootstrap bootstrap =
           new Bootstrap()
               .group(eventLoopGroup)
               .channel(NioSocketChannel.class)
               .option(ChannelOption.TCP_NODELAY, true)
+              .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis)
               .handler(
                   new ChannelInitializer<>() {
                     @Override

@@ -126,6 +126,10 @@ public final class TcpIec104Client {
     /**
      * Sets the APCI flow-control parameters. Defaults to {@link ApciSettings#defaults()}.
      *
+     * <p>{@code t0} is applied as the TCP connection-establishment timeout for each connect
+     * attempt; a {@link #bootstrapCustomizer(Consumer) bootstrap customizer} runs afterward and may
+     * override it.
+     *
      * @param apci the APCI settings.
      * @return this builder.
      */
@@ -199,6 +203,10 @@ public final class TcpIec104Client {
     /**
      * Sets a customizer invoked on the {@link Bootstrap} before each connect attempt.
      *
+     * <p>The customizer runs after the transport applies its own channel options, so it can
+     * override them — including the {@code CONNECT_TIMEOUT_MILLIS} derived from {@link
+     * #apci(ApciSettings) t0}.
+     *
      * @param bootstrapCustomizer the bootstrap customizer.
      * @return this builder.
      */
@@ -216,6 +224,7 @@ public final class TcpIec104Client {
       NettyClientTransportConfig transportConfig =
           NettyClientTransportConfig.builder(host, port)
               .localBind(localBind)
+              .connectTimeout(apci.t0())
               .profile(profile)
               .tlsOptions(tls)
               .sharedEventLoopGroup(eventLoopGroup)
