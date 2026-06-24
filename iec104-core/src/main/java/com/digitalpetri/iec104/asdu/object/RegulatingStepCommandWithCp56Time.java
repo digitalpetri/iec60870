@@ -6,6 +6,7 @@ import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.element.StepCommandState;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_RC_TA_1 (60) — regulating step command with a CP56Time2a time tag.
@@ -28,6 +29,23 @@ public record RegulatingStepCommandWithCp56Time(
     QualifierOfCommand qualifier,
     Cp56Time2a time)
     implements InformationObject {
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param state the regulating step command state (RCS).
+   * @param qualifier the qualifier of command (QOC).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address}, {@code state}, {@code qualifier}, or {@code
+   *     time} is null.
+   */
+  public RegulatingStepCommandWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(qualifier, "qualifier");
+    Objects.requireNonNull(time, "time");
+  }
 
   /**
    * Serde for the {@link RegulatingStepCommandWithCp56Time} information elements (after the IOA).

@@ -4,6 +4,7 @@ import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_BO_TA_1 (64) — bitstring of 32 bit command with time tag CP56Time2a (IEC 60870-5-104 §8.7).
@@ -18,6 +19,19 @@ import io.netty.buffer.ByteBuf;
  */
 public record Bitstring32CommandWithCp56Time(
     InformationObjectAddress address, int bits, Cp56Time2a time) implements InformationObject {
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param bits the 32-bit binary state information (BSI).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address} or {@code time} is null.
+   */
+  public Bitstring32CommandWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(time, "time");
+  }
 
   /** Serde for the {@link Bitstring32CommandWithCp56Time} information elements (after the IOA). */
   public static final class Serde {

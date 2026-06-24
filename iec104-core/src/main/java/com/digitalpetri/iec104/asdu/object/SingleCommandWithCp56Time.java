@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_SC_TA_1 (58) — single command with a CP56Time2a time tag (IEC 60870-5-104 §8.1).
@@ -31,6 +32,21 @@ public record SingleCommandWithCp56Time(
 
   /** SCS — single command state bit (bit 1). */
   private static final int SCS_MASK = 0x01;
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param on the single command state (SCS).
+   * @param qualifier the qualifier of command (QU and S/E).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address}, {@code qualifier}, or {@code time} is null.
+   */
+  public SingleCommandWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(qualifier, "qualifier");
+    Objects.requireNonNull(time, "time");
+  }
 
   /**
    * Serde for the {@link SingleCommandWithCp56Time} information elements (after the IOA).

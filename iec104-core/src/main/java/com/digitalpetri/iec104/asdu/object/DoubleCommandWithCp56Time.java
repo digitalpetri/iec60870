@@ -6,6 +6,7 @@ import com.digitalpetri.iec104.asdu.element.DoubleCommandState;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_DC_TA_1 (59) — double command with a CP56Time2a time tag.
@@ -27,6 +28,23 @@ public record DoubleCommandWithCp56Time(
     QualifierOfCommand qualifier,
     Cp56Time2a time)
     implements InformationObject {
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param state the double command state (DCS).
+   * @param qualifier the qualifier of command (QOC).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address}, {@code state}, {@code qualifier}, or {@code
+   *     time} is null.
+   */
+  public DoubleCommandWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(qualifier, "qualifier");
+    Objects.requireNonNull(time, "time");
+  }
 
   /** Serde for the {@link DoubleCommandWithCp56Time} information elements (after the IOA). */
   public static final class Serde {

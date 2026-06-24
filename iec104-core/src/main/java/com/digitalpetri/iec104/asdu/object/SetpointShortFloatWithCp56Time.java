@@ -5,6 +5,7 @@ import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.QualifierOfSetpoint;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_SE_TC_1 (63) — set-point command, short floating point number, with a CP56Time2a time tag.
@@ -23,6 +24,21 @@ import io.netty.buffer.ByteBuf;
 public record SetpointShortFloatWithCp56Time(
     InformationObjectAddress address, float value, QualifierOfSetpoint qualifier, Cp56Time2a time)
     implements InformationObject {
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param value the short floating point set-point value (IEEE 754, R32).
+   * @param qualifier the qualifier of set-point command (QOS).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address}, {@code qualifier}, or {@code time} is null.
+   */
+  public SetpointShortFloatWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(qualifier, "qualifier");
+    Objects.requireNonNull(time, "time");
+  }
 
   /** Serde for the {@link SetpointShortFloatWithCp56Time} information elements (after the IOA). */
   public static final class Serde {

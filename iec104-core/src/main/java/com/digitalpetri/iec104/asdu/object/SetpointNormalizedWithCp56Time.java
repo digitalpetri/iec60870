@@ -6,6 +6,7 @@ import com.digitalpetri.iec104.asdu.element.NormalizedValue;
 import com.digitalpetri.iec104.asdu.element.QualifierOfSetpoint;
 import com.digitalpetri.iec104.asdu.time.Cp56Time2a;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_SE_TA_1 (61) — set-point command, normalized value, with a CP56Time2a time tag.
@@ -27,6 +28,23 @@ public record SetpointNormalizedWithCp56Time(
     QualifierOfSetpoint qualifier,
     Cp56Time2a time)
     implements InformationObject {
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param value the normalized set-point value (NVA).
+   * @param qualifier the qualifier of set-point command (QOS).
+   * @param time the CP56Time2a time tag.
+   * @throws NullPointerException if {@code address}, {@code value}, {@code qualifier}, or {@code
+   *     time} is null.
+   */
+  public SetpointNormalizedWithCp56Time {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(value, "value");
+    Objects.requireNonNull(qualifier, "qualifier");
+    Objects.requireNonNull(time, "time");
+  }
 
   /** Serde for the {@link SetpointNormalizedWithCp56Time} information elements (after the IOA). */
   public static final class Serde {

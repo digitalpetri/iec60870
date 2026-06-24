@@ -4,6 +4,7 @@ import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import io.netty.buffer.ByteBuf;
+import java.util.Objects;
 
 /**
  * C_SC_NA_1 (45) — single command without time tag.
@@ -25,6 +26,19 @@ public record SingleCommand(
 
   /** SCS — single command state bit (bit 1). */
   private static final int SCS_MASK = 0x01;
+
+  /**
+   * Validates that the required components are present.
+   *
+   * @param address the information object address.
+   * @param on the single command state (SCS).
+   * @param qualifier the qualifier of command (QU and S/E).
+   * @throws NullPointerException if {@code address} or {@code qualifier} is null.
+   */
+  public SingleCommand {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(qualifier, "qualifier");
+  }
 
   /** Serde for the {@link SingleCommand} information elements (after the IOA). */
   public static final class Serde {
