@@ -50,14 +50,14 @@
 
     <!-- Dependencies -->
     <jspecify.version>1.0.0</jspecify.version>
-    <joou.version>0.9.4</joou.version>
-    <netty.version>4.1.131.Final</netty.version>
+    <joou.version>0.9.5</joou.version>
+    <netty.version>4.1.135.Final</netty.version>
     <netty-channel-fsm.version>1.0.2</netty-channel-fsm.version>
-    <slf4j.version>2.0.17</slf4j.version>
+    <slf4j.version>2.0.18</slf4j.version>
 
     <!-- Test Dependencies -->
-    <bouncycastle.version>1.83</bouncycastle.version>
-    <junit.version>5.14.3</junit.version>
+    <bouncycastle.version>1.84</bouncycastle.version>
+    <junit.version>5.14.4</junit.version>
     <testcontainers.version>2.0.5</testcontainers.version>
 
     <!-- Plugin Dependencies -->
@@ -73,7 +73,7 @@
     <maven-release-plugin.version>3.3.1</maven-release-plugin.version>
     <maven-resources-plugin.version>3.4.0</maven-resources-plugin.version>
     <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
-    <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+    <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
     <spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
     <versions-maven-plugin.version>2.21.0</versions-maven-plugin.version>
   </properties>
