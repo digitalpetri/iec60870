@@ -34,5 +34,6 @@ dependency-reduced-pom.xml
 ### Project-local generated/reference files ###
 external/
 
-### idea-inspections (commit policy.yaml, ignore the scan cache) ###
-.idea-inspections/cache.json
+### Licensed / local-only material — never commit ###
+context/
+.idea-inspections/
