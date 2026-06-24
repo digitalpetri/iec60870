@@ -10,12 +10,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.digitalpetri.iec104.ConnectionClosedException;
 import com.digitalpetri.iec104.NegativeConfirmationException;
 import com.digitalpetri.iec104.ProtocolTimeoutException;
+import com.digitalpetri.iec104.RequestInProgressException;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.address.PointAddress;
 import com.digitalpetri.iec104.asdu.Asdu;
 import com.digitalpetri.iec104.asdu.AsduType;
 import com.digitalpetri.iec104.asdu.Cause;
+import com.digitalpetri.iec104.asdu.InformationObject;
 import com.digitalpetri.iec104.asdu.element.Qds;
 import com.digitalpetri.iec104.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
@@ -26,6 +28,7 @@ import com.digitalpetri.iec104.client.ClientEvent.PointUpdated;
 import com.digitalpetri.iec104.point.PointType;
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionException;
@@ -91,6 +94,179 @@ class DefaultIec104ClientTest {
 
     var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
     assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
+  }
+
+  @Test
+  void concurrentInterrogationOfSameStationIsRejected() {
+    client.connect();
+
+    // First interrogation is in flight, awaiting its confirmation and termination.
+    CompletionStage<InterrogationResult> first = client.interrogateAsync(STATION);
+
+    // A second interrogation of the same station cannot be told apart from the first on the wire,
+    // so it is rejected rather than registered (IEC 60870-5-101 §7.4.5).
+    CompletionStage<InterrogationResult> second = client.interrogateAsync(STATION);
+    var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
+    assertInstanceOf(RequestInProgressException.class, ex.getCause());
+
+    // The rejection left the first request untouched: still pending, and no extra ASDU was sent.
+    assertEquals(1, client.pendingRequestCount());
+    assertEquals(1, transport.sentAsdus().size(), "rejected interrogation must not send an ASDU");
+
+    // The first interrogation still completes normally.
+    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    assertTrue(first.toCompletableFuture().join().terminated());
+  }
+
+  @Test
+  void blockingInterrogateRejectionThrowsTypedException() {
+    client.connect();
+    // Leave an interrogation in flight, then drive the blocking API against the same station.
+    client.interrogateAsync(STATION);
+
+    assertThrows(RequestInProgressException.class, () -> client.interrogate(STATION));
+  }
+
+  @Test
+  void interrogationsOfDifferentStationsAreAllowed() {
+    client.connect();
+
+    // Different common addresses are distinguishable on the wire, so both are accepted in parallel.
+    CompletionStage<InterrogationResult> first = client.interrogateAsync(STATION);
+    CompletionStage<InterrogationResult> second = client.interrogateAsync(CommonAddress.of(2));
+
+    assertFalse(first.toCompletableFuture().isDone());
+    assertFalse(second.toCompletableFuture().isDone());
+    assertEquals(2, client.pendingRequestCount());
+    assertEquals(2, transport.sentAsdus().size());
+  }
+
+  @Test
+  void interrogationAllowedAgainAfterPreviousTerminates() {
+    client.connect();
+
+    CompletionStage<InterrogationResult> first = client.interrogateAsync(STATION);
+    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    assertTrue(first.toCompletableFuture().join().terminated());
+    assertEquals(0, client.pendingRequestCount());
+
+    // The previous interrogation terminated, releasing the lock, so a new one is accepted.
+    CompletionStage<InterrogationResult> second = client.interrogateAsync(STATION);
+    assertFalse(second.toCompletableFuture().isDone());
+    assertEquals(1, client.pendingRequestCount());
+  }
+
+  @Test
+  void concurrentReadOfSamePointIsRejected() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
+
+    CompletionStage<List<InformationObject>> first = client.readAsync(point);
+    CompletionStage<List<InformationObject>> second = client.readAsync(point);
+
+    var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
+    assertInstanceOf(RequestInProgressException.class, ex.getCause());
+    assertEquals(1, client.pendingRequestCount());
+    assertEquals(1, transport.sentAsdus().size(), "rejected read must not send an ASDU");
+
+    // The first read still completes normally.
+    transport.deliverAsdu(measured(Cause.REQUEST, (short) 42));
+    assertEquals(1, first.toCompletableFuture().join().size());
+  }
+
+  @Test
+  void readsOfDifferentPointsAreAllowed() {
+    client.connect();
+
+    // Distinct IOAs carry distinct keys, so parallel reads of different points are accepted.
+    CompletionStage<List<InformationObject>> first =
+        client.readAsync(new PointAddress(STATION, InformationObjectAddress.of(110)));
+    CompletionStage<List<InformationObject>> second =
+        client.readAsync(new PointAddress(STATION, InformationObjectAddress.of(111)));
+
+    assertFalse(first.toCompletableFuture().isDone());
+    assertFalse(second.toCompletableFuture().isDone());
+    assertEquals(2, client.pendingRequestCount());
+    assertEquals(2, transport.sentAsdus().size());
+  }
+
+  @Test
+  void readReturnsOnlyTheRequestedObject() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
+
+    CompletionStage<List<InformationObject>> stage = client.readAsync(point);
+
+    // A response that happens to carry several objects must yield only the requested point.
+    transport.deliverAsdu(
+        new Asdu(
+            AsduType.M_ME_NB_1,
+            false,
+            Cause.REQUEST,
+            false,
+            false,
+            config.originatorAddress(),
+            STATION,
+            List.of(
+                new MeasuredValueScaled(InformationObjectAddress.of(110), (short) 1, goodQds()),
+                new MeasuredValueScaled(InformationObjectAddress.of(111), (short) 2, goodQds()))));
+
+    List<InformationObject> objects = stage.toCompletableFuture().join();
+    assertEquals(1, objects.size());
+    assertEquals(InformationObjectAddress.of(110), objects.get(0).address());
+  }
+
+  @Test
+  void concurrentCommandToSamePointIsRejected() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
+
+    CompletionStage<CommandResult> first =
+        client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
+    CompletionStage<CommandResult> second =
+        client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
+
+    var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
+    assertInstanceOf(RequestInProgressException.class, ex.getCause());
+    assertEquals(1, client.pendingRequestCount());
+
+    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    assertTrue(first.toCompletableFuture().join().positive());
+  }
+
+  @Test
+  void commandsToDifferentPointsAreAllowed() {
+    client.connect();
+
+    client
+        .commands()
+        .sendAsync(
+            Command.single(new PointAddress(STATION, InformationObjectAddress.of(5000)), true),
+            CommandMode.directExecute());
+    client
+        .commands()
+        .sendAsync(
+            Command.single(new PointAddress(STATION, InformationObjectAddress.of(5001)), true),
+            CommandMode.directExecute());
+
+    assertEquals(2, client.pendingRequestCount());
+    assertEquals(2, transport.sentAsdus().size());
+  }
+
+  @Test
+  void concurrentClockSyncOfSameStationIsRejected() {
+    client.connect();
+    Instant time = Instant.parse("2024-06-01T12:00:00Z");
+
+    CompletionStage<Void> first = client.synchronizeClockAsync(STATION, time);
+    CompletionStage<Void> second = client.synchronizeClockAsync(STATION, time);
+
+    var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
+    assertInstanceOf(RequestInProgressException.class, ex.getCause());
+    assertEquals(1, client.pendingRequestCount());
+    assertEquals(1, transport.sentAsdus().size(), "rejected clock sync must not send an ASDU");
   }
 
   @Test

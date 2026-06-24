@@ -4,6 +4,7 @@ import com.digitalpetri.iec104.ConnectionClosedException;
 import com.digitalpetri.iec104.Iec104Exception;
 import com.digitalpetri.iec104.NegativeConfirmationException;
 import com.digitalpetri.iec104.ProtocolTimeoutException;
+import com.digitalpetri.iec104.RequestInProgressException;
 import com.digitalpetri.iec104.address.CommonAddress;
 import com.digitalpetri.iec104.address.InformationObjectAddress;
 import com.digitalpetri.iec104.address.PointAddress;
@@ -243,7 +244,12 @@ public final class DefaultIec104Client implements Iec104Client {
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
     PendingInterrogation request = new PendingInterrogation(station, future);
-    registerAndSend(request, asdu, config.requestTimeout());
+    if (!register(request)) {
+      future.completeExceptionally(
+          alreadyInFlight("interrogation of common address " + station.value()));
+      return future;
+    }
+    armAndSend(request, asdu, config.requestTimeout());
     return future;
   }
 
@@ -272,7 +278,11 @@ public final class DefaultIec104Client implements Iec104Client {
 
     CompletableFuture<List<InformationObject>> future = new CompletableFuture<>();
     PendingRead request = new PendingRead(point, future);
-    registerAndSend(request, asdu, config.requestTimeout());
+    if (!register(request)) {
+      future.completeExceptionally(alreadyInFlight("read of " + point));
+      return future;
+    }
+    armAndSend(request, asdu, config.requestTimeout());
     return future;
   }
 
@@ -325,7 +335,12 @@ public final class DefaultIec104Client implements Iec104Client {
             result.complete(null);
           }
         });
-    registerAndSend(request, asdu, config.commandTimeout());
+    if (!register(request)) {
+      result.completeExceptionally(
+          alreadyInFlight("clock synchronization of common address " + station.value()));
+      return result;
+    }
+    armAndSend(request, asdu, config.commandTimeout());
     return result;
   }
 
@@ -458,21 +473,63 @@ public final class DefaultIec104Client implements Iec104Client {
   }
 
   /**
-   * Registers a pending request, arms its timeout, and sends its activation ASDU.
+   * Registers a pending request unless another request with the same correlation key is already in
+   * flight.
    *
-   * @param request the pending request.
-   * @param asdu the ASDU to send.
-   * @param timeout the timeout for the request.
+   * <p>IEC 60870-5-104 carries no per-request identifier; responses are matched to outstanding
+   * requests by their ASDU fields, so two requests whose responses {@linkplain
+   * PendingRequest#conflictsWith(PendingRequest) overlap} would compete for the same responses and
+   * be indistinguishable on the wire. The standard expects the controlling station to serialize
+   * such requests ("the initialization of an identical station interrogation of the same source
+   * before the previous one is terminated is normally locked by the controlling station", IEC
+   * 60870-5-101 §7.4.5); this client enforces that by refusing the conflicting request. Requests to
+   * different targets (a read of one point, a command to another, an interrogation of a different
+   * station) do not conflict and register freely, so legitimate parallelism is preserved.
+   *
+   * <p>The conflict check and the registration share a single lock acquisition, so two callers
+   * racing to register conflicting requests cannot both succeed. The in-flight set is the {@link
+   * #pending} list itself, which every terminal path already maintains, so there is no parallel
+   * state that could drift out of sync.
+   *
+   * @param request the pending request to register.
+   * @return {@code true} if the request was registered, {@code false} if a conflicting request was
+   *     already in flight.
    */
-  private void registerAndSend(PendingRequest request, Asdu asdu, Duration timeout) {
-
+  private boolean register(PendingRequest request) {
     lock.lock();
     try {
+      for (PendingRequest existing : pending) {
+        // Check both directions so the conflict is detected regardless of which request registered
+        // first, without relying on every conflictsWith override being symmetric.
+        if (request.conflictsWith(existing) || existing.conflictsWith(request)) {
+          return false;
+        }
+      }
       pending.add(request);
+      return true;
     } finally {
       lock.unlock();
     }
+  }
 
+  /**
+   * Builds the exception that rejects a request whose target already has a request in flight.
+   *
+   * @param target a short description of the request and its target, for the detail message.
+   * @return the exception to fail the rejected request's future with.
+   */
+  private static RequestInProgressException alreadyInFlight(String target) {
+    return new RequestInProgressException(target + " already in flight");
+  }
+
+  /**
+   * Arms the timeout for an already-registered request and sends its activation ASDU.
+   *
+   * @param request the pending request, already added to {@link #pending}.
+   * @param asdu the ASDU to send.
+   * @param timeout the timeout for the request.
+   */
+  private void armAndSend(PendingRequest request, Asdu asdu, Duration timeout) {
     ScheduledFuture<?> timeoutHandle =
         scheduler.schedule(
             () -> timeoutRequest(request), timeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -710,6 +767,20 @@ public final class DefaultIec104Client implements Iec104Client {
     private @Nullable ScheduledFuture<?> timeoutHandle;
 
     /**
+     * Reports whether this request and {@code other} would compete for the same responses.
+     *
+     * <p>IEC 60870-5-104 carries no per-request identifier, so two requests whose responses overlap
+     * cannot both be in flight without their responses being misattributed; the client refuses to
+     * register a second conflicting request (see {@link #register(PendingRequest)}). Requests of
+     * different kinds never conflict; requests of the same kind conflict when they correlate on the
+     * same target — the same common address and object.
+     *
+     * @param other another pending request.
+     * @return {@code true} if {@code other} would compete with this request for responses.
+     */
+    abstract boolean conflictsWith(PendingRequest other);
+
+    /**
      * Offers an ASDU to this request and reports the outcome.
      *
      * @param asdu the received ASDU.
@@ -761,6 +832,16 @@ public final class DefaultIec104Client implements Iec104Client {
       this.station = station;
       this.objectAddress = objectAddress;
       this.future = future;
+    }
+
+    @Override
+    boolean conflictsWith(PendingRequest other) {
+      // Two confirmations conflict only when they address the same station and object within the
+      // same command family; their responses would otherwise be indistinguishable.
+      return other instanceof PendingConfirmation that
+          && family == that.family
+          && station.equals(that.station)
+          && objectAddress.equals(that.objectAddress);
     }
 
     @Override
@@ -818,6 +899,13 @@ public final class DefaultIec104Client implements Iec104Client {
     PendingInterrogation(CommonAddress station, CompletableFuture<InterrogationResult> future) {
       this.station = station;
       this.future = future;
+    }
+
+    @Override
+    boolean conflictsWith(PendingRequest other) {
+      // An interrogation correlates on the common address alone (accept() ignores the qualifier of
+      // interrogation), so two interrogations conflict when they target the same station.
+      return other instanceof PendingInterrogation that && station.equals(that.station);
     }
 
     @Override
@@ -904,6 +992,11 @@ public final class DefaultIec104Client implements Iec104Client {
     }
 
     @Override
+    boolean conflictsWith(PendingRequest other) {
+      return other instanceof PendingRead that && point.equals(that.point);
+    }
+
+    @Override
     Outcome accept(Asdu asdu) {
       if (!asdu.commonAddress().equals(point.commonAddress())) {
         return Outcome.IGNORED;
@@ -916,11 +1009,15 @@ public final class DefaultIec104Client implements Iec104Client {
         }
         return Outcome.IGNORED;
       }
-      // Otherwise correlate by the addressed object: any object whose IOA matches the request.
+      // Otherwise correlate by the addressed object, delivering only the matching object(s) rather
+      // than the whole ASDU, so a response carrying several objects does not hand unrelated points
+      // back to this read. Test for a match first so an unrelated response (the common case on this
+      // hot path) allocates nothing.
       boolean matches =
           asdu.objects().stream().anyMatch(o -> o.address().equals(point.objectAddress()));
       if (matches) {
-        this.objects = List.copyOf(asdu.objects());
+        this.objects =
+            asdu.objects().stream().filter(o -> o.address().equals(point.objectAddress())).toList();
         return Outcome.COMPLETED;
       }
       return Outcome.IGNORED;
@@ -1043,7 +1140,11 @@ public final class DefaultIec104Client implements Iec104Client {
       PendingConfirmation request =
           new PendingConfirmation(
               type, target.commonAddress(), target.objectAddress(), confirmation);
-      registerAndSend(request, asdu, config.commandTimeout());
+      if (!register(request)) {
+        confirmation.completeExceptionally(alreadyInFlight("command for " + target));
+        return confirmation;
+      }
+      armAndSend(request, asdu, config.commandTimeout());
       return confirmation;
     }
 
