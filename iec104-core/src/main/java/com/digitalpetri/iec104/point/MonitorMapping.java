@@ -258,6 +258,10 @@ public final class MonitorMapping {
    * <p>The value's runtime type must match {@code type} (for example {@link Boolean} for {@link
    * PointType#SINGLE_POINT}); see {@link PointValue} for the per-type Java representation.
    *
+   * <p>For {@link PointType#INTEGRATED_TOTALS} the wire records carry no {@link Qds} descriptor, so
+   * only the invalid flag of the value's quality is representable: it is OR-ed into the binary
+   * counter reading's own invalid (IV) bit, and the remaining quality flags are dropped.
+   *
    * <pre>{@code
    * InformationObject o = MonitorMapping.toMonitorObject(
    *     PointType.SHORT_FLOAT, ioa, PointValue.shortFloat(12.5f), TimeTagStyle.CP56);
@@ -340,7 +344,16 @@ public final class MonitorMapping {
         };
       }
       case INTEGRATED_TOTALS -> {
-        BinaryCounterReading bcr = as(value.value(), BinaryCounterReading.class, type);
+        BinaryCounterReading raw = as(value.value(), BinaryCounterReading.class, type);
+        BinaryCounterReading bcr =
+            raw.invalid() == value.quality().invalid()
+                ? raw
+                : new BinaryCounterReading(
+                    raw.value(),
+                    raw.sequenceNumber(),
+                    raw.carry(),
+                    raw.adjusted(),
+                    raw.invalid() || value.quality().invalid());
         yield switch (style) {
           case NONE -> new IntegratedTotals(ioa, bcr);
           case CP24 -> new IntegratedTotalsWithCp24Time(ioa, bcr, cp24(value));
