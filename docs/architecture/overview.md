@@ -80,7 +80,6 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .asdu.element  reusable elements/qualifiers (Qds, Vti, NormalizedValue, QualifierOf*, ...) │
    │   .asdu.time     Cp56Time2a, Cp24Time2a, Cp16Time2a                                         │
    │   .address       CommonAddress, InformationObjectAddress, OriginatorAddress, PointAddress   │
-   │   .codec         TypeCodecRegistry, MutableTypeCodecRegistry  (private-TypeID extension)     │
    │                                                                                            │
    │  CONFIG + ERRORS (package root)                                                             │
    │   ProtocolProfile, ApciSettings, TlsOptions                                                 │

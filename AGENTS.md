@@ -81,7 +81,7 @@ indexes the rest. Read the relevant document before changing behavior in that ar
 - `buffers-and-threading.md` — `ByteBuf` ownership/release rules and the callback-serialization model.
 - `tls-and-configuration.md` — `TlsOptions`, handshake gating, and the `ProtocolProfile` /
   `ApciSettings` configuration types.
-- `errors-and-extensibility.md` — typed exceptions vs. result objects and extending `TypeCodecRegistry`.
+- `errors-and-extensibility.md` — typed exceptions vs. result objects, and the raw send/receive hooks for unmodeled TypeIDs.
 
 ### Dependency Source Code
 

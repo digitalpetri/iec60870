@@ -9,8 +9,8 @@ reports whether the library provides a typed information object record (a record
 - `supported() == true` — a typed record exists; the standard codec encodes/decodes it, and the
   high-level facade can work with it directly.
 - `supported() == false` — no typed record exists, but the type is **not** dropped. It still has an
-  `AsduType` constant, remains representable as a raw `Asdu`, and is reachable through the
-  `TypeCodecRegistry` extension point (see [errors-and-extensibility.md](errors-and-extensibility.md)).
+  `AsduType` constant and remains representable as a raw `Asdu`, reachable through the raw
+  send/receive surface (see [errors-and-extensibility.md](errors-and-extensibility.md)).
 
 `AsduType.fromId(int)` resolves an inbound type identification and throws
 `UnsupportedAsduTypeException` for any value with no defined constant (including the unused value
@@ -131,16 +131,16 @@ file-transfer state machine, not just a set of records — a substantially diffe
 stateless encode/decode the rest of the type table needs. Rather than ship a partial or incorrect
 implementation, the library leaves these types present-but-unsupported.
 
-They remain fully reachable through the raw layer. A caller who needs file transfer can:
-
-- send and receive them as raw `Asdu`s with `Iec104Client.send(Asdu)` / `events()` (or
-  `ServerContext.send(Asdu)` / `ServerHandler.onRawAsdu(...)`), and
-- register custom `InformationObjectCodec`s for the `F_*` types in a `TypeCodecRegistry` to decode the
-  object bodies, driving the multi-ASDU procedure from application code.
+They remain fully reachable through the raw layer. A caller who needs file transfer can send and
+receive them as raw `Asdu`s with `Iec104Client.send(Asdu)` / `events()` (or `ServerContext.send(Asdu)`
+/ `ServerHandler.onRawAsdu(...)`), parsing the `F_*` object bodies directly from the raw `Asdu` and
+driving the multi-ASDU procedure from application code.
 
 ## Private-range TypeIDs
 
 Type identifications in the private ranges (the standard reserves `128..255`, with `136..255`
-designated for private use) have no `AsduType` constant. To exchange them, register a codec for the
-type in a `TypeCodecRegistry` and use the raw `send`/`events` surface; see
+designated for private use) have no `AsduType` constant, so they fall outside the library's modeled
+type table. `AsduType.fromId(int)` rejects an inbound private TypeID with
+`UnsupportedAsduTypeException`, and there is no `AsduType` constant to construct one for sending —
+exchanging private TypeIDs is not supported through the `Asdu` model; see
 [errors-and-extensibility.md](errors-and-extensibility.md).

@@ -39,14 +39,18 @@ buffer's default byte order.
         │                                            │
   Apdu.Serde.encode(apdu, profile, buf)        Apdu.Serde.decode(profile, buf)
         │  (writes; never releases)                  │  (reads; never releases)
-  transport writes buf to channel,             transport delivers Apdu, then
-  Netty releases it after the write            releases the framed ByteBuf
+  transport writes buf to channel,             decoder slices one frame with a
+  Netty releases it after the write            non-retained in.readSlice(...); Netty's
+                                               ByteToMessageDecoder owns and releases
+                                               the cumulative inbound buffer
 ```
 
 In `iec104-transport-tcp`, `Iec104FrameEncoder` allocates (or is handed) the outbound buffer, calls
 `encode`, and lets Netty release it after the channel write; `Iec104FrameDecoder` performs the
-length-field framing on the `0x68` start octet and length octet, calls `decode` to produce an `Apdu`,
-and releases the framed buffer. Because the codecs do not release, the transport's reference counting
+length-field framing on the `0x68` start octet and length octet, slices exactly one frame with a
+non-retained `in.readSlice(frameLength)` (no `retain`/`release`), and calls `decode` on that slice to
+produce an `Apdu`. Netty's `ByteToMessageDecoder` owns the cumulative inbound buffer and releases it;
+the slice is just a view into it. Because the codecs do not release, the transport's reference counting
 stays correct and there is no double-free or use-after-free across the boundary. A caller using the
 high-level facade never sees a `ByteBuf` at all — it is gone by the time an `Apdu` or `Asdu` exists.
 

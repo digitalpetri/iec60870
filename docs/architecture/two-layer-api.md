@@ -111,7 +111,7 @@ objects onto `PointEntry(PointAddress, PointValue<?>)` entries, skipping non-mon
 
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,
-`DataTransferStarted`/`Stopped`, `PointUpdated(address, value, cause, timestamp)`,
+`DataTransferStarted`/`Stopped`, `PointUpdated(address, value, asduType, cause, timestamp)`,
 `AsduReceived(asdu)`, `NegativeConfirmation(asdu, cause)`, and `ProtocolWarning(message)`. Every
 received monitor ASDU yields one `PointUpdated` per information object **and** an always-published
 `AsduReceived`, so a subscriber can work at the point level, the ASDU level, or both. Events are
@@ -190,5 +190,5 @@ the values.
 | Read points, issue standard commands, interrogate | High-level: `Iec104Client` facade |
 | Host an outstation with a value image | High-level: `Iec104Server` + `Station` |
 | Per-point values with quality and timestamps | `PointValue<T>` and `ClientEvent.PointUpdated` |
-| Private TypeIDs, conformance, exact wire control | Raw: build `Asdu`, `client.send(asdu)` / `events()` |
-| Custom decode of an unmodeled type | Raw: register a codec in `TypeCodecRegistry` |
+| Conformance / exact wire control of a modeled type | Raw: build `Asdu`, `client.send(asdu)` / `events()` |
+| Receiving an unmodeled or unsupported type | Raw: `ClientEvent.AsduReceived` / `ServerHandler.onRawAsdu` |

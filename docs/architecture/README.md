@@ -32,8 +32,7 @@ library or extending it, not for someone editing the protocol internals.
   gating, peer certificate exposure) and the configuration/profile types (`ProtocolProfile`,
   `ApciSettings`).
 - [errors-and-extensibility.md](errors-and-extensibility.md) — the typed exception model versus
-  result objects, when each is used, and extensibility through `TypeCodecRegistry` and private
-  TypeIDs.
+  result objects, when each is used, and the raw send/receive hooks for unmodeled TypeIDs.
 
 ## At a glance
 
