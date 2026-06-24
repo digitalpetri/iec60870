@@ -11,7 +11,7 @@
 
   <name>IEC 104</name>
   <description>IEC 60870-5-104 for Java</description>
-  <url>https://github.com/digitalpetri/iec-104</url>
+  <url>https://github.com/digitalpetri/iec104</url>
 
   <developers>
     <developer>
@@ -30,9 +30,9 @@
   </licenses>
 
   <scm>
-    <url>https://github.com/digitalpetri/iec-104</url>
-    <connection>scm:git:git://github.com/digitalpetri/iec-104.git</connection>
-    <developerConnection>scm:git:git@github.com:digitalpetri/iec-104.git</developerConnection>
+    <url>https://github.com/digitalpetri/iec104</url>
+    <connection>scm:git:git://github.com/digitalpetri/iec104.git</connection>
+    <developerConnection>scm:git:git@github.com:digitalpetri/iec104.git</developerConnection>
     <tag>HEAD</tag>
   </scm>
 

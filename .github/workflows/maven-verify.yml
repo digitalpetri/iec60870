@@ -1,0 +1,28 @@
+name: Java CI with Maven
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # `mvn verify` also runs the Spotless (google-java-format) check and the
+      # enforcer dependency-convergence rule. Interop tests are tagged and
+      # excluded from the default build, so no Docker is required here.
+      - name: Build and verify with Maven
+        run: mvn -B verify
