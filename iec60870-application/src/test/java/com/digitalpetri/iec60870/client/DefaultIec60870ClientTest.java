@@ -28,6 +28,7 @@ import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent.PointUpdated;
 import com.digitalpetri.iec60870.fakes.FakeClientTransport;
 import com.digitalpetri.iec60870.fakes.FakeSession;
+import com.digitalpetri.iec60870.fakes.ManualScheduler;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.session.Session;
 import java.io.IOException;
@@ -413,6 +414,10 @@ class DefaultIec60870ClientTest {
 
   @Test
   void commandTimeoutCleansUpPendingRequest() {
+    // A virtual clock fires the timeout deterministically; combined with the direct (same-thread)
+    // callback executor, the timed-out request is failed and removed before advance(...) returns,
+    // so no wall-clock sleep is needed.
+    ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
     AtomicReference<FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
@@ -423,7 +428,8 @@ class DefaultIec60870ClientTest {
                 .commandTimeout(Duration.ofMillis(50))
                 .requestTimeout(Duration.ofMillis(50))
                 .build(),
-            clientSessionFactory(quietSession))) {
+            clientSessionFactory(quietSession),
+            clock)) {
       timingClient.connect();
       PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
 
@@ -432,7 +438,13 @@ class DefaultIec60870ClientTest {
               .commands()
               .sendAsync(Command.single(point, true), CommandMode.directExecute());
 
-      // No confirmation is ever delivered; the command must time out and be removed.
+      // The command is pending and its timeout is armed but not yet fired.
+      assertFalse(stage.toCompletableFuture().isDone());
+      assertEquals(1, timingClient.pendingRequestCount());
+
+      // No confirmation is ever delivered; advancing past the command timeout fires it.
+      clock.advance(50, TimeUnit.MILLISECONDS);
+
       var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
       assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
 
@@ -440,6 +452,79 @@ class DefaultIec60870ClientTest {
 
       // A late confirmation for the timed-out command is ignored without error.
       quietSession.get().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+      assertEquals(0, timingClient.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void interrogateTimeoutCleansUpPendingRequest() {
+    ManualScheduler clock = new ManualScheduler();
+    FakeClientTransport quietTransport = new FakeClientTransport();
+    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    try (DefaultIec60870Client timingClient =
+        new DefaultIec60870Client(
+            quietTransport,
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .requestTimeout(Duration.ofMillis(50))
+                .build(),
+            clientSessionFactory(quietSession),
+            clock)) {
+      timingClient.connect();
+
+      CompletionStage<InterrogationResult> stage = timingClient.interrogateAsync(STATION);
+
+      // The interrogation is pending and its request timeout is armed but not yet fired.
+      assertFalse(stage.toCompletableFuture().isDone());
+      assertEquals(1, timingClient.pendingRequestCount());
+
+      // No confirmation is ever delivered; advancing past the request timeout fires it.
+      clock.advance(50, TimeUnit.MILLISECONDS);
+
+      var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+      assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
+
+      assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
+
+      // A late confirmation for the timed-out interrogation is ignored without error.
+      quietSession.get().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+      assertEquals(0, timingClient.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void readTimeoutCleansUpPendingRequest() {
+    ManualScheduler clock = new ManualScheduler();
+    FakeClientTransport quietTransport = new FakeClientTransport();
+    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    try (DefaultIec60870Client timingClient =
+        new DefaultIec60870Client(
+            quietTransport,
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .requestTimeout(Duration.ofMillis(50))
+                .build(),
+            clientSessionFactory(quietSession),
+            clock)) {
+      timingClient.connect();
+      PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
+
+      CompletionStage<List<InformationObject>> stage = timingClient.readAsync(point);
+
+      // The read is pending and its request timeout is armed but not yet fired.
+      assertFalse(stage.toCompletableFuture().isDone());
+      assertEquals(1, timingClient.pendingRequestCount());
+
+      // No response is ever delivered; advancing past the request timeout fires it.
+      clock.advance(50, TimeUnit.MILLISECONDS);
+
+      var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+      assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
+
+      assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
+
+      // A late response for the timed-out read is ignored without error.
+      quietSession.get().deliverAsdu(measured(Cause.REQUEST, (short) 42));
       assertEquals(0, timingClient.pendingRequestCount());
     }
   }
