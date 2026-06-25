@@ -60,7 +60,7 @@ and `synchronizeClock(...)`; received on the server through `ServerHandler.onCom
 **Application Protocol Control Information** — the fixed frame header (start octet `0x68`,
 length, four control octets) that layers connection start/stop, keep-alive, and a
 sliding-window acknowledgement scheme on top of TCP.
-*In this library:* package `com.digitalpetri.iec60870.apci` — `ApciSession` (the engine),
+*In this library:* package `com.digitalpetri.iec60870.cs104` — `ApciSession` (the engine),
 `Apdu`, `ControlField`, `UFunction`; tuned via `ApciSettings`.
 *See:* [Tune the APCI session](../how-to/tune-apci.md),
 [Timers & window](timers-and-window.md),
@@ -70,7 +70,7 @@ architecture: [apci-and-timers.md](../../architecture/apci-and-timers.md).
 
 **Application Protocol Data Unit** — one complete IEC 104 frame on the wire: an APCI
 header, plus an ASDU body **only** for I-format frames.
-*In this library:* `com.digitalpetri.iec60870.apci.Apdu` (with `Apdu.Serde` for the wire
+*In this library:* `com.digitalpetri.iec60870.cs104.Apdu` (with `Apdu.Serde` for the wire
 form).
 *See:* architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
 
@@ -225,7 +225,7 @@ U-format control functions that gate user-data transfer. After connect the link 
 controlled station confirms; `STOPDT` reverses it.
 *In this library:* `Iec60870Client.startDataTransfer()` / `stopDataTransfer()`; automatic
 on connect when `startDataTransferOnConnect` is `true` (the default). The frame functions
-are `com.digitalpetri.iec60870.apci.UFunction.STARTDT_ACT` / `STARTDT_CON` and
+are `com.digitalpetri.iec60870.cs104.UFunction.STARTDT_ACT` / `STARTDT_CON` and
 `STOPDT_ACT` / `STOPDT_CON`.
 *See:* [Connect & interrogate](../how-to/connect-and-interrogate.md),
 architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
@@ -251,7 +251,7 @@ architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
 
 The keep-alive: when a connection has been idle for `t3`, a station sends `TESTFR act`
 and expects `TESTFR con`, proving the peer is alive.
-*In this library:* `com.digitalpetri.iec60870.apci.UFunction.TESTFR_ACT` / `TESTFR_CON`,
+*In this library:* `com.digitalpetri.iec60870.cs104.UFunction.TESTFR_ACT` / `TESTFR_CON`,
 driven automatically by `ApciSession`.
 *See:* [Timers & window](timers-and-window.md),
 architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
@@ -264,7 +264,7 @@ The three APDU control-field shapes:
 - **S-format** — numbered supervisory acknowledgement; carries N(R) only, no ASDU.
 - **U-format** — unnumbered control function (STARTDT/STOPDT/TESTFR); no ASDU.
 
-*In this library:* sealed `com.digitalpetri.iec60870.apci.ControlField` with
+*In this library:* sealed `com.digitalpetri.iec60870.cs104.ControlField` with
 `ControlField.TypeI`, `ControlField.TypeS`, and `ControlField.TypeU`; the U-format
 function is a `UFunction`.
 *See:* architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).

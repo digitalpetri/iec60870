@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.apci;
+package com.digitalpetri.iec60870.cs104;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;

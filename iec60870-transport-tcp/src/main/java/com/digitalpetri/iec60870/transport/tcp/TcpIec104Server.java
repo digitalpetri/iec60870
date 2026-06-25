@@ -1,11 +1,11 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
-import com.digitalpetri.iec60870.apci.ApciSession;
-import com.digitalpetri.iec60870.apci.Apdu;
-import com.digitalpetri.iec60870.apci.ApduFramer;
+import com.digitalpetri.iec60870.cs104.ApciSession;
+import com.digitalpetri.iec60870.cs104.ApciSettings;
+import com.digitalpetri.iec60870.cs104.Apdu;
+import com.digitalpetri.iec60870.cs104.ApduFramer;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;

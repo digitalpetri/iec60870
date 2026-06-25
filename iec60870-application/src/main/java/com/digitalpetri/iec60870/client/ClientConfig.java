@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.client;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
@@ -44,7 +43,7 @@ import org.jspecify.annotations.Nullable;
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
-    SessionSettings sessionSettings,
+    @Nullable SessionSettings sessionSettings,
     OriginatorAddress originatorAddress,
     @Nullable PointCatalog pointCatalog,
     boolean startDataTransferOnConnect,
@@ -72,7 +71,6 @@ public record ClientConfig(
    */
   public ClientConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
-    Objects.requireNonNull(sessionSettings, "sessionSettings");
     Objects.requireNonNull(originatorAddress, "originatorAddress");
     Objects.requireNonNull(commandTimeout, "commandTimeout");
     Objects.requireNonNull(requestTimeout, "requestTimeout");
@@ -115,7 +113,7 @@ public record ClientConfig(
   public static final class Builder {
 
     private ProtocolProfile protocolProfile = ProtocolProfile.iec104Default();
-    private SessionSettings sessionSettings = ApciSettings.defaults();
+    private @Nullable SessionSettings sessionSettings;
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable PointCatalog pointCatalog;
     private boolean startDataTransferOnConnect = true;

@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.apci;
+package com.digitalpetri.iec60870.cs104;
 
 /**
  * The unnumbered control function carried by a U-format APDU control field.

@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.server;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
@@ -11,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Immutable configuration for an {@link Iec60870Server}.
@@ -49,7 +49,7 @@ import java.util.concurrent.ForkJoinPool;
  */
 public record ServerConfig(
     ProtocolProfile protocolProfile,
-    SessionSettings sessionSettings,
+    @Nullable SessionSettings sessionSettings,
     List<Station> stations,
     ServerHandler handler,
     OutboundQueuePolicy eventQueuePolicy,
@@ -82,7 +82,6 @@ public record ServerConfig(
    */
   public ServerConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
-    Objects.requireNonNull(sessionSettings, "sessionSettings");
     Objects.requireNonNull(stations, "stations");
     Objects.requireNonNull(handler, "handler");
     Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
@@ -120,7 +119,7 @@ public record ServerConfig(
   public static final class Builder {
 
     private ProtocolProfile protocolProfile = ProtocolProfile.iec104Default();
-    private SessionSettings sessionSettings = ApciSettings.defaults();
+    private @Nullable SessionSettings sessionSettings;
     private final List<Station> stations = new ArrayList<>();
     private ServerHandler handler = new ServerHandler() {};
     private OutboundQueuePolicy eventQueuePolicy = OutboundQueuePolicy.DEFAULT;

@@ -38,8 +38,8 @@ library or extending it, not for someone editing the protocol internals.
 
 | Concern | Where it lives |
 |---|---|
-| Wire model and codecs | `iec60870-core` packages `.asdu`, `.apci`, `.address` |
-| APCI flow-control engine | `iec60870-core` `com.digitalpetri.iec60870.apci.ApciSession` |
+| Wire model and codecs | `iec60870-core` packages `.asdu`, `.address` |
+| APCI flow-control engine | `iec60870-cs104` `com.digitalpetri.iec60870.cs104.ApciSession` |
 | High-level client | `iec60870-core` `com.digitalpetri.iec60870.client` |
 | High-level server | `iec60870-core` `com.digitalpetri.iec60870.server` |
 | Point / catalog model | `iec60870-core` packages `.point`, `.catalog` |

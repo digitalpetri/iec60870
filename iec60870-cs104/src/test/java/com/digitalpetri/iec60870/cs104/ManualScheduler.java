@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.apci;
+package com.digitalpetri.iec60870.cs104;
 
 import java.util.Collection;
 import java.util.HashMap;

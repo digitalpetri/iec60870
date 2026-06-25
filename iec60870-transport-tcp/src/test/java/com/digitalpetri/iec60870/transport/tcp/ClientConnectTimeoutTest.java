@@ -3,10 +3,10 @@ package com.digitalpetri.iec60870.transport.tcp;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;

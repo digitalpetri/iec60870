@@ -23,8 +23,9 @@ jobs:
           server-password: MAVEN_PASSWORD
 
       # Central snapshots are not signed, so no GPG key is needed here. Only
-      # iec60870-core and iec60870-transport-tcp are published; the other modules
-      # skip the deploy plugin in their POMs.
+      # iec60870-core, iec60870-cs104, iec60870-application, and
+      # iec60870-transport-tcp are published; the other modules skip the deploy
+      # plugin in their POMs.
       - name: Publish snapshot
         run: mvn -B clean deploy -P deploy-snapshot
         env:

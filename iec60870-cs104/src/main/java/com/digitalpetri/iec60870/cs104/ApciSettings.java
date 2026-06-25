@@ -1,5 +1,6 @@
-package com.digitalpetri.iec60870;
+package com.digitalpetri.iec60870.cs104;
 
+import com.digitalpetri.iec60870.SessionSettings;
 import java.time.Duration;
 import org.joou.UShort;
 

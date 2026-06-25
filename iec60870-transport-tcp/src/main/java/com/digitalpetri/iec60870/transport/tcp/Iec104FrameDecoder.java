@@ -1,7 +1,6 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.iec60870.AsduDecodeException;
-import com.digitalpetri.iec60870.apci.Apdu;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
@@ -33,8 +32,13 @@ import java.util.List;
  */
 public class Iec104FrameDecoder extends ByteToMessageDecoder {
 
-  /** The fixed START octet ({@code 0x68}) that delimits the beginning of every APDU. */
-  private static final int START_OCTET = Apdu.START_OCTET;
+  /**
+   * The fixed START octet ({@code 0x68}) that delimits the beginning of every APDU.
+   *
+   * <p>This is pure octet framing, so the constant is inlined here rather than referenced from the
+   * protocol-layer {@code Apdu} type — this decoder stays free of any cs104 import.
+   */
+  private static final int START_OCTET = 0x68;
 
   /** The number of octets consumed by the START octet and the length octet ({@code 2}). */
   private static final int HEADER_LENGTH = 2;

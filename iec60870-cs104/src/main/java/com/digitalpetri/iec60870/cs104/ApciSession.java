@@ -1,6 +1,5 @@
-package com.digitalpetri.iec60870.apci;
+package com.digitalpetri.iec60870.cs104;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;

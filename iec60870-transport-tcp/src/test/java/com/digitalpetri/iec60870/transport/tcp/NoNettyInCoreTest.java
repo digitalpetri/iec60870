@@ -20,9 +20,8 @@ import org.junit.jupiter.api.Test;
  * EventLoopGroup}, {@code SslHandler}, and the {@code io.netty.channel.*}/{@code
  * io.netty.handler.*} packages live only in this transport module. The single allowed exception is
  * {@code io.netty.buffer.ByteBuf}, the sanctioned codec-boundary type: it appears inside the
- * co-located {@code Serde} codecs in core's {@code .asdu}/{@code .apci}/{@code .address} packages
- * and on the octet transport SPI in {@code .transport} (the deliberate {@code netty-buffer}
- * dependency).
+ * co-located {@code Serde} codecs in core's {@code .asdu}/{@code .address} packages and on the
+ * octet transport SPI in {@code .transport} (the deliberate {@code netty-buffer} dependency).
  *
  * <p>This test scans every {@code .java} file under the core module's main source tree and fails if
  * a forbidden import or type reference appears. Comment lines (Javadoc and {@code //}) are ignored,

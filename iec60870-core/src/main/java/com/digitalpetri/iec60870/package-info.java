@@ -3,20 +3,20 @@
  *
  * <p>This package owns the cross-cutting building blocks shared by the rest of the library: the
  * exception hierarchy rooted at {@link com.digitalpetri.iec60870.Iec60870Exception}; the immutable
- * configuration holders {@link com.digitalpetri.iec60870.ProtocolProfile}, {@link
- * com.digitalpetri.iec60870.ApciSettings}, and {@link com.digitalpetri.iec60870.TlsOptions}; the
- * neutral {@link com.digitalpetri.iec60870.SessionSettings} handle that the client and server
- * configurations carry; and the {@link com.digitalpetri.iec60870.OutboundQueuePolicy} that governs
- * a full outbound session queue.
+ * configuration holders {@link com.digitalpetri.iec60870.ProtocolProfile} and {@link
+ * com.digitalpetri.iec60870.TlsOptions}; the neutral {@link
+ * com.digitalpetri.iec60870.SessionSettings} handle that the client and server configurations
+ * carry; and the {@link com.digitalpetri.iec60870.OutboundQueuePolicy} that governs a full outbound
+ * session queue.
  *
  * <h2>Configuration</h2>
  *
  * <p>{@link com.digitalpetri.iec60870.ProtocolProfile} fixes the station-wide field widths (cause
  * of transmission, common address, and information object address octet counts) plus the maximum
- * ASDU length. {@link com.digitalpetri.iec60870.ApciSettings} fixes the APCI flow-control
- * parameters (the {@code k} and {@code w} window sizes and the {@code t0}-{@code t3} timeouts).
- * {@link com.digitalpetri.iec60870.TlsOptions} carries the TLS material the transport layer applies
- * when securing a connection.
+ * ASDU length. The cs104 {@code ApciSettings} fixes the APCI flow-control parameters (the {@code k}
+ * and {@code w} window sizes and the {@code t0}-{@code t3} timeouts). {@link
+ * com.digitalpetri.iec60870.TlsOptions} carries the TLS material the transport layer applies when
+ * securing a connection.
  *
  * <h2>Errors</h2>
  *

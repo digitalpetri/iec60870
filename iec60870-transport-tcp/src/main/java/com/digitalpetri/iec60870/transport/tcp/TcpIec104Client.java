@@ -1,15 +1,15 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
-import com.digitalpetri.iec60870.apci.ApciSession;
-import com.digitalpetri.iec60870.apci.Apdu;
-import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.cs104.ApciSession;
+import com.digitalpetri.iec60870.cs104.ApciSettings;
+import com.digitalpetri.iec60870.cs104.Apdu;
+import com.digitalpetri.iec60870.cs104.ApduFramer;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;

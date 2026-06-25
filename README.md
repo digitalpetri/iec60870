@@ -13,9 +13,12 @@ published to Maven Central (see [Dependency](#dependency)).
 ## Modules
 
 - `iec60870-core`: core protocol model, serializers/codecs, and SPIs. Contains the raw ASDU layer
-  (every standard TypeID with a co-located `Serde`), the APCI session engine, the `Session` and
-  transport interfaces, and `ProtocolProfile`/`SessionSettings`. No Netty runtime types appear in its
-  public API.
+  (every standard TypeID with a co-located `Serde`), the `Session` and transport interfaces, and
+  `ProtocolProfile`/`SessionSettings`. No Netty runtime types appear in its public API, and it holds
+  no protocol session engine.
+- `iec60870-cs104`: the genuinely-104 link/session layer. Holds `ApciSession` (which `implements
+  Session`), the `Apdu`/`ControlField`/`UFunction` model with the `Apdu.Serde` codec, the
+  `ApduFramer` `Apdu`↔`ByteBuf` bridge, and `ApciSettings`. Depends on `iec60870-core`.
 - `iec60870-application`: the high-level layer with **no** Netty. Holds the `Iec60870Client` /
   `Iec60870Server` facades and the command/station/point/catalog model; depends on `iec60870-core`
   only and speaks purely in terms of `Asdu` + the `Session` SPI.
