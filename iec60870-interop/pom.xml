@@ -63,6 +63,17 @@
       <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Toxiproxy provides a stable TCP proxy port in front of the lib60870-C peer so the abnormal-path
+      tests can keep a fixed client target across peer-container restarts and inject hard partitions
+      (disable/enable). It is a generic network proxy (MIT image, Apache-2.0 Java client) with no
+      lib60870 linkage, so it stays on the EPL side. Version is managed by the testcontainers-bom.
+    -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-toxiproxy</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
