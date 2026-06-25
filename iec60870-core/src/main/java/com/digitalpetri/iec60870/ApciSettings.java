@@ -30,7 +30,8 @@ import org.joou.UShort;
  * @param t2 the timeout for acknowledging received I-format frames; must be positive.
  * @param t3 the idle timeout after which a test frame is sent; must be positive.
  */
-public record ApciSettings(UShort k, UShort w, Duration t0, Duration t1, Duration t2, Duration t3) {
+public record ApciSettings(UShort k, UShort w, Duration t0, Duration t1, Duration t2, Duration t3)
+    implements SessionSettings {
 
   /**
    * Validates the components.

@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.client;
 
 import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.catalog.PointCatalog;
 import java.time.Duration;
@@ -31,7 +32,8 @@ import org.jspecify.annotations.Nullable;
  * }</pre>
  *
  * @param protocolProfile the wire field widths.
- * @param apciSettings the APCI flow-control parameters.
+ * @param sessionSettings the protocol-specific session settings (the APCI flow-control parameters
+ *     for a 104 session).
  * @param originatorAddress the originator address placed in control-direction ASDUs.
  * @param pointCatalog the optional point catalog describing known points, or {@code null} if none.
  * @param startDataTransferOnConnect whether {@link Iec60870Client#connect()} also starts data
@@ -42,7 +44,7 @@ import org.jspecify.annotations.Nullable;
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
-    ApciSettings apciSettings,
+    SessionSettings sessionSettings,
     OriginatorAddress originatorAddress,
     @Nullable PointCatalog pointCatalog,
     boolean startDataTransferOnConnect,
@@ -54,7 +56,8 @@ public record ClientConfig(
    * Validates the components.
    *
    * @param protocolProfile the wire field widths.
-   * @param apciSettings the APCI flow-control parameters.
+   * @param sessionSettings the protocol-specific session settings (the APCI flow-control parameters
+   *     for a 104 session).
    * @param originatorAddress the originator address placed in control-direction ASDUs.
    * @param pointCatalog the optional point catalog describing known points, or {@code null} if
    *     none.
@@ -69,7 +72,7 @@ public record ClientConfig(
    */
   public ClientConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
-    Objects.requireNonNull(apciSettings, "apciSettings");
+    Objects.requireNonNull(sessionSettings, "sessionSettings");
     Objects.requireNonNull(originatorAddress, "originatorAddress");
     Objects.requireNonNull(commandTimeout, "commandTimeout");
     Objects.requireNonNull(requestTimeout, "requestTimeout");
@@ -112,7 +115,7 @@ public record ClientConfig(
   public static final class Builder {
 
     private ProtocolProfile protocolProfile = ProtocolProfile.iec104Default();
-    private ApciSettings apciSettings = ApciSettings.defaults();
+    private SessionSettings sessionSettings = ApciSettings.defaults();
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable PointCatalog pointCatalog;
     private boolean startDataTransferOnConnect = true;
@@ -134,13 +137,14 @@ public record ClientConfig(
     }
 
     /**
-     * Sets the APCI flow-control parameters.
+     * Sets the protocol-specific session settings (the APCI flow-control parameters for a 104
+     * session).
      *
-     * @param apciSettings the APCI settings.
+     * @param sessionSettings the session settings.
      * @return this builder.
      */
-    public Builder apciSettings(ApciSettings apciSettings) {
-      this.apciSettings = Objects.requireNonNull(apciSettings, "apciSettings");
+    public Builder sessionSettings(SessionSettings sessionSettings) {
+      this.sessionSettings = Objects.requireNonNull(sessionSettings, "sessionSettings");
       return this;
     }
 
@@ -226,7 +230,7 @@ public record ClientConfig(
     public ClientConfig build() {
       return new ClientConfig(
           protocolProfile,
-          apciSettings,
+          sessionSettings,
           originatorAddress,
           pointCatalog,
           startDataTransferOnConnect,

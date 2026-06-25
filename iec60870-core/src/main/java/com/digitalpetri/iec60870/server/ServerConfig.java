@@ -1,7 +1,9 @@
 package com.digitalpetri.iec60870.server;
 
 import com.digitalpetri.iec60870.ApciSettings;
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,7 +32,8 @@ import java.util.concurrent.ForkJoinPool;
  * }</pre>
  *
  * @param protocolProfile the wire field widths.
- * @param apciSettings the APCI flow-control parameters.
+ * @param sessionSettings the protocol-specific session settings (the APCI flow-control parameters
+ *     for a 104 session).
  * @param stations the stations hosted by the server; each must have a distinct common address.
  * @param handler the handler that answers control-direction requests.
  * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
@@ -43,10 +46,10 @@ import java.util.concurrent.ForkJoinPool;
  */
 public record ServerConfig(
     ProtocolProfile protocolProfile,
-    ApciSettings apciSettings,
+    SessionSettings sessionSettings,
     List<Station> stations,
     ServerHandler handler,
-    EventQueuePolicy eventQueuePolicy,
+    OutboundQueuePolicy eventQueuePolicy,
     int maxOutboundQueue,
     TimeTagStyle timeTagStyle,
     int maxConnections,
@@ -56,7 +59,8 @@ public record ServerConfig(
    * Validates the configuration and defensively copies the station list.
    *
    * @param protocolProfile the wire field widths.
-   * @param apciSettings the APCI flow-control parameters.
+   * @param sessionSettings the protocol-specific session settings (the APCI flow-control parameters
+   *     for a 104 session).
    * @param stations the stations hosted by the server; each must have a distinct common address.
    * @param handler the handler that answers control-direction requests.
    * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
@@ -72,7 +76,7 @@ public record ServerConfig(
    */
   public ServerConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
-    Objects.requireNonNull(apciSettings, "apciSettings");
+    Objects.requireNonNull(sessionSettings, "sessionSettings");
     Objects.requireNonNull(stations, "stations");
     Objects.requireNonNull(handler, "handler");
     Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
@@ -105,10 +109,10 @@ public record ServerConfig(
   public static final class Builder {
 
     private ProtocolProfile protocolProfile = ProtocolProfile.iec104Default();
-    private ApciSettings apciSettings = ApciSettings.defaults();
+    private SessionSettings sessionSettings = ApciSettings.defaults();
     private final List<Station> stations = new ArrayList<>();
     private ServerHandler handler = new ServerHandler() {};
-    private EventQueuePolicy eventQueuePolicy = EventQueuePolicy.DEFAULT;
+    private OutboundQueuePolicy eventQueuePolicy = OutboundQueuePolicy.DEFAULT;
     private int maxOutboundQueue = 1000;
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
     private int maxConnections = 16;
@@ -128,13 +132,14 @@ public record ServerConfig(
     }
 
     /**
-     * Sets the APCI flow-control parameters.
+     * Sets the protocol-specific session settings (the APCI flow-control parameters for a 104
+     * session).
      *
-     * @param apciSettings the APCI settings.
+     * @param sessionSettings the session settings.
      * @return this builder.
      */
-    public Builder apciSettings(ApciSettings apciSettings) {
-      this.apciSettings = Objects.requireNonNull(apciSettings, "apciSettings");
+    public Builder sessionSettings(SessionSettings sessionSettings) {
+      this.sessionSettings = Objects.requireNonNull(sessionSettings, "sessionSettings");
       return this;
     }
 
@@ -179,12 +184,12 @@ public record ServerConfig(
 
     /**
      * Sets the policy applied when a started connection's outbound queue is full. Defaults to
-     * {@link EventQueuePolicy#DEFAULT}.
+     * {@link OutboundQueuePolicy#DEFAULT}.
      *
      * @param eventQueuePolicy the event-queue policy.
      * @return this builder.
      */
-    public Builder eventQueuePolicy(EventQueuePolicy eventQueuePolicy) {
+    public Builder eventQueuePolicy(OutboundQueuePolicy eventQueuePolicy) {
       this.eventQueuePolicy = Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
       return this;
     }
@@ -192,7 +197,7 @@ public record ServerConfig(
     /**
      * Sets the bound on each started connection's outbound send queue. Defaults to {@code 1000}; a
      * value of {@code 0} leaves the queue unbounded. When the queue reaches this bound the
-     * configured {@link EventQueuePolicy} decides the fate of a newly published value.
+     * configured {@link OutboundQueuePolicy} decides the fate of a newly published value.
      *
      * @param maxOutboundQueue the outbound queue bound, or {@code 0} for unbounded; must not be
      *     negative.
@@ -253,7 +258,7 @@ public record ServerConfig(
     public ServerConfig build() {
       return new ServerConfig(
           protocolProfile,
-          apciSettings,
+          sessionSettings,
           stations,
           handler,
           eventQueuePolicy,

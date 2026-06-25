@@ -15,7 +15,7 @@ package com.digitalpetri.iec60870;
  *     address) or {@code 2} (with originator address).
  * @param commonAddressLength the number of common address octets, in the range {@code 1..2}.
  * @param ioaLength the number of information object address octets, in the range {@code 1..3}.
- * @param maxAsduLength the maximum ASDU length in octets, in the range {@code 1..249}.
+ * @param maxAsduLength the maximum ASDU length in octets, in the range {@code 1..255}.
  */
 public record ProtocolProfile(
     int cotLength, int commonAddressLength, int ioaLength, int maxAsduLength) {
@@ -27,10 +27,10 @@ public record ProtocolProfile(
    *     address) or {@code 2} (with originator address).
    * @param commonAddressLength the number of common address octets, in the range {@code 1..2}.
    * @param ioaLength the number of information object address octets, in the range {@code 1..3}.
-   * @param maxAsduLength the maximum ASDU length in octets, in the range {@code 1..249}.
+   * @param maxAsduLength the maximum ASDU length in octets, in the range {@code 1..255}.
    * @throws IllegalArgumentException if {@code cotLength} is not in {@code 1..2}, if {@code
    *     commonAddressLength} is not in {@code 1..2}, if {@code ioaLength} is not in {@code 1..3},
-   *     or if {@code maxAsduLength} is not in {@code 1..249}.
+   *     or if {@code maxAsduLength} is not in {@code 1..255}.
    */
   public ProtocolProfile {
     if (cotLength < 1 || cotLength > 2) {
@@ -43,8 +43,8 @@ public record ProtocolProfile(
     if (ioaLength < 1 || ioaLength > 3) {
       throw new IllegalArgumentException("ioaLength must be in 1..3: " + ioaLength);
     }
-    if (maxAsduLength < 1 || maxAsduLength > 249) {
-      throw new IllegalArgumentException("maxAsduLength must be in 1..249: " + maxAsduLength);
+    if (maxAsduLength < 1 || maxAsduLength > 255) {
+      throw new IllegalArgumentException("maxAsduLength must be in 1..255: " + maxAsduLength);
     }
   }
 

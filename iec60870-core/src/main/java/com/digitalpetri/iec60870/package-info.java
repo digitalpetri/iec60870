@@ -2,9 +2,12 @@
  * Root package of the IEC 60870-5-104 protocol library.
  *
  * <p>This package owns the cross-cutting building blocks shared by the rest of the library: the
- * exception hierarchy rooted at {@link com.digitalpetri.iec60870.Iec60870Exception}, and the
- * immutable configuration holders {@link com.digitalpetri.iec60870.ProtocolProfile}, {@link
- * com.digitalpetri.iec60870.ApciSettings}, and {@link com.digitalpetri.iec60870.TlsOptions}.
+ * exception hierarchy rooted at {@link com.digitalpetri.iec60870.Iec60870Exception}; the immutable
+ * configuration holders {@link com.digitalpetri.iec60870.ProtocolProfile}, {@link
+ * com.digitalpetri.iec60870.ApciSettings}, and {@link com.digitalpetri.iec60870.TlsOptions}; the
+ * neutral {@link com.digitalpetri.iec60870.SessionSettings} handle that the client and server
+ * configurations carry; and the {@link com.digitalpetri.iec60870.OutboundQueuePolicy} that governs
+ * a full outbound session queue.
  *
  * <h2>Configuration</h2>
  *

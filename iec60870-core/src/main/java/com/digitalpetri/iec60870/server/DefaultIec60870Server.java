@@ -1,7 +1,9 @@
 package com.digitalpetri.iec60870.server;
 
+import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
@@ -10,7 +12,6 @@ import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.apci.ApciSession;
 import com.digitalpetri.iec60870.apci.Apdu;
 import com.digitalpetri.iec60870.apci.ApduFramer;
-import com.digitalpetri.iec60870.apci.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
@@ -377,12 +378,14 @@ public final class DefaultIec60870Server implements Iec60870Server {
       this.session =
           new ApciSession(
               ApciSession.Role.SERVER,
-              config.apciSettings(),
+              // Downcast the neutral session settings to the 104-specific ApciSettings; this
+              // downcast relocates to the cs104 binding in Phase 7.
+              (ApciSettings) config.sessionSettings(),
               scheduler,
               this::onSessionOutput,
               new SessionEvents(),
               config.maxOutboundQueue(),
-              outboundQueuePolicy(config.eventQueuePolicy()));
+              config.eventQueuePolicy());
     }
 
     SocketAddress remoteAddress() {
@@ -427,9 +430,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
       // Apply backpressure for the BLOCK policy on the publishing thread, OUTSIDE the session lock,
       // before offering the ASDU. DROP_OLDEST / DROP_NEWEST are enforced inside the session's
       // bounded send queue together with the k-window.
-      if (config.eventQueuePolicy() == EventQueuePolicy.BLOCK && config.maxOutboundQueue() > 0) {
+      if (config.eventQueuePolicy() == OutboundQueuePolicy.BLOCK && config.maxOutboundQueue() > 0) {
         try {
-          session.awaitSendCapacity(config.apciSettings().t1().toMillis());
+          // TODO(Phase 5): replace this cs104 downcast for the BLOCK-await timeout with a neutral
+          // ServerConfig.outboundBlockTimeout; a neutral SessionSettings has no t1.
+          session.awaitSendCapacity(((ApciSettings) config.sessionSettings()).t1().toMillis());
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           return;
@@ -1046,21 +1051,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
    */
   private static TimeTagStyle styleOf(InformationObject object) {
     return MonitorTypes.styleOf(object);
-  }
-
-  /**
-   * Maps the server-facing {@link EventQueuePolicy} onto the core-level {@link OutboundQueuePolicy}
-   * understood by {@link ApciSession}.
-   *
-   * @param policy the configured event-queue policy.
-   * @return the equivalent session-level outbound queue policy.
-   */
-  private static OutboundQueuePolicy outboundQueuePolicy(EventQueuePolicy policy) {
-    return switch (policy) {
-      case DROP_OLDEST -> OutboundQueuePolicy.DROP_OLDEST;
-      case DROP_NEWEST -> OutboundQueuePolicy.DROP_NEWEST;
-      case BLOCK -> OutboundQueuePolicy.BLOCK;
-    };
   }
 
   /**

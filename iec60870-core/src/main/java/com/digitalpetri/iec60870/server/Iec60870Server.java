@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.server;
 
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.point.PointValue;
@@ -84,7 +85,7 @@ public interface Iec60870Server extends AutoCloseable {
    *
    * <p>The point must be defined on a hosted station, and the value's runtime type must match the
    * point's type. Connections that have not started data transfer are skipped; for started
-   * connections whose outbound queue is full, the configured {@link EventQueuePolicy} applies.
+   * connections whose outbound queue is full, the configured {@link OutboundQueuePolicy} applies.
    *
    * @param point the fully qualified address of the point.
    * @param value the new value to publish.

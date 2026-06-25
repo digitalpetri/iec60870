@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.client;
 
+import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.NegativeConfirmationException;
@@ -152,7 +153,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
     this.session =
         new ApciSession(
             ApciSession.Role.CLIENT,
-            config.apciSettings(),
+            // Downcast the neutral session settings to the 104-specific ApciSettings; this downcast
+            // relocates to the cs104 binding in Phase 7.
+            (ApciSettings) config.sessionSettings(),
             this.scheduler,
             this::onSessionOutput,
             new SessionEvents());

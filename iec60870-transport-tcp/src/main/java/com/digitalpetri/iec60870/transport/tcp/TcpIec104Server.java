@@ -255,7 +255,7 @@ public final class TcpIec104Server {
       ServerConfig.Builder serverConfigBuilder =
           ServerConfig.builder()
               .protocolProfile(profile)
-              .apciSettings(apci)
+              .sessionSettings(apci)
               .stations(stations)
               .maxConnections(maxConnections);
       if (handler != null) {

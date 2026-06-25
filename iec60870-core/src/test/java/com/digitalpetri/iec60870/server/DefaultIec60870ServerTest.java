@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.ApciSettings;
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
@@ -645,10 +646,10 @@ class DefaultIec60870ServerTest {
             .handler(new ServerHandler() {})
             .timeTagStyle(TimeTagStyle.NONE)
             .callbackExecutor(DIRECT)
-            .eventQueuePolicy(EventQueuePolicy.DROP_NEWEST)
+            .eventQueuePolicy(OutboundQueuePolicy.DROP_NEWEST)
             .maxOutboundQueue(2)
             // k = 1 so a single in-flight frame fills the window and the rest queue.
-            .apciSettings(
+            .sessionSettings(
                 new ApciSettings(
                     UShort.valueOf(1),
                     UShort.valueOf(1),

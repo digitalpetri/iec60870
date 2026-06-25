@@ -236,7 +236,7 @@ public final class TcpIec104Client {
       ClientConfig.Builder clientConfigBuilder =
           ClientConfig.builder()
               .protocolProfile(profile)
-              .apciSettings(apci)
+              .sessionSettings(apci)
               .originatorAddress(originatorAddress)
               .startDataTransferOnConnect(startDataTransferOnConnect);
       if (callbackExecutor != null) {
