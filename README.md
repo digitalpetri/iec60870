@@ -1,6 +1,6 @@
-# IEC 104 for Java
+# IEC 60870 for Java
 
-IEC 104 is a Java implementation of IEC 60870-5-104, the TCP/IP profile for IEC 60870-5 telecontrol
+IEC 60870 is a Java implementation of IEC 60870-5-104, the TCP/IP profile for IEC 60870-5 telecontrol
 communication. It is a Java 17, [Netty](https://netty.io/)-backed library with a two-layer API: a
 faithful raw ASDU layer and a high-level
 [controlling-station / controlled-station](docs/guide/reference/glossary.md) (master / slave) client

@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <name>IEC 104 :: CS 104</name>
+  <name>IEC 60870 :: CS 104</name>
 
   <artifactId>iec60870-cs104</artifactId>
 

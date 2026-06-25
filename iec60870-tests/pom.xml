@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <name>IEC 104 :: Tests</name>
+  <name>IEC 60870 :: Tests</name>
 
   <artifactId>iec60870-tests</artifactId>
 

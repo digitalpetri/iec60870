@@ -2,7 +2,7 @@
 #
 # lib60870-C (MZ Automation) IEC 60870-5-104 reference peer.
 #
-# Used by the iec104-interop module as a separate-process network peer for
+# Used by the iec60870-interop module as a separate-process network peer for
 # Testcontainers-based interop tests (@Tag("interop")). lib60870-C is GPLv3; it
 # is consumed here only as a standalone binary over the network, never linked.
 #

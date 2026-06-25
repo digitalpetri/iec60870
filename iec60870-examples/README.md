@@ -1,4 +1,4 @@
-# IEC 104 Examples
+# IEC 60870 Examples
 
 Runnable, documentation-first examples for the IEC 60870-5-104 library. Each class has a
 `public static void main` and is meant to be read as much as run.

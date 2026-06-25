@@ -49,7 +49,7 @@ The library targets **Java 17**.
 > coordinate above.
 
 > **mise is for building this repository, not for consuming the library.** Contributors building the
-> IEC 104 repository itself use [`mise`](https://mise.jdx.dev/) to get the pinned Java 17 + Maven
+> IEC 60870 repository itself use [`mise`](https://mise.jdx.dev/) to get the pinned Java 17 + Maven
 > toolchain (`mise install`, then `mise exec -- mvn …`), and the example run commands below use it
 > because they run the in-repo examples. As a downstream consumer you only need Java 17, your own
 > build tool, and the Maven coordinate above — but until the artifact is published, you must first

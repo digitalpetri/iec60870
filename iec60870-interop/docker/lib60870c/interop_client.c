@@ -2,7 +2,7 @@
 /*
  * interop_client.c
  *
- * Custom lib60870-C CS104 CLIENT (controlling station) for the iec104-interop
+ * Custom lib60870-C CS104 CLIENT (controlling station) for the iec60870-interop
  * test bench. Drives our Java SERVER (the LIMITED scenario) and any compliant
  * CS104 controlled station through a scripted sequence, printing PASS:/FAIL:
  * markers the Java Testcontainers tests can assert on.

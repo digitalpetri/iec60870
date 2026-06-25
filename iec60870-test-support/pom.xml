@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <name>IEC 104 :: Test Support</name>
+  <name>IEC 60870 :: Test Support</name>
   <description>
     Shared, core-level test fixtures (ManualScheduler, RecordingEvents, recording transports,
     ParanoidLeakDetection) reused by the module test suites. Internal: never published.

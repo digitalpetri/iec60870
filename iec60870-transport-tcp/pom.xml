@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <name>IEC 104 :: Transport TCP</name>
+  <name>IEC 60870 :: Transport TCP</name>
 
   <artifactId>iec60870-transport-tcp</artifactId>
 

@@ -1,6 +1,6 @@
-# IEC 104
+# IEC 60870
 
-IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
+IEC 60870 is a Maven / Java 17 implementation of IEC 60870-5-104.
 
 ## Tech Stack
 

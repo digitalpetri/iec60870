@@ -2,9 +2,9 @@
 /*
  * interop_server.c
  *
- * Custom lib60870-C CS104 SERVER (controlled station) for the iec104-interop
+ * Custom lib60870-C CS104 SERVER (controlled station) for the iec60870-interop
  * test bench. Implements the contract documented in
- * iec104-interop/docker/INTEROP-CONTRACT.md -- the Java interop CLIENT tests
+ * iec60870-interop/docker/INTEROP-CONTRACT.md -- the Java interop CLIENT tests
  * assert against the addresses, values, and confirmations defined there.
  *
  * Built against the in-tree lib60870-C static lib + headers (see Dockerfile).

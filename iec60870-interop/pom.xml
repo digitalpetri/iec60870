@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <name>IEC 104 :: Interop</name>
+  <name>IEC 60870 :: Interop</name>
 
   <artifactId>iec60870-interop</artifactId>
 

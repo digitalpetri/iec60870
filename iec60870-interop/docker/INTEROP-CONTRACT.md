@@ -1,7 +1,7 @@
 # IEC 60870-5-104 Interop Contract
 
 This file is the **source of truth** for the lib60870-C interop peers used by the
-`iec104-interop` Testcontainers tests. The Java client/server tests assert against the
+`iec60870-interop` Testcontainers tests. The Java client/server tests assert against the
 addresses, values, and confirmation behaviour documented here. The custom C driver programs
 (`interop_server.c`, `interop_client.c`) implement exactly this contract.
 
