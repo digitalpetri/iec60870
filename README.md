@@ -35,8 +35,9 @@ published to Maven Central (see [Dependency](#dependency)).
 
 ## Dependency
 
-Declare both modules. `iec60870-core` holds the protocol model and the `Iec60870Client` / `Iec60870Server`
-APIs (and stays free of Netty runtime types); `iec60870-transport-tcp` adds the Netty-backed TCP/TLS
+Declare both modules. `iec60870-core` holds the protocol model and the SPIs (and stays free of Netty
+runtime types); the `Iec60870Client` / `Iec60870Server` facades live in `iec60870-application`, which
+`iec60870-transport-tcp` pulls in transitively. `iec60870-transport-tcp` adds the Netty-backed TCP/TLS
 transport and the `TcpIec104Client` / `TcpIec104Server` builders you construct from. The transport
 module depends on the core module transitively, but your code uses types from both, so declare both
 directly.

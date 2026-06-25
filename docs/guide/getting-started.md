@@ -12,10 +12,12 @@ You are in the [user guide](README.md). This is the tutorial: read it first, the
 
 ## Install
 
-Declare both modules: `iec60870-core` (the Netty-free public API — the protocol model and the
-`Iec60870Client` / `Iec60870Server` APIs) and `iec60870-transport-tcp` (the Netty-backed TCP/TLS transport
-and the `TcpIec104Client` / `TcpIec104Server` builders). The transport module pulls in `iec60870-core`
-transitively, but your code uses types from both, so declare both directly.
+Declare both modules: `iec60870-core` (the Netty-free protocol model and SPIs — `Asdu`, the addresses,
+and the `Session`/transport interfaces) and `iec60870-transport-tcp` (the Netty-backed TCP/TLS transport
+and the `TcpIec104Client` / `TcpIec104Server` builders). The transport module transitively pulls in
+`iec60870-core` and `iec60870-application` — the module that owns the `Iec60870Client` / `Iec60870Server`
+facades — so the facade types are on your classpath. Your code uses types from `iec60870-core` and
+`iec60870-transport-tcp` directly, so declare both.
 
 Maven:
 
@@ -192,8 +194,8 @@ ServerHandler handler =
 ```
 
 Build and start the `com.digitalpetri.iec60870.transport.tcp.TcpIec104Server`. `bindAddress` defaults
-to `"0.0.0.0"` and `port` to `2404` (the standard IEC 104 port); `build()` returns the core
-`com.digitalpetri.iec60870.server.Iec60870Server` interface.
+to `"0.0.0.0"` and `port` to `2404` (the standard IEC 104 port); `build()` returns the
+`com.digitalpetri.iec60870.server.Iec60870Server` interface (an `iec60870-application` type).
 
 ```java
 import com.digitalpetri.iec60870.server.Iec60870Server;

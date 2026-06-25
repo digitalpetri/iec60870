@@ -71,15 +71,18 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .point    PointValue<T>, PointType, Quality, PointCapability, TimeTagStyle, MonitorMapping │
    │   .catalog  PointCatalog, CatalogEntry, ObservedCatalog, ObservationMode, MergePolicy       │
    └──────────────────────────────────────────────────────────────────────────────────────────┘
-                                     │ depends on (Session SPI + raw model)
-                                     ▼
    ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-   │ iec60870-core  (no Netty channel/handler types; ByteBuf only inside .asdu/.apci Serde + SPI) │
+   │ iec60870-cs104  (the 104 link/session engine; ByteBuf only inside the Apdu Serde)          │
+   │   .cs104   ApciSession implements Session (V(S)/V(R), k/w, t1/t2/t3), Apdu, ControlField,   │
+   │            UFunction, ApduFramer, ApciSettings, Cs104Binding                                │
+   └──────────────────────────────────────────────────────────────────────────────────────────┘
+        iec60870-application and iec60870-cs104 both depend on core ──┐ (Session SPI + raw model)
+                                                                      ▼
+   ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+   │ iec60870-core  (no Netty channel/handler types; ByteBuf only inside .asdu Serde + SPI)     │
    │                                                                                            │
-   │  SESSION + APCI ENGINE                                                                      │
+   │  SESSION SPI                                                                                │
    │   .session  Session (Asdu-shaped SPI: sendAsdu, start/stopDataTransfer, Events)             │
-   │   .apci     ApciSession implements Session (V(S)/V(R), k/w, t1/t2/t3), Apdu, ControlField,  │
-   │             UFunction, ApduFramer                                                          │
    │                                                                                            │
    │  RAW PROTOCOL MODEL + CODECS                                                                │
    │   .asdu          Asdu, AsduType, Cause, InformationObject, InformationObjectCodec(s)         │
@@ -89,7 +92,7 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .address       CommonAddress, InformationObjectAddress, OriginatorAddress, PointAddress   │
    │                                                                                            │
    │  CONFIG + ERRORS (package root)                                                             │
-   │   ProtocolProfile, SessionSettings, ApciSettings, OutboundQueuePolicy, TlsOptions           │
+   │   ProtocolProfile, SessionSettings, OutboundQueuePolicy, TlsOptions                         │
    │   Iec60870Exception (+ AsduDecodeException, ProtocolTimeoutException, ConnectionClosed-,       │
    │                    NegativeConfirmation-, UnsupportedAsduType-, SequenceNumberException)     │
    │                                                                                            │
