@@ -55,6 +55,8 @@ class TestCommandWithCp56TimeTest {
     }
   }
 
+  // Intentional null passed to verify the constructor's null-check (negative test).
+  @SuppressWarnings("ConstantConditions")
   @Test
   void rejectsNullTime() {
     assertThrows(

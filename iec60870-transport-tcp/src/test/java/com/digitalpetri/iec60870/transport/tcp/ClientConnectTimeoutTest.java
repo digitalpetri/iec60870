@@ -19,6 +19,7 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 import org.joou.UShort;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -47,7 +48,7 @@ class ClientConnectTimeoutTest {
             Duration.ofSeconds(10),
             Duration.ofSeconds(20));
 
-    AtomicReference<Object> observed = new AtomicReference<>();
+    AtomicReference<@Nullable Object> observed = new AtomicReference<>();
 
     Station station =
         Station.builder(CommonAddress.of(1))
@@ -81,7 +82,7 @@ class ClientConnectTimeoutTest {
 
       assertNotNull(
           observed.get(), "bootstrap customizer should have observed the connect timeout");
-      assertEquals(Integer.valueOf((int) t0.toMillis()), observed.get());
+      assertEquals((int) t0.toMillis(), observed.get());
     }
   }
 

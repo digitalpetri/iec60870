@@ -72,6 +72,8 @@ class RegulatingStepCommandTest {
     }
   }
 
+  // Deliberate null passed to a @NotNull param to verify the constructor rejects it.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullState() {
     assertThrows(

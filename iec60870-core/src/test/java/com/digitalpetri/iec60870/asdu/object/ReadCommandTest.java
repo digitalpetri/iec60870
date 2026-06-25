@@ -49,6 +49,8 @@ class ReadCommandTest {
 
   @Test
   void rejectsNullComponent() {
+    // Intentional null: verifies the constructor rejects a null component.
+    //noinspection DataFlowIssue
     assertThrows(NullPointerException.class, () -> new ReadCommand(null));
   }
 }

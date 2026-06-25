@@ -97,8 +97,7 @@ class ServerSlotExhaustionIntegrationTest {
     // admitted server-side child channel so step 3 can await it actually closing.
     Socket admitted = connect(port);
     assertStaysOpen(admitted, "the first (admitted) connection should stay open under cap=1");
-    Channel admittedChild =
-        awaitFirstCapturedChild("the admitted connection's server-side child channel");
+    Channel admittedChild = awaitFirstCapturedChild();
 
     // 2. Open a second connection concurrently: it exceeds the cap, so the server admits the TCP
     // connection then immediately closes it. The over-cap socket observes server-side EOF.
@@ -128,7 +127,8 @@ class ServerSlotExhaustionIntegrationTest {
   }
 
   /** Awaits and returns the first server-side child channel the acceptor captured. */
-  private Channel awaitFirstCapturedChild(String what) {
+  private Channel awaitFirstCapturedChild() {
+    String what = "the admitted connection's server-side child channel";
     long deadline = System.nanoTime() + EOF_TIMEOUT.toNanos();
     while (System.nanoTime() < deadline) {
       Channel child = acceptedChildChannels.stream().findFirst().orElse(null);

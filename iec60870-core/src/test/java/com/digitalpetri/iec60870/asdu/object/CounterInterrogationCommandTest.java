@@ -60,6 +60,8 @@ class CounterInterrogationCommandTest {
 
   @Test
   void rejectsNullComponent() {
+    // Deliberate negative test: null is the intended input to verify the @NotNull contract throws.
+    //noinspection DataFlowIssue
     assertThrows(NullPointerException.class, () -> new CounterInterrogationCommand(IOA, null));
   }
 }

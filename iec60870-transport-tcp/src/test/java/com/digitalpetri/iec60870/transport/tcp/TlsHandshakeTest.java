@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -248,8 +249,9 @@ class TlsHandshakeTest {
         // timing-dependent subtype. The bounded await() above already guarantees this is a real
         // failure and not a hang (a hang would surface as a TimeoutException test failure instead).
         Throwable cause = failure.getCause();
-        assertTrue(
-            cause instanceof IOException,
+        assertInstanceOf(
+            IOException.class,
+            cause,
             "a dropped handshake should surface as an SSL/IO failure, but was: " + cause);
 
         assertFalse(client.isConnected(), "client must not be connected after a dropped handshake");
@@ -340,7 +342,7 @@ class TlsHandshakeTest {
     }
   }
 
-  private static @Nullable Throwable rootCause(Throwable t) {
+  private static Throwable rootCause(Throwable t) {
     Throwable cause = t;
     while (cause.getCause() != null && cause.getCause() != cause) {
       cause = cause.getCause();

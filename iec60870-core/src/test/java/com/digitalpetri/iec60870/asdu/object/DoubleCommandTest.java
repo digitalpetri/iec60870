@@ -78,6 +78,8 @@ class DoubleCommandTest {
     assertThrows(IllegalArgumentException.class, () -> new QualifierOfCommand(32, false));
   }
 
+  // Deliberate null passed to a @NotNull param to verify the constructor rejects it.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullState() {
     assertThrows(

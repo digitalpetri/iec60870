@@ -1,10 +1,10 @@
 package com.digitalpetri.iec60870.cs104;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
@@ -150,8 +150,8 @@ class Cs104BindingTest {
 
     Asdu asdu = sampleAsdu();
     session.sendAsdu(asdu);
-    assertTrue(
-        connection.sent.size() >= 1, "server should frame the STARTDT_CON and/or the I-frame");
+    assertFalse(
+        connection.sent.isEmpty(), "server should frame the STARTDT_CON and/or the I-frame");
 
     // A connection loss is routed through Events.onClosed.
     connection.listener.onConnectionLost(null);
@@ -196,7 +196,6 @@ class Cs104BindingTest {
 
     private final IOException cause = new IOException("write failed");
     private int sendCount;
-    private @Nullable TransportListener listener;
 
     @Override
     public CompletionStage<Void> connect() {
@@ -223,9 +222,7 @@ class Cs104BindingTest {
     }
 
     @Override
-    public void setListener(TransportListener listener) {
-      this.listener = listener;
-    }
+    public void setListener(TransportListener listener) {}
   }
 
   private static final class FakeClientTransport implements ClientTransport {

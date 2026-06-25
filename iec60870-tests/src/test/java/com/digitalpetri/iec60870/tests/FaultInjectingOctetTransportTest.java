@@ -63,7 +63,7 @@ class FaultInjectingOctetTransportTest {
 
     Harness() {
       client.setListener(clientListener);
-      AtomicReference<ServerTransportConnection> ref = new AtomicReference<>();
+      AtomicReference<@Nullable ServerTransportConnection> ref = new AtomicReference<>();
       server.setConnectionHandler(
           conn -> {
             ref.set(conn);
@@ -71,8 +71,9 @@ class FaultInjectingOctetTransportTest {
           });
       server.bind().toCompletableFuture().join();
       client.connect().toCompletableFuture().join();
-      connection = ref.get();
-      assertNotNull(connection, "server should have accepted the connection");
+      ServerTransportConnection accepted = ref.get();
+      assertNotNull(accepted, "server should have accepted the connection");
+      connection = accepted;
     }
   }
 

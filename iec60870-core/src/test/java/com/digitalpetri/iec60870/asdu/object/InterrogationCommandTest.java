@@ -48,6 +48,8 @@ class InterrogationCommandTest {
 
   @Test
   void rejectsNullComponent() {
+    // Deliberate null input to verify the @NotNull constructor rejects it.
+    //noinspection ConstantConditions
     assertThrows(NullPointerException.class, () -> new InterrogationCommand(IOA, null));
   }
 }

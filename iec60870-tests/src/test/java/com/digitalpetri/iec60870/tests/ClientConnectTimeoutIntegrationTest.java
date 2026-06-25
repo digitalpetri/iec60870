@@ -161,7 +161,7 @@ class ClientConnectTimeoutIntegrationTest {
     assertTrue(client.isConnected(), "client should be connected after the session is armed");
   }
 
-  private void startServer(int port) throws IOException {
+  private void startServer(int port) {
     Station station =
         Station.builder(STATION)
             .point(

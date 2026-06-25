@@ -36,6 +36,8 @@ class PointValueTest {
         () -> new PointValue<>(PointType.SCALED, "nope", Quality.good(), Optional.empty()));
   }
 
+  // Deliberate null passed to a @NotNull param to verify the constructor rejects it.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void constructorRejectsNullType() {
     assertThrows(

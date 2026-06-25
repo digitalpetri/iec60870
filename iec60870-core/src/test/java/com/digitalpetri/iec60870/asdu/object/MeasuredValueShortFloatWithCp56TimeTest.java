@@ -62,6 +62,8 @@ class MeasuredValueShortFloatWithCp56TimeTest {
     }
   }
 
+  // Deliberate null passed to a @NotNull constructor param to verify the negative path.
+  @SuppressWarnings("ConstantConditions")
   @Test
   void rejectsNullComponents() {
     Qds quality = new Qds(false, false, false, false, false);

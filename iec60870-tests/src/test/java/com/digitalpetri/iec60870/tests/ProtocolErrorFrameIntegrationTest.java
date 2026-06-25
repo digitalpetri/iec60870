@@ -6,6 +6,7 @@ import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -139,6 +140,7 @@ class ProtocolErrorFrameIntegrationTest {
   void corruptInboundISequenceNumberClosesClientWithSequenceErrorAndFailsPending() {
     EventCollector events = startWithholdingServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
+    DefaultIec60870Server server = requireNonNull(this.server);
 
     // A request the server will never confirm, so it is genuinely pending when the corruption
     // lands.
@@ -156,9 +158,7 @@ class ProtocolErrorFrameIntegrationTest {
     // SequenceNumberException
     ExecutionException failure =
         assertThrows(
-            ExecutionException.class,
-            () -> pending.get(),
-            "pending request must fail on the close");
+            ExecutionException.class, pending::get, "pending request must fail on the close");
     ConnectionClosedException closed =
         assertInstanceOf(ConnectionClosedException.class, failure.getCause());
     assertInstanceOf(
@@ -195,6 +195,7 @@ class ProtocolErrorFrameIntegrationTest {
   void corruptInboundAcknowledgementClosesClientWithSequenceError() {
     EventCollector events = startDefaultServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
+    DefaultIec60870Server server = requireNonNull(this.server);
 
     // Corrupt the next inbound I-frame's N(R): force control octet 2 (frame byte 4) high so the
     // acknowledged count far exceeds anything the client could have outstanding, tripping the
@@ -238,6 +239,7 @@ class ProtocolErrorFrameIntegrationTest {
   void garbledInboundWholeFrameDecodeFailureDropsConnectionCleanly() {
     EventCollector events = startWithholdingServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
+    DefaultIec60870Server server = requireNonNull(this.server);
 
     // A request the server will never confirm, so it is genuinely pending when the corrupted frame
     // lands and the decode failure closes the session.
@@ -266,6 +268,7 @@ class ProtocolErrorFrameIntegrationTest {
             AsduDecodeException.class,
             closeEvents.get(0).cause(),
             "ConnectionClosed cause must be the decode failure");
+    assertNotNull(closeCause);
     assertTrue(
         closeCause.getMessage().contains("START"),
         "the close cause must be the START-octet check: " + closeCause.getMessage());
@@ -273,9 +276,7 @@ class ProtocolErrorFrameIntegrationTest {
     // (b) the pending request failed with ConnectionClosedException caused by the decode failure.
     ExecutionException failure =
         assertThrows(
-            ExecutionException.class,
-            () -> pending.get(),
-            "pending request must fail on the close");
+            ExecutionException.class, pending::get, "pending request must fail on the close");
     ConnectionClosedException closed =
         assertInstanceOf(ConnectionClosedException.class, failure.getCause());
     assertInstanceOf(
@@ -387,6 +388,7 @@ class ProtocolErrorFrameIntegrationTest {
             UnsupportedAsduTypeException.class,
             serverCloses.get(0).cause(),
             "the server close cause must be the UnsupportedAsduTypeException");
+    assertNotNull(cause);
     assertTrue(
         cause.getMessage().contains("41"),
         "the failure must name the undefined type id: " + cause.getMessage());
@@ -491,7 +493,7 @@ class ProtocolErrorFrameIntegrationTest {
     server
         .events()
         .subscribe(
-            new java.util.concurrent.Flow.Subscriber<ServerEvent>() {
+            new java.util.concurrent.Flow.Subscriber<>() {
               @Override
               public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
                 subscription.request(Long.MAX_VALUE);

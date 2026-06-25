@@ -48,6 +48,8 @@ class ResetProcessCommandTest {
 
   @Test
   void rejectsNullComponent() {
+    // Deliberately passes null to verify the constructor's null-check; null is the intended input.
+    //noinspection DataFlowIssue
     assertThrows(NullPointerException.class, () -> new ResetProcessCommand(IOA, null));
   }
 

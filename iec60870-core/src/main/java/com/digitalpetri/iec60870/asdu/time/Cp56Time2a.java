@@ -103,6 +103,8 @@ public record Cp56Time2a(
     int seconds = milliseconds / 1000;
     int nanos = (milliseconds % 1000) * 1_000_000;
     try {
+      // Called for its DateTimeException side effect: validates the calendar date; result unused.
+      //noinspection ResultOfMethodCallIgnored
       LocalDateTime.of(2000 + year, month, dayOfMonth, hour, minute, seconds, nanos);
     } catch (DateTimeException e) {
       throw new IllegalArgumentException("invalid CP56Time2a calendar date: " + e.getMessage());

@@ -50,7 +50,7 @@ class LoopbackOctetTransportTest {
     client.setListener(clientListener);
 
     RecordingListener serverListener = new RecordingListener();
-    AtomicReference<ServerTransportConnection> serverConnection = new AtomicReference<>();
+    AtomicReference<@Nullable ServerTransportConnection> serverConnection = new AtomicReference<>();
     server.setConnectionHandler(
         connection -> {
           serverConnection.set(connection);

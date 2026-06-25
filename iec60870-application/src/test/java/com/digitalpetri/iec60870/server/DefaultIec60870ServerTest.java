@@ -1,7 +1,9 @@
 package com.digitalpetri.iec60870.server;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,7 +48,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -561,7 +562,7 @@ class DefaultIec60870ServerTest {
     assertEquals(1, sent.size());
     Asdu reply = sent.get(0);
     assertEquals(AsduType.C_TS_TA_1, reply.type());
-    assertTrue(reply.objects().get(0) instanceof TestCommandWithCp56Time);
+    assertInstanceOf(TestCommandWithCp56Time.class, reply.objects().get(0));
 
     server.close();
   }
@@ -612,9 +613,7 @@ class DefaultIec60870ServerTest {
 
     List<Asdu> group2 = connection.sentAsdus();
     List<Asdu> group2Monitors =
-        group2.stream()
-            .filter(a -> a.cause() == Cause.REQUESTED_BY_GROUP_2_COUNTER)
-            .collect(Collectors.toList());
+        group2.stream().filter(a -> a.cause() == Cause.REQUESTED_BY_GROUP_2_COUNTER).toList();
     assertEquals(1, group2Monitors.size(), "only the group-2 counter is reported");
     assertEquals(counter2.objectAddress(), group2Monitors.get(0).objects().get(0).address());
     assertTrue(
@@ -727,7 +726,7 @@ class DefaultIec60870ServerTest {
    * sessionRef}.
    */
   private DefaultIec60870Server blockServer(
-      Duration blockTimeout, AtomicReference<ControllableServerSession> sessionRef) {
+      Duration blockTimeout, AtomicReference<@Nullable ControllableServerSession> sessionRef) {
     ServerConfig config =
         ServerConfig.builder()
             .station(singlePointStation())
@@ -749,11 +748,11 @@ class DefaultIec60870ServerTest {
 
   @Test
   void blockPolicyAwaitsCapacityBeforeSendingMonitor() {
-    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    AtomicReference<@Nullable ControllableServerSession> sessionRef = new AtomicReference<>();
     DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
     server.start();
     transport.accept("client");
-    ControllableServerSession session = sessionRef.get();
+    ControllableServerSession session = requireNonNull(sessionRef.get());
     session.simulateDataTransferStarted();
 
     // Capacity is reported available: the publisher awaits once, then the monitor is sent.
@@ -770,11 +769,11 @@ class DefaultIec60870ServerTest {
 
   @Test
   void blockPolicyTimeoutFallsThroughToSendAsdu() {
-    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    AtomicReference<@Nullable ControllableServerSession> sessionRef = new AtomicReference<>();
     DefaultIec60870Server server = blockServer(Duration.ofMillis(20), sessionRef);
     server.start();
     transport.accept("client");
-    ControllableServerSession session = sessionRef.get();
+    ControllableServerSession session = requireNonNull(sessionRef.get());
     session.simulateDataTransferStarted();
 
     // The await "times out" (returns false). The server ignores the boolean and falls through to
@@ -794,11 +793,11 @@ class DefaultIec60870ServerTest {
 
   @Test
   void blockPolicyInterruptedAwaitPreservesInterruptFlagAndDropsMonitor() throws Exception {
-    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    AtomicReference<@Nullable ControllableServerSession> sessionRef = new AtomicReference<>();
     DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
     server.start();
     transport.accept("client");
-    ControllableServerSession session = sessionRef.get();
+    ControllableServerSession session = requireNonNull(sessionRef.get());
     session.simulateDataTransferStarted();
 
     // awaitSendCapacity throws InterruptedException: enqueueMonitor re-asserts the interrupt flag
@@ -830,11 +829,11 @@ class DefaultIec60870ServerTest {
 
   @Test
   void blockPolicyConnectionClosedWhileBlockedDropsMonitorCleanly() throws Exception {
-    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    AtomicReference<@Nullable ControllableServerSession> sessionRef = new AtomicReference<>();
     DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
     server.start();
     transport.accept("client");
-    ControllableServerSession session = sessionRef.get();
+    ControllableServerSession session = requireNonNull(sessionRef.get());
     session.simulateDataTransferStarted();
 
     // The publisher parks inside awaitSendCapacity; while it is parked the connection closes

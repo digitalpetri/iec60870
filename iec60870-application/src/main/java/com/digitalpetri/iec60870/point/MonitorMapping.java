@@ -345,6 +345,10 @@ public final class MonitorMapping {
       }
       case INTEGRATED_TOTALS -> {
         BinaryCounterReading raw = as(value.value(), BinaryCounterReading.class, type);
+        // The OR keeps the IV bit set when either source is invalid; in this guarded branch
+        // value.quality().invalid() is necessarily true, but spelling out the union is intentional,
+        // self-documenting, and yields the correct value.
+        //noinspection ConstantValue
         BinaryCounterReading bcr =
             raw.invalid() == value.quality().invalid()
                 ? raw

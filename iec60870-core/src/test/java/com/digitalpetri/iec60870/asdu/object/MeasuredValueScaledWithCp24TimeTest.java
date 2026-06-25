@@ -57,6 +57,8 @@ class MeasuredValueScaledWithCp24TimeTest {
     }
   }
 
+  // Deliberate null passed to a @NotNull param to verify the constructor rejects it.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullComponents() {
     Qds quality = new Qds(false, false, false, false, false);

@@ -106,22 +106,19 @@ public final class ControllableServerSession implements Session {
   public boolean awaitSendCapacity(long timeoutMillis) throws InterruptedException {
     awaitCalls.incrementAndGet();
     awaitEntered.countDown();
-    switch (outcome) {
-      case RETURN_TRUE:
-        return true;
-      case RETURN_FALSE:
-        return false;
-      case THROW_INTERRUPTED:
-        throw new InterruptedException("simulated interrupt while awaiting capacity");
-      case BLOCK_UNTIL_RELEASED:
+    return switch (outcome) {
+      case RETURN_TRUE -> true;
+      case RETURN_FALSE -> false;
+      case THROW_INTERRUPTED ->
+          throw new InterruptedException("simulated interrupt while awaiting capacity");
+      case BLOCK_UNTIL_RELEASED -> {
         // Park until the test releases the wait, mirroring a publisher held under backpressure.
         if (!releaseAwait.await(5, TimeUnit.SECONDS)) {
           throw new InterruptedException("await was never released by the test");
         }
-        return true;
-      default:
-        throw new AssertionError("unreachable outcome: " + outcome);
-    }
+        yield true;
+      }
+    };
   }
 
   @Override

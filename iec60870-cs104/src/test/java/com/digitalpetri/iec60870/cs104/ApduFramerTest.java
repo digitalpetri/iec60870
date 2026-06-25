@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.cs104;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.digitalpetri.iec60870.AsduDecodeException;
@@ -149,7 +150,7 @@ class ApduFramerTest {
       Apdu decoded = ApduFramer.decode(PROFILE, buffer);
       ControlField.TypeS control = assertInstanceOf(ControlField.TypeS.class, decoded.control());
       assertEquals(7, control.receiveSequenceNumber());
-      assertEquals(null, decoded.asdu());
+      assertNull(decoded.asdu());
     } finally {
       buffer.release();
     }

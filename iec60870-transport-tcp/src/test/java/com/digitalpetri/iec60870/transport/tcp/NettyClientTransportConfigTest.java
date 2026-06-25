@@ -30,6 +30,8 @@ class NettyClientTransportConfigTest {
     assertEquals(Duration.ofMillis(7531), config.connectTimeout());
   }
 
+  // Deliberate null passed to a @NotNull param to verify the builder rejects it.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullConnectTimeout() {
     NettyClientTransportConfig.Builder builder =

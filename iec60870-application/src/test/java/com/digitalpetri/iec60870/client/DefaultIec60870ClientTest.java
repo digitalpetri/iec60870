@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.client;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -53,6 +54,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,7 +64,7 @@ class DefaultIec60870ClientTest {
   private static final CommonAddress STATION = CommonAddress.of(1);
 
   private final FakeClientTransport transport = new FakeClientTransport();
-  private final AtomicReference<FakeSession> sessionRef = new AtomicReference<>();
+  private final AtomicReference<@Nullable FakeSession> sessionRef = new AtomicReference<>();
   private final ClientConfig config =
       ClientConfig.builder().callbackExecutor(Runnable::run).build();
   private final DefaultIec60870Client client =
@@ -78,7 +80,7 @@ class DefaultIec60870ClientTest {
 
   /** A factory that builds a CLIENT-role fake session and records it for the test to drive. */
   private static BiFunction<Session.Events, ScheduledExecutorService, Session> clientSessionFactory(
-      AtomicReference<FakeSession> ref) {
+      AtomicReference<@Nullable FakeSession> ref) {
     return (events, scheduler) -> {
       FakeSession session = FakeSession.client(events);
       ref.set(session);
@@ -402,7 +404,7 @@ class DefaultIec60870ClientTest {
   void connectFailureIsTranslatedToTypedException() {
     FakeClientTransport failing = new FakeClientTransport();
     failing.failConnect(new IOException("refused"));
-    AtomicReference<FakeSession> failingSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> failingSession = new AtomicReference<>();
     try (DefaultIec60870Client failingClient =
         new DefaultIec60870Client(
             failing,
@@ -424,7 +426,7 @@ class DefaultIec60870ClientTest {
     // so no wall-clock sleep is needed.
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -456,7 +458,8 @@ class DefaultIec60870ClientTest {
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
       // A late confirmation for the timed-out command is ignored without error.
-      quietSession.get().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+      requireNonNull(quietSession.get())
+          .deliverAsdu(commandConfirmation(point.objectAddress(), false));
       assertEquals(0, timingClient.pendingRequestCount());
     }
   }
@@ -465,7 +468,7 @@ class DefaultIec60870ClientTest {
   void interrogateTimeoutCleansUpPendingRequest() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -492,7 +495,7 @@ class DefaultIec60870ClientTest {
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
       // A late confirmation for the timed-out interrogation is ignored without error.
-      quietSession.get().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+      requireNonNull(quietSession.get()).deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
       assertEquals(0, timingClient.pendingRequestCount());
     }
   }
@@ -501,7 +504,7 @@ class DefaultIec60870ClientTest {
   void readTimeoutCleansUpPendingRequest() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -529,7 +532,7 @@ class DefaultIec60870ClientTest {
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
       // A late response for the timed-out read is ignored without error.
-      quietSession.get().deliverAsdu(measured(Cause.REQUEST, (short) 42));
+      requireNonNull(quietSession.get()).deliverAsdu(measured(Cause.REQUEST, (short) 42));
       assertEquals(0, timingClient.pendingRequestCount());
     }
   }
@@ -593,7 +596,7 @@ class DefaultIec60870ClientTest {
     // A single-thread executor preserves submission order and never runs two callbacks at once.
     ExecutorService executor = Executors.newSingleThreadExecutor();
     FakeClientTransport serialTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> serialSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> serialSession = new AtomicReference<>();
     try (DefaultIec60870Client serialClient =
         new DefaultIec60870Client(
             serialTransport,
@@ -635,7 +638,7 @@ class DefaultIec60870ClientTest {
               });
 
       for (int i = 0; i < count; i++) {
-        serialSession.get().deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
+        requireNonNull(serialSession.get()).deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
       }
 
       assertTrue(latch.await(5, TimeUnit.SECONDS), "all events delivered");
@@ -709,12 +712,12 @@ class DefaultIec60870ClientTest {
     // A self-initiated protocol-error/timeout close, by contrast, must tear the transport down so a
     // persistent transport stops reconnecting.
     FakeClientTransport errorTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> errorSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> errorSession = new AtomicReference<>();
     try (DefaultIec60870Client errorClient =
         new DefaultIec60870Client(errorTransport, config, clientSessionFactory(errorSession))) {
       errorClient.connect();
       assertEquals(0, errorTransport.disconnectCount());
-      errorSession.get().fireClosed(new SequenceNumberException("protocol error"));
+      requireNonNull(errorSession.get()).fireClosed(new SequenceNumberException("protocol error"));
       assertEquals(
           1,
           errorTransport.disconnectCount(),
@@ -780,7 +783,7 @@ class DefaultIec60870ClientTest {
   void interrogationActConWithoutTerminationTimesOut() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -796,7 +799,7 @@ class DefaultIec60870ClientTest {
 
       // The activation is confirmed, but the activation termination that would complete the
       // interrogation never arrives.
-      quietSession.get().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+      requireNonNull(quietSession.get()).deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
       assertFalse(
           stage.toCompletableFuture().isDone(),
           "an ACT_CON without ACT_TERM must leave the interrogation pending");
@@ -862,7 +865,7 @@ class DefaultIec60870ClientTest {
   void strayActTerminationForDifferentStationIsIgnoredAndRequestTimesOut() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -878,8 +881,7 @@ class DefaultIec60870ClientTest {
 
       // An ACT_TERM for a DIFFERENT common address does not correlate, so it is ignored and the
       // interrogation remains pending until it times out.
-      quietSession
-          .get()
+      requireNonNull(quietSession.get())
           .deliverAsdu(
               new Asdu(
                   AsduType.C_IC_NA_1,
@@ -907,7 +909,7 @@ class DefaultIec60870ClientTest {
   void selectBeforeOperateExecutePhaseTimesOutWhenExecuteNeverConfirmed() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -927,7 +929,8 @@ class DefaultIec60870ClientTest {
 
       // Confirm the SELECT phase. With inline callbacks this synchronously arms the EXECUTE phase
       // (a second, separately scheduled command timeout) inside deliverAsdu.
-      quietSession.get().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+      requireNonNull(quietSession.get())
+          .deliverAsdu(commandConfirmation(point.objectAddress(), false));
       assertFalse(stage.toCompletableFuture().isDone());
       assertEquals(
           1, timingClient.pendingRequestCount(), "the execute-phase confirmation is pending");
@@ -940,7 +943,7 @@ class DefaultIec60870ClientTest {
       assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
       // SELECT was sent; EXECUTE was sent; both phases hit the wire even though execute timed out.
-      assertEquals(2, quietSession.get().sentAsdus().size());
+      assertEquals(2, requireNonNull(quietSession.get()).sentAsdus().size());
     }
   }
 
@@ -948,7 +951,7 @@ class DefaultIec60870ClientTest {
   void selectBeforeOperateSelectPhaseTimesOutWhenSelectNeverConfirmed() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();
-    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
+    AtomicReference<@Nullable FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -976,7 +979,10 @@ class DefaultIec60870ClientTest {
       var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
       assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
-      assertEquals(1, quietSession.get().sentAsdus().size(), "only the select phase was sent");
+      assertEquals(
+          1,
+          requireNonNull(quietSession.get()).sentAsdus().size(),
+          "only the select phase was sent");
     }
   }
 
@@ -989,7 +995,7 @@ class DefaultIec60870ClientTest {
     // harden the assertion; latches (not sleeps) keep it deterministic.
     for (int round = 0; round < 100; round++) {
       FakeClientTransport raceTransport = new FakeClientTransport();
-      AtomicReference<FakeSession> raceSession = new AtomicReference<>();
+      AtomicReference<@Nullable FakeSession> raceSession = new AtomicReference<>();
       try (DefaultIec60870Client raceClient =
           new DefaultIec60870Client(
               raceTransport,
@@ -1026,6 +1032,9 @@ class DefaultIec60870ClientTest {
                 .filter(
                     s -> {
                       try {
+                        // getNow(null) is the idiomatic "value-if-absent" probe; null is the
+                        // intended sentinel here.
+                        //noinspection DataFlowIssue
                         s.toCompletableFuture().getNow(null);
                         return false; // completed normally -> not rejected (never happens here)
                       } catch (CompletionException ce) {
@@ -1039,7 +1048,10 @@ class DefaultIec60870ClientTest {
         assertEquals(threads, stages.size(), "both threads produced a stage");
         assertEquals(1, rejected, "exactly one racer is rejected with RequestInProgressException");
         assertEquals(1, raceClient.pendingRequestCount(), "exactly one survivor stays pending");
-        assertEquals(1, raceSession.get().sentAsdus().size(), "only the survivor sent an ASDU");
+        assertEquals(
+            1,
+            requireNonNull(raceSession.get()).sentAsdus().size(),
+            "only the survivor sent an ASDU");
       }
     }
   }

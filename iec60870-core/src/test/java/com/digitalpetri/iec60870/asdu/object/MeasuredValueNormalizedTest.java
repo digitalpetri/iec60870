@@ -51,6 +51,9 @@ class MeasuredValueNormalizedTest {
     }
   }
 
+  // Deliberate null to verify the constructor's null-check; passing null is the intended test
+  // input.
+  @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullComponent() {
     assertThrows(

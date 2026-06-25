@@ -54,6 +54,8 @@ class ParameterActivationTest {
 
   @Test
   void rejectsNullComponent() {
+    // Deliberate null passed to a @NotNull param to verify the constructor rejects it.
+    //noinspection DataFlowIssue
     assertThrows(NullPointerException.class, () -> new ParameterActivation(IOA, null));
   }
 }

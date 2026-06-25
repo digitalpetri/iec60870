@@ -258,7 +258,7 @@ class ReconnectIntegrationTest {
    * capture/RST hook, then builds a client pointed at it and subscribes an {@link EventCollector}
    * before connecting.
    */
-  private EventCollector startServerAndClient(int port) throws IOException {
+  private EventCollector startServerAndClient(int port) {
     Station station =
         Station.builder(STATION)
             .point(

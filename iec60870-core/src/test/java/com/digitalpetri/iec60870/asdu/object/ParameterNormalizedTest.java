@@ -59,6 +59,7 @@ class ParameterNormalizedTest {
 
   @Test
   void rejectsNullComponent() {
+    // noinspection DataFlowIssue - deliberate null passed to test the null-check
     assertThrows(
         NullPointerException.class,
         () -> new ParameterNormalized(IOA, null, new QualifierOfParameter(1, false, false)));

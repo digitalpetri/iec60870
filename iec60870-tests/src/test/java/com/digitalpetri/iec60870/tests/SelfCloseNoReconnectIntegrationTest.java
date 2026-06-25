@@ -197,7 +197,7 @@ class SelfCloseNoReconnectIntegrationTest {
     return frame;
   }
 
-  private EventCollector startServerAndClient(int port) throws IOException {
+  private EventCollector startServerAndClient(int port) {
     Station station =
         Station.builder(STATION)
             .point(

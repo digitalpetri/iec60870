@@ -58,6 +58,7 @@ class SetpointNormalizedTest {
 
   @Test
   void rejectsNullComponent() {
+    // noinspection DataFlowIssue — intentional null passed to verify the @NullMarked NPE guard
     assertThrows(
         NullPointerException.class,
         () -> new SetpointNormalized(IOA, null, new QualifierOfSetpoint(0, false)));

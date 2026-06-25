@@ -61,6 +61,7 @@ class MeasuredValueNormalizedWithCp24TimeTest {
   @Test
   void rejectsNullComponent() {
     // The compact constructor rejects a null quality descriptor.
+    //noinspection DataFlowIssue — intentional null passed to verify the null-check throws.
     assertThrows(
         NullPointerException.class,
         () ->

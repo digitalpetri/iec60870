@@ -132,27 +132,20 @@ final class LoopbackOctetTransport {
 
     private @Nullable Consumer<ServerTransportConnection> onAccept;
     private @Nullable LoopbackServerConnection connection;
-    private boolean bound;
 
     @Override
     public CompletionStage<Void> bind() {
-      bound = true;
       return CompletableFuture.completedFuture(null);
     }
 
     @Override
     public CompletionStage<Void> unbind() {
-      bound = false;
       return CompletableFuture.completedFuture(null);
     }
 
     @Override
     public void setConnectionHandler(Consumer<ServerTransportConnection> onAccept) {
       this.onAccept = onAccept;
-    }
-
-    boolean isBound() {
-      return bound;
     }
 
     void acceptClient() {

@@ -51,6 +51,8 @@ class MeasuredValueNormalizedNoQualityTest {
 
   @Test
   void rejectsNullComponent() {
+    // Deliberate negative test: null is the intended input to verify the constructor's null check.
+    //noinspection DataFlowIssue
     assertThrows(NullPointerException.class, () -> new MeasuredValueNormalizedNoQuality(IOA, null));
   }
 }
