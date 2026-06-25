@@ -57,7 +57,7 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
                          │  TcpIec104Client.builder()        TcpIec104Server.builder()    │
    user-facing  ───────► │  host/port/tls  ──► NettyClientTransport / NettyServerTransport │
    entry points          │  Iec104FrameDecoder (the whole-frame ByteBuf boundary)         │
-                         │  + the transitional 104 session assembly (ApciSession+ApduFramer)│
+                         │  builders delegate 104 assembly to Cs104Binding (in cs104)      │
                          └───────────────────────────────────────────────────────────────┘
             assembles {Session + transport}     returns the application interface
             and injects them into ───┐          (Iec60870Client / Iec60870Server)

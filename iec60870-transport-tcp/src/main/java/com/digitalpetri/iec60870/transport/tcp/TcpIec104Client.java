@@ -6,22 +6,13 @@ import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.cs104.ApciSession;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
-import com.digitalpetri.iec60870.cs104.Apdu;
-import com.digitalpetri.iec60870.cs104.ApduFramer;
-import com.digitalpetri.iec60870.session.Session;
-import com.digitalpetri.iec60870.transport.ClientTransport;
-import com.digitalpetri.iec60870.transport.TransportListener;
+import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.EventLoopGroup;
 import java.net.SocketAddress;
 import java.util.Objects;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 
@@ -253,75 +244,14 @@ public final class TcpIec104Client {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
 
-      ProtocolProfile sessionProfile = profile;
-      ApciSettings apciSettings = apci;
+      // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
+      // delegates the full ApciSession + framing assembly to Cs104Binding (see its Javadoc).
+      Cs104Binding binding = new Cs104Binding(apci, profile);
 
-      // Transitional 104 assembly hosted in the builder: construct the ApciSession whose Output
-      // frames APDUs and writes them as whole frames to the octet transport, register an octet
-      // listener that deframes inbound frames into the session and routes a transport connection
-      // loss to the facade's Session.Events.onClosed, and hand the assembled Session to the facade.
-      // Phase 7 relocates this assembly into Cs104Binding.
       return new DefaultIec60870Client(
           transport,
           clientConfigBuilder.build(),
-          (events, scheduler) ->
-              assembleClientSession(transport, apciSettings, sessionProfile, scheduler, events));
-    }
-
-    private static Session assembleClientSession(
-        ClientTransport transport,
-        ApciSettings apciSettings,
-        ProtocolProfile profile,
-        ScheduledExecutorService scheduler,
-        Session.Events events) {
-
-      ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
-
-      // The session is referenced by the Output and the listener below, both of which run only
-      // after
-      // construction; hold it in a one-element array so they can close it on a failed write or a
-      // transport loss.
-      ApciSession[] holder = new ApciSession[1];
-
-      ApciSession session =
-          new ApciSession(
-              ApciSession.Role.CLIENT,
-              apciSettings,
-              scheduler,
-              apdu -> {
-                // Frame the APDU into a whole-frame ByteBuf and hand it to the octet transport,
-                // which owns and releases the buffer. A failed write closes the session and routes
-                // the loss to the facade through Session.Events.onClosed.
-                ByteBuf frame = ApduFramer.encode(apdu, profile, alloc);
-                transport
-                    .send(frame)
-                    .whenComplete(
-                        (ignored, error) -> {
-                          if (error != null) {
-                            holder[0].close();
-                            events.onClosed(error);
-                          }
-                        });
-              },
-              events);
-      holder[0] = session;
-
-      transport.setListener(
-          new TransportListener() {
-            @Override
-            public void onFrame(ByteBuf frame) {
-              Apdu apdu = ApduFramer.decode(profile, frame);
-              session.onApdu(apdu);
-            }
-
-            @Override
-            public void onConnectionLost(@Nullable Throwable cause) {
-              session.close();
-              events.onClosed(cause);
-            }
-          });
-
-      return session;
+          (events, scheduler) -> binding.bindClient(transport, events, scheduler));
     }
   }
 }

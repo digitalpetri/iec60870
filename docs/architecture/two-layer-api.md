@@ -74,9 +74,10 @@ The high-level layer lives in its own module, `iec60870-application`, which depe
 `iec60870-core` only and carries **no Netty**. The facades speak purely in terms of `Asdu` and the
 neutral `Session` SPI: a `DefaultIec60870Client` is built around an injected `Session`, and a
 `DefaultIec60870Server` around a per-connection session factory. The protocol-specific session (a
-104 `ApciSession`) and its `Apdu`/`ByteBuf` framing are assembled outside the facade — today in the
-`TcpIec104Client`/`TcpIec104Server` builders — so the high-level layer itself never names a wire
-frame. See [modules-and-dependencies.md](modules-and-dependencies.md).
+104 `ApciSession`) and its `Apdu`/`ByteBuf` framing are assembled outside the facade — by
+`Cs104Binding` in `iec60870-cs104`, which the `TcpIec104Client`/`TcpIec104Server` builders invoke —
+so the high-level layer itself never names a wire frame. See
+[modules-and-dependencies.md](modules-and-dependencies.md).
 
 ### Client
 

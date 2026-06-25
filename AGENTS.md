@@ -24,8 +24,11 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
   `iec60870-cs104`.
 - `iec60870-cs104/` owns the genuinely-104 link/session code: the `ApciSession` (which
   `implements Session`), the `Apdu` / `ControlField` / `UFunction` model with the `Apdu.Serde`
-  codec, the `ApduFramer` `Apdu`↔`ByteBuf` bridge, and `ApciSettings`. It depends on `iec60870-core`
-  (and `netty-buffer` for the `ByteBuf` codec boundary) and is a published API module.
+  codec, the `ApduFramer` `Apdu`↔`ByteBuf` bridge, `ApciSettings`, and `Cs104Binding` — the
+  assembly point that wires an `ApciSession` to a core octet transport handle (framing outbound
+  APDUs, deframing inbound frames, routing connection loss to `Session.Events.onClosed`). It depends
+  on `iec60870-core` (and `netty-buffer` for the `ByteBuf` codec boundary), imports nothing from
+  `transport-tcp` or `application`, and is a published API module.
 - `iec60870-application/` owns the high-level layer (NO Netty): the `Iec60870Client` /
   `Iec60870Server` facades (interfaces + `Default*`), the command/station/point/catalog model, and
   the `ClientConfig` / `ServerConfig`. It depends on `iec60870-core` only and speaks purely in terms
@@ -33,12 +36,12 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
   through a session factory. A `NoNettyInApplicationTest` guard fails the build if any `io.netty.*`
   type (even `ByteBuf`) appears in its main sources.
 - `iec60870-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the transitional 104 assembly
-  point: they resolve `ApciSession` / `ApduFramer` / `ApciSettings` from `iec60870-cs104`, construct
-  the `ApciSession` + `Apdu`/`ByteBuf` framing, and hand the assembled `Session` (client) /
-  per-connection session factory (server) to the `application` facades (this assembly moves into a
-  `Cs104Binding` in a later phase). The Netty octet classes (decoder, pipeline, transports) stay
-  free of any `cs104` import; only the `Tcp*` builder types reference `cs104`.
+  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the **sole 104 assembly point**:
+  they construct the `NettyClientTransport` / `NettyServerTransport`, then delegate the 104 session
+  wiring to `Cs104Binding` (in `cs104`) and hand the assembled `Session` (client) / per-connection
+  session factory (server) to the `application` facades. The builders contain no `new ApciSession(...)`
+  and no direct `ApduFramer` call. The Netty octet classes (decoder, pipeline, transports) stay free
+  of any `cs104`/`application` import; only the `Tcp*` builder types reference `cs104` + `application`.
 - `iec60870-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
@@ -52,6 +55,16 @@ Modules are declared in the parent POM in build order: `iec60870-core`, `iec6087
 `transport`, and `session`. The 104 link/session package `cs104` (`ApciSession`, `Apdu`,
 `ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`, while the
 high-level packages `client`, `server`, `point`, and `catalog` live in `iec60870-application`.
+
+**Future module slots (named only — no code, not in `<modules>`):** `iec60870-cs101`
+(`com.digitalpetri.iec60870.cs101`, → core) would hold an `Ft12LinkLayer` that `implements` the core
+`Session` SPI as a **peer of `ApciSession`** (FT1.2 framing + `LinkSettings`), and
+`iec60870-transport-serial` (`com.digitalpetri.iec60870.transport.serial`) would hold a
+`SerialOctetTransport` implementing the core octet transport SPI — its octet classes depending on
+core only, the same octet-classes-stay-core-only rule `transport-tcp` follows. The corresponding
+future builders are `SerialIec101Client` / `SerialIec101Server` (assembling `{Ft12LinkLayer(cs101) +
+SerialOctetTransport}`) and an optional `TcpIec101Client` / `TcpIec101Server` (101-over-TCP reusing
+`transport-tcp`). These are documented slots only; this effort adds no code for them.
 
 Keep new modules under the parent build and centralize dependency/plugin versions in the root POM.
 

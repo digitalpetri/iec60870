@@ -18,13 +18,15 @@ published to Maven Central (see [Dependency](#dependency)).
   no protocol session engine.
 - `iec60870-cs104`: the genuinely-104 link/session layer. Holds `ApciSession` (which `implements
   Session`), the `Apdu`/`ControlField`/`UFunction` model with the `Apdu.Serde` codec, the
-  `ApduFramer` `Apdu`↔`ByteBuf` bridge, and `ApciSettings`. Depends on `iec60870-core`.
+  `ApduFramer` `Apdu`↔`ByteBuf` bridge, `ApciSettings`, and `Cs104Binding` — the assembly point that
+  wires an `ApciSession` to a core octet transport handle. Depends on `iec60870-core`.
 - `iec60870-application`: the high-level layer with **no** Netty. Holds the `Iec60870Client` /
   `Iec60870Server` facades and the command/station/point/catalog model; depends on `iec60870-core`
   only and speaks purely in terms of `Asdu` + the `Session` SPI.
 - `iec60870-transport-tcp`: Netty-backed TCP/TLS transport implementation, plus the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders, which assemble the 104 session and framing and
-  return the high-level facade.
+  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the sole 104 assembly point: they
+  construct the Netty transport, delegate the session/framing wiring to `Cs104Binding` (in `cs104`),
+  and return the high-level facade.
 - `iec60870-examples`: runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests`: cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop`: interoperability tests that drive the library against `lib60870-C` peer images
