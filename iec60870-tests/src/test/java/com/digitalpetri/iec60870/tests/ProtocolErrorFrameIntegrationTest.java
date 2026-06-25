@@ -1,7 +1,7 @@
 package com.digitalpetri.iec60870.tests;
 
-import static com.digitalpetri.iec60870.tests.FaultInjectingOctetTransport.Direction.CLIENT_TO_SERVER;
-import static com.digitalpetri.iec60870.tests.FaultInjectingOctetTransport.Direction.SERVER_TO_CLIENT;
+import static com.digitalpetri.iec60870.testsupport.FaultInjectingOctetTransport.Direction.CLIENT_TO_SERVER;
+import static com.digitalpetri.iec60870.testsupport.FaultInjectingOctetTransport.Direction.SERVER_TO_CLIENT;
 import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,6 +37,7 @@ import com.digitalpetri.iec60870.server.ServerContext;
 import com.digitalpetri.iec60870.server.ServerEvent;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
+import com.digitalpetri.iec60870.testsupport.FaultInjectingOctetTransport;
 import io.netty.buffer.ByteBuf;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;

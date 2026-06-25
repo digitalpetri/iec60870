@@ -1,7 +1,7 @@
-package com.digitalpetri.iec60870.tests;
+package com.digitalpetri.iec60870.testsupport;
 
-import static com.digitalpetri.iec60870.tests.FaultInjectingOctetTransport.Direction.CLIENT_TO_SERVER;
-import static com.digitalpetri.iec60870.tests.FaultInjectingOctetTransport.Direction.SERVER_TO_CLIENT;
+import static com.digitalpetri.iec60870.testsupport.FaultInjectingOctetTransport.Direction.CLIENT_TO_SERVER;
+import static com.digitalpetri.iec60870.testsupport.FaultInjectingOctetTransport.Direction.SERVER_TO_CLIENT;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

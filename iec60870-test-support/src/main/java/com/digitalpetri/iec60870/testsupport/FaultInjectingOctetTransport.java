@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.tests;
+package com.digitalpetri.iec60870.testsupport;
 
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransport;
@@ -52,10 +52,10 @@ import org.jspecify.annotations.Nullable;
  * default in this module) and, on teardown, call {@link #drainAndRelease()} to release any frames
  * still parked in hold/stall queues so a deliberately-held frame is never reported as a leak.
  */
-final class FaultInjectingOctetTransport {
+public final class FaultInjectingOctetTransport {
 
   /** A relay direction across the in-JVM pair. */
-  enum Direction {
+  public enum Direction {
     /** Frames sent by the client, delivered to the server connection's listener. */
     CLIENT_TO_SERVER,
     /** Frames sent by the server connection, delivered to the client's listener. */
@@ -73,7 +73,7 @@ final class FaultInjectingOctetTransport {
    *
    * @return the {@link ClientTransport} leg.
    */
-  ClientTransport client() {
+  public ClientTransport client() {
     return client;
   }
 
@@ -82,7 +82,7 @@ final class FaultInjectingOctetTransport {
    *
    * @return the {@link ServerTransport} leg.
    */
-  ServerTransport server() {
+  public ServerTransport server() {
     return server;
   }
 
@@ -98,7 +98,7 @@ final class FaultInjectingOctetTransport {
    * @param direction the direction whose frames to drop.
    * @param n the number of upcoming frames to drop; must be non-negative.
    */
-  void dropNext(Direction direction, int n) {
+  public void dropNext(Direction direction, int n) {
     policy(direction).dropNext(n);
   }
 
@@ -111,7 +111,7 @@ final class FaultInjectingOctetTransport {
    * @param direction the direction whose next frame to corrupt.
    * @param mutator transforms the copied frame into the bytes actually delivered.
    */
-  void corruptNext(Direction direction, UnaryOperator<ByteBuf> mutator) {
+  public void corruptNext(Direction direction, UnaryOperator<ByteBuf> mutator) {
     policy(direction).corruptNext(mutator);
   }
 
@@ -121,7 +121,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction whose next frame to duplicate.
    */
-  void duplicateNext(Direction direction) {
+  public void duplicateNext(Direction direction) {
     policy(direction).duplicateNext();
   }
 
@@ -133,7 +133,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction whose next frame to hold.
    */
-  void holdNext(Direction direction) {
+  public void holdNext(Direction direction) {
     policy(direction).holdNext();
   }
 
@@ -145,7 +145,7 @@ final class FaultInjectingOctetTransport {
    * @param direction the direction to release one held frame in.
    * @return {@code true} if a held frame was delivered, {@code false} if the queue was empty.
    */
-  boolean release(Direction direction) {
+  public boolean release(Direction direction) {
     return policy(direction).releaseOne();
   }
 
@@ -156,7 +156,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction to partition.
    */
-  void partition(Direction direction) {
+  public void partition(Direction direction) {
     policy(direction).partition();
   }
 
@@ -166,7 +166,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction to heal.
    */
-  void heal(Direction direction) {
+  public void heal(Direction direction) {
     policy(direction).heal();
   }
 
@@ -177,7 +177,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction to stall.
    */
-  void stall(Direction direction) {
+  public void stall(Direction direction) {
     policy(direction).stall();
   }
 
@@ -187,7 +187,7 @@ final class FaultInjectingOctetTransport {
    *
    * @param direction the direction to resume and drain.
    */
-  void resume(Direction direction) {
+  public void resume(Direction direction) {
     policy(direction).resume();
   }
 
@@ -197,7 +197,7 @@ final class FaultInjectingOctetTransport {
    * stalled frames, and marks the pair disconnected so subsequent sends fail. No graceful close
    * handshake occurs, mirroring a yanked cable.
    */
-  void kill() {
+  public void kill() {
     clientToServer.drainAndRelease();
     serverToClient.drainAndRelease();
     client.fail(new IllegalStateException("connection killed"));
@@ -207,7 +207,7 @@ final class FaultInjectingOctetTransport {
    * Releases every frame still parked in a hold or stall queue, without delivering it. Intended for
    * test teardown so a deliberately-held frame is not reported as a leak.
    */
-  void drainAndRelease() {
+  public void drainAndRelease() {
     clientToServer.drainAndRelease();
     serverToClient.drainAndRelease();
   }

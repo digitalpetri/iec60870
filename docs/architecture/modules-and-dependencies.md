@@ -4,7 +4,8 @@ The library is a Maven multi-module build under the `iec60870-parent` POM. Four 
 caller: `iec60870-core` (the protocol model and SPIs), `iec60870-cs104` (the 104 link/session
 engine), `iec60870-application` (the high-level `Iec60870Client`/`Iec60870Server` API, with no
 Netty), and `iec60870-transport-tcp` (the Netty TCP/TLS transport plus the builders that assemble a
-104 stack). A further module, `iec60870-tests`, holds cross-module integration tests.
+104 stack). A further module, `iec60870-tests`, holds cross-module integration tests, and an
+internal `iec60870-test-support` module holds the shared, test-only fixtures those suites reuse.
 
 ## The core / cs104 / application / transport split
 
@@ -196,6 +197,17 @@ acyclic with a single source (`core`): `cs104 → core`, `application → core` 
 `cs104` are incomparable siblings — no edge between them), `transport-tcp → {application, cs104,
 core}`, and the sinks → `{application, transport-tcp}` (examples also → `core`). Nothing depends back
 into the application or transport modules.
+
+`iec60870-test-support` is an internal, test-only module that holds the shared, core-level test
+fixtures (the deterministic `ManualScheduler`, the `RecordingEvents` `Session.Events` recorder, the
+frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
+`LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, and the
+`ParanoidLeakDetection` JUnit extension). It depends on **core only** — plus `netty-buffer` for the
+`ByteBuf` boundary and `junit-jupiter-api` for the extension — and is consumed at `test` scope by
+`iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, and `iec60870-tests`. Keeping it
+core-only mirrors the octet-classes-stay-core-only rule and means it can never become a path for a
+`cs104`/`application`/`transport-tcp` type to leak across module boundaries. It is never published
+(its deploy, sign, and install steps are skipped).
 
 Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,
 `netty-channel-fsm` `1.0.x`, SLF4J `2.0.x`). The `netty-channel-fsm` dependency excludes

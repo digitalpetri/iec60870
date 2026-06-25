@@ -20,6 +20,8 @@ import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
 import com.digitalpetri.iec60870.session.Session;
+import com.digitalpetri.iec60870.testsupport.ManualScheduler;
+import com.digitalpetri.iec60870.testsupport.RecordingEvents;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -111,7 +113,7 @@ class ApciSessionTest {
     session.onApdu(iFrame(0, asdu(1)));
     session.onApdu(iFrame(1, asdu(2)));
 
-    assertEquals(2, events.asdus.size());
+    assertEquals(2, events.asdus().size());
     // The next sent I-frame carries V(R) = 2 as its N(R).
     session.sendAsdu(asdu(3));
     assertEquals(2, output.iFrames().get(0).receiveSequenceNumber());
@@ -195,11 +197,11 @@ class ApciSessionTest {
     session.onConnected();
 
     session.sendAsdu(asdu(1));
-    assertNull(events.closeCause.get());
+    assertNull(events.lastCloseCause());
 
     scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
 
-    assertInstanceOf(ProtocolTimeoutException.class, events.closeCause.get());
+    assertInstanceOf(ProtocolTimeoutException.class, events.lastCloseCause());
   }
 
   @Test
@@ -211,7 +213,7 @@ class ApciSessionTest {
     session.onApdu(sFrame(1)); // acknowledge before t1
 
     scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
-    assertNull(events.closeCause.get());
+    assertNull(events.lastCloseCause());
   }
 
   // --- t3 -> TESTFR act, con cancels ----------------------------------------------------------
@@ -229,7 +231,7 @@ class ApciSessionTest {
     // Confirmation arrives before t1: the session stays open even after t1 would have elapsed.
     session.onApdu(uFrame(UFunction.TESTFR_CON));
     scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
-    assertNull(events.closeCause.get());
+    assertNull(events.lastCloseCause());
   }
 
   @Test
@@ -241,7 +243,7 @@ class ApciSessionTest {
     assertEquals(UFunction.TESTFR_ACT, output.uFrames().get(0).function());
 
     scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
-    assertInstanceOf(ProtocolTimeoutException.class, events.closeCause.get());
+    assertInstanceOf(ProtocolTimeoutException.class, events.lastCloseCause());
   }
 
   @Test
@@ -270,7 +272,7 @@ class ApciSessionTest {
 
     toFuture(start).get(1, TimeUnit.SECONDS);
     assertTrue(session.isDataTransferStarted());
-    assertEquals(List.of(Boolean.TRUE), events.dataTransferChanges);
+    assertEquals(List.of(Boolean.TRUE), events.dataTransferChanges());
   }
 
   @Test
@@ -285,7 +287,7 @@ class ApciSessionTest {
     assertTrue(future.isCompletedExceptionally());
     ExecutionException ex = assertThrows(ExecutionException.class, future::get);
     assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
-    assertInstanceOf(ProtocolTimeoutException.class, events.closeCause.get());
+    assertInstanceOf(ProtocolTimeoutException.class, events.lastCloseCause());
   }
 
   @Test
@@ -297,7 +299,7 @@ class ApciSessionTest {
     session.startDataTransfer();
     session.onApdu(uFrame(UFunction.STARTDT_CON));
     output.clear();
-    events.dataTransferChanges.clear();
+    events.dataTransferChanges().clear();
 
     CompletionStage<Void> stop = session.stopDataTransfer();
     assertEquals(UFunction.STOPDT_ACT, output.uFrames().get(0).function());
@@ -306,7 +308,7 @@ class ApciSessionTest {
     toFuture(stop).get(1, TimeUnit.SECONDS);
 
     assertFalse(session.isDataTransferStarted());
-    assertEquals(List.of(Boolean.FALSE), events.dataTransferChanges);
+    assertEquals(List.of(Boolean.FALSE), events.dataTransferChanges());
   }
 
   @Test
@@ -317,12 +319,12 @@ class ApciSessionTest {
     session.onApdu(uFrame(UFunction.STARTDT_ACT));
     assertEquals(UFunction.STARTDT_CON, output.uFrames().get(0).function());
     assertTrue(session.isDataTransferStarted());
-    assertEquals(Boolean.TRUE, events.dataTransferChanges.get(0));
+    assertEquals(Boolean.TRUE, events.dataTransferChanges().get(0));
 
     session.onApdu(uFrame(UFunction.STOPDT_ACT));
     assertEquals(UFunction.STOPDT_CON, output.uFrames().get(1).function());
     assertFalse(session.isDataTransferStarted());
-    assertEquals(Boolean.FALSE, events.dataTransferChanges.get(1));
+    assertEquals(Boolean.FALSE, events.dataTransferChanges().get(1));
   }
 
   @Test
@@ -346,7 +348,7 @@ class ApciSessionTest {
     // Expected N(S) = 0 but the peer skips to 2.
     session.onApdu(iFrame(2, asdu(1)));
 
-    assertInstanceOf(SequenceNumberException.class, events.closeCause.get());
+    assertInstanceOf(SequenceNumberException.class, events.lastCloseCause());
   }
 
   @Test
@@ -359,7 +361,7 @@ class ApciSessionTest {
     // Peer claims to have received 5 frames; we only sent 1.
     session.onApdu(sFrame(5));
 
-    assertInstanceOf(SequenceNumberException.class, events.closeCause.get());
+    assertInstanceOf(SequenceNumberException.class, events.lastCloseCause());
   }
 
   // --- Wraparound 32767 -> 0 -------------------------------------------------------------------
@@ -408,8 +410,8 @@ class ApciSessionTest {
     }
     // V(R) has wrapped back to 0; the next expected N(S) is 0 again.
     session.onApdu(iFrame(0, asdu(0)));
-    assertNull(events.closeCause.get());
-    assertEquals(32769, events.asdus.size());
+    assertNull(events.lastCloseCause());
+    assertEquals(32769, events.asdus().size());
   }
 
   // --- close() idempotence ---------------------------------------------------------------------
@@ -425,7 +427,7 @@ class ApciSessionTest {
 
     // Timers cancelled: advancing the clock does not fire t1.
     scheduler.advance(T1_MILLIS * 2, TimeUnit.MILLISECONDS);
-    assertNull(events.closeCause.get(), "close() must not invoke onClosed");
+    assertNull(events.lastCloseCause(), "close() must not invoke onClosed");
   }
 
   // --- F3: stale t1 task must not close a re-armed session -------------------------------------
@@ -447,10 +449,10 @@ class ApciSessionTest {
     staleT1.run();
 
     assertNull(
-        events.closeCause.get(), "a stale t1 task must not close a healthy re-armed session");
+        events.lastCloseCause(), "a stale t1 task must not close a healthy re-armed session");
     // The fresh t1 still works: it must be able to time out the genuinely unacknowledged frame.
     scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
-    assertInstanceOf(ProtocolTimeoutException.class, events.closeCause.get());
+    assertInstanceOf(ProtocolTimeoutException.class, events.lastCloseCause());
   }
 
   // --- F10: a bad N(R) self-close must stop delivery on the same I-frame ------------------------
@@ -465,9 +467,9 @@ class ApciSessionTest {
     // Valid N(S)=0 but N(R)=5 acknowledges more frames than were ever sent.
     session.onApdu(iFrame(0, 5, asdu(2)));
 
-    assertInstanceOf(SequenceNumberException.class, events.closeCause.get());
+    assertInstanceOf(SequenceNumberException.class, events.lastCloseCause());
     assertTrue(
-        events.asdus.isEmpty(),
+        events.asdus().isEmpty(),
         "the ASDU on a frame whose N(R) self-closed the session must not be delivered");
 
     // No supervisory S-frame is emitted on the closed session even as the clock advances.
@@ -795,29 +797,6 @@ class ApciSessionTest {
         }
       }
       return out;
-    }
-  }
-
-  /** Records delivered ASDUs, data-transfer transitions, and the close cause. */
-  private static final class RecordingEvents implements Session.Events {
-
-    private final List<Asdu> asdus = new ArrayList<>();
-    private final List<Boolean> dataTransferChanges = new ArrayList<>();
-    private final AtomicReference<@Nullable Throwable> closeCause = new AtomicReference<>();
-
-    @Override
-    public void onAsdu(Asdu asdu) {
-      asdus.add(asdu);
-    }
-
-    @Override
-    public void onDataTransferStateChanged(boolean started) {
-      dataTransferChanges.add(started);
-    }
-
-    @Override
-    public void onClosed(@Nullable Throwable cause) {
-      closeCause.set(cause);
     }
   }
 

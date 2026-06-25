@@ -20,22 +20,19 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec60870.session.Session;
+import com.digitalpetri.iec60870.testsupport.ManualScheduler;
+import com.digitalpetri.iec60870.testsupport.RecordingClientTransport;
+import com.digitalpetri.iec60870.testsupport.RecordingEvents;
+import com.digitalpetri.iec60870.testsupport.RecordingServerConnection;
 import com.digitalpetri.iec60870.transport.ClientTransport;
-import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.security.cert.Certificate;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -69,7 +66,7 @@ class Cs104BindingTest {
 
   @Test
   void clientBindingFramesOutboundAsduToTransport() {
-    FakeClientTransport transport = new FakeClientTransport();
+    RecordingClientTransport transport = new RecordingClientTransport();
     RecordingEvents events = new RecordingEvents();
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
@@ -81,15 +78,15 @@ class Cs104BindingTest {
 
     // The CLIENT-role session transmits the I-frame immediately; the binding frames it to a whole
     // ByteBuf and hands it to the transport.
-    assertEquals(1, transport.sent.size());
-    ByteBuf frame = transport.sent.get(0);
+    assertEquals(1, transport.sent().size());
+    ByteBuf frame = transport.sent().get(0);
     Apdu decoded = ApduFramer.decode(PROFILE, frame.duplicate());
     assertEquals(asdu, decoded.asdu());
   }
 
   @Test
   void clientBindingDeliversInboundFrameAsAsdu() {
-    FakeClientTransport transport = new FakeClientTransport();
+    RecordingClientTransport transport = new RecordingClientTransport();
     RecordingEvents events = new RecordingEvents();
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
@@ -102,19 +99,19 @@ class Cs104BindingTest {
     Apdu inbound = new Apdu(new ControlField.TypeI(0, 0), asdu);
     ByteBuf frame = ApduFramer.encode(inbound, PROFILE, ALLOC);
     try {
-      assertNotNull(transport.listener);
-      transport.listener.onFrame(frame);
+      assertNotNull(transport.listener());
+      transport.listener().onFrame(frame);
     } finally {
       frame.release();
     }
 
-    assertEquals(1, events.asdus.size());
-    assertEquals(asdu, events.asdus.get(0));
+    assertEquals(1, events.asdus().size());
+    assertEquals(asdu, events.asdus().get(0));
   }
 
   @Test
   void clientBindingRoutesConnectionLossToOnClosed() {
-    FakeClientTransport transport = new FakeClientTransport();
+    RecordingClientTransport transport = new RecordingClientTransport();
     RecordingEvents events = new RecordingEvents();
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
@@ -122,16 +119,16 @@ class Cs104BindingTest {
     session.onConnected();
 
     RuntimeException cause = new RuntimeException("peer reset");
-    assertNotNull(transport.listener);
-    transport.listener.onConnectionLost(cause);
+    assertNotNull(transport.listener());
+    transport.listener().onConnectionLost(cause);
 
-    assertEquals(1, events.closedCount);
-    assertSame(cause, events.lastCloseCause);
+    assertEquals(1, events.closedCount());
+    assertSame(cause, events.lastCloseCause());
   }
 
   @Test
   void clientBindingDecodeFailureClosesCurrentConnection() {
-    FakeClientTransport transport = new FakeClientTransport();
+    RecordingClientTransport transport = new RecordingClientTransport();
     RecordingEvents events = new RecordingEvents();
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
@@ -140,23 +137,23 @@ class Cs104BindingTest {
     ByteBuf frame = ALLOC.buffer(1);
     frame.writeByte(0x00);
     try {
-      assertNotNull(transport.listener);
-      transport.listener.onFrame(frame);
+      assertNotNull(transport.listener());
+      transport.listener().onFrame(frame);
     } finally {
       frame.release();
     }
 
-    assertEquals(1, events.closedCount);
-    assertInstanceOf(AsduDecodeException.class, events.lastCloseCause);
+    assertEquals(1, events.closedCount());
+    assertInstanceOf(AsduDecodeException.class, events.lastCloseCause());
     assertEquals(
         1,
-        transport.closeConnectionCount,
+        transport.closeConnectionCount(),
         "a client-side decode failure must close the current transport connection");
   }
 
   @Test
   void serverBindingFramesOutboundAndRoutesLoss() {
-    FakeServerConnection connection = new FakeServerConnection();
+    RecordingServerConnection connection = new RecordingServerConnection();
     RecordingEvents events = new RecordingEvents();
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
@@ -169,8 +166,8 @@ class Cs104BindingTest {
     Apdu startdt = new Apdu(new ControlField.TypeU(UFunction.STARTDT_ACT), null);
     ByteBuf startFrame = ApduFramer.encode(startdt, PROFILE, ALLOC);
     try {
-      assertNotNull(connection.listener);
-      connection.listener.onFrame(startFrame);
+      assertNotNull(connection.listener());
+      connection.listener().onFrame(startFrame);
     } finally {
       startFrame.release();
     }
@@ -178,12 +175,12 @@ class Cs104BindingTest {
     Asdu asdu = sampleAsdu();
     session.sendAsdu(asdu);
     assertFalse(
-        connection.sent.isEmpty(), "server should frame the STARTDT_CON and/or the I-frame");
+        connection.sent().isEmpty(), "server should frame the STARTDT_CON and/or the I-frame");
 
     // A connection loss is routed through Events.onClosed.
-    connection.listener.onConnectionLost(null);
-    assertEquals(1, events.closedCount);
-    assertNull(events.lastCloseCause);
+    connection.listener().onConnectionLost(null);
+    assertEquals(1, events.closedCount());
+    assertNull(events.lastCloseCause());
   }
 
   @Test
@@ -203,11 +200,11 @@ class Cs104BindingTest {
     session.sendAsdu(sampleAsdu());
 
     assertEquals(
-        1, events.closedCount, "a synchronous send failure closes the session exactly once");
+        1, events.closedCount(), "a synchronous send failure closes the session exactly once");
     assertSame(
-        transport.cause, events.lastCloseCause, "the IOException is routed as the close cause");
-    // The single frame the binding allocated was released by the failing transport; ParanoidLeak-
-    // Detection (active via the surefire arg) would otherwise fail the build on a leak.
+        transport.cause, events.lastCloseCause(), "the IOException is routed as the close cause");
+    // The single frame the binding allocated was released by the failing transport, honoring the
+    // octet transport's buffer-ownership contract (send() owns and releases the handed-over frame).
     assertEquals(1, transport.sendCount, "exactly one frame was handed to the failing transport");
   }
 
@@ -252,98 +249,5 @@ class Cs104BindingTest {
 
     @Override
     public void setListener(TransportListener listener) {}
-  }
-
-  private static final class FakeClientTransport implements ClientTransport {
-
-    private final List<ByteBuf> sent = new ArrayList<>();
-    private @Nullable TransportListener listener;
-    private int closeConnectionCount;
-
-    @Override
-    public CompletionStage<Void> connect() {
-      return CompletableFuture.completedFuture(null);
-    }
-
-    @Override
-    public CompletionStage<Void> disconnect() {
-      return CompletableFuture.completedFuture(null);
-    }
-
-    @Override
-    public void closeConnection() {
-      closeConnectionCount++;
-    }
-
-    @Override
-    public boolean isConnected() {
-      return true;
-    }
-
-    @Override
-    public CompletionStage<Void> send(ByteBuf frame) {
-      // The binding transfers ownership to the transport; keep a copy for assertions and release
-      // the handed-over buffer, mirroring a real transport's write-and-release.
-      sent.add(frame.copy());
-      frame.release();
-      return CompletableFuture.completedFuture(null);
-    }
-
-    @Override
-    public void setListener(TransportListener listener) {
-      this.listener = listener;
-    }
-  }
-
-  private static final class FakeServerConnection implements ServerTransportConnection {
-
-    private final List<ByteBuf> sent = new ArrayList<>();
-    private @Nullable TransportListener listener;
-
-    @Override
-    public CompletionStage<Void> send(ByteBuf frame) {
-      sent.add(frame.copy());
-      frame.release();
-      return CompletableFuture.completedFuture(null);
-    }
-
-    @Override
-    public void setListener(TransportListener listener) {
-      this.listener = listener;
-    }
-
-    @Override
-    public void close() {}
-
-    @Override
-    public SocketAddress remoteAddress() {
-      return new InetSocketAddress("127.0.0.1", 2404);
-    }
-
-    @Override
-    public Optional<Certificate> peerCertificate() {
-      return Optional.empty();
-    }
-  }
-
-  private static final class RecordingEvents implements Session.Events {
-
-    private final List<Asdu> asdus = new ArrayList<>();
-    private int closedCount;
-    private @Nullable Throwable lastCloseCause;
-
-    @Override
-    public void onAsdu(Asdu asdu) {
-      asdus.add(asdu);
-    }
-
-    @Override
-    public void onDataTransferStateChanged(boolean started) {}
-
-    @Override
-    public void onClosed(@Nullable Throwable cause) {
-      closedCount++;
-      lastCloseCause = cause;
-    }
   }
 }

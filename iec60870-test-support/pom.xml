@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.digitalpetri.iec60870</groupId>
+    <artifactId>iec60870-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <name>IEC 104 :: Test Support</name>
+  <description>
+    Shared, core-level test fixtures (ManualScheduler, RecordingEvents, recording transports,
+    ParanoidLeakDetection) reused by the module test suites. Internal: never published.
+  </description>
+
+  <artifactId>iec60870-test-support</artifactId>
+
+  <properties>
+    <javaModuleName>com.digitalpetri.iec60870.testsupport</javaModuleName>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <!--
+    Core-level only by design: this module depends on iec60870-core (the Session/transport SPIs and
+    the ByteBuf codec boundary) and on junit-jupiter-api (for the ParanoidLeakDetection extension),
+    and on nothing from cs104, application, or transport-tcp. Keeping it core-only mirrors the
+    octet-classes-stay-core-only rule and lets every downstream module consume it at test scope
+    without a dependency cycle.
+  -->
+  <dependencies>
+    <dependency>
+      <groupId>com.digitalpetri.iec60870</groupId>
+      <artifactId>iec60870-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+    <!--
+      Deliberate netty-buffer dependency: the recording octet transports capture and relay
+      whole-frame ByteBufs and ParanoidLeakDetection drives Netty's ResourceLeakDetector. ByteBuf is
+      confined to those fixtures, exactly as it is confined to the codec boundary in core.
+    -->
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-buffer</artifactId>
+    </dependency>
+    <!--
+      Compile scope (overriding the parent's test-scoped management): the ParanoidLeakDetection
+      JUnit extension is main code here, so junit-jupiter-api must be on this module's compile path.
+      Consumers already declare junit at test scope themselves.
+    -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>compile</scope>
+    </dependency>
+
+    <!-- This module runs its own tests (the loopback/fault-injecting transport fixtures), so it
+         needs the engine and an slf4j binding for Netty's leak-detector output at test scope. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <!--
+    Internal test scaffolding: it IS installed to the local repo (like every other module, so
+    standalone `-pl <consumer>` test runs can resolve it), but is never signed or published. Unlike
+    iec60870-tests, which is a leaf and skips install, this module is a dependency and must stay
+    installable.
+  -->
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-deploy-plugin</artifactId>
+        <version>${maven-deploy-plugin.version}</version>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-gpg-plugin</artifactId>
+        <version>${maven-gpg-plugin.version}</version>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

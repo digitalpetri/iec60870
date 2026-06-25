@@ -47,10 +47,20 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 - `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
   images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
   Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
+- `iec60870-test-support/` is an internal, test-only module holding the shared, core-level test
+  fixtures reused across module test suites: the deterministic `ManualScheduler` virtual clock, the
+  `RecordingEvents` `Session.Events` recorder, the frame-capturing `RecordingClientTransport` /
+  `RecordingServerConnection`, the in-JVM `LoopbackOctetTransport` and fault-injecting
+  `FaultInjectingOctetTransport` octet transports (protocol-neutral, so they serve a future cs101 /
+  serial stack as readily as 104), and the `ParanoidLeakDetection` JUnit extension. It depends on
+  `iec60870-core` (plus `netty-buffer` for the `ByteBuf` boundary and `junit-jupiter-api` for the
+  extension) and imports nothing from `cs104`, `application`, or `transport-tcp`; it is consumed at
+  `test` scope by `iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, and
+  `iec60870-tests`, and is never published.
 
-Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-cs104`,
-`iec60870-application`, `iec60870-transport-tcp`, `iec60870-examples`, `iec60870-tests`,
-`iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
+Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-test-support`,
+`iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, `iec60870-examples`,
+`iec60870-tests`, `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
 `iec60870-core` are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `address`,
 `transport`, and `session`. The 104 link/session package `cs104` (`ApciSession`, `Apdu`,
 `ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`, while the

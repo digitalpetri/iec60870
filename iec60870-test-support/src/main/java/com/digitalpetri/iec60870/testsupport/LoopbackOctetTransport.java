@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.tests;
+package com.digitalpetri.iec60870.testsupport;
 
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransport;
@@ -31,7 +31,7 @@ import org.jspecify.annotations.Nullable;
  * copy. The peer listener therefore never owns or retains the buffer, exactly as on a real
  * transport.
  */
-final class LoopbackOctetTransport {
+public final class LoopbackOctetTransport {
 
   private final LoopbackClientTransport client = new LoopbackClientTransport();
   private final LoopbackServerTransport server = new LoopbackServerTransport();
@@ -41,7 +41,7 @@ final class LoopbackOctetTransport {
    *
    * @return the loopback {@link ClientTransport}.
    */
-  ClientTransport client() {
+  public ClientTransport client() {
     return client;
   }
 
@@ -50,7 +50,7 @@ final class LoopbackOctetTransport {
    *
    * @return the loopback {@link ServerTransport}.
    */
-  ServerTransport server() {
+  public ServerTransport server() {
     return server;
   }
 

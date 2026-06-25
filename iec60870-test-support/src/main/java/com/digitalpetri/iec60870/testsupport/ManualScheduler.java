@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.cs104;
+package com.digitalpetri.iec60870.testsupport;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -20,13 +20,17 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Tasks are not run on a background thread; time only advances when {@link #advance(long,
  * TimeUnit)} is called, and any tasks whose deadline falls within the advanced interval are run
- * synchronously, in deadline order, on the advancing thread. This lets APCI timer behavior be
- * driven and asserted deterministically.
+ * synchronously, in deadline order, on the advancing thread. This lets time-dependent behavior —
+ * the APCI {@code t1}/{@code t2}/{@code t3} timers, facade request/command timeouts — be driven and
+ * asserted deterministically with no wall-clock sleeps. Combined with a direct (same-thread)
+ * callback executor it collapses the scheduler-thread/callback-thread hop to a single deterministic
+ * thread, so a timed-out task is run and its effects observed before {@code advance} returns.
  *
- * <p>Only the scheduling methods used by {@code ApciSession} are implemented; the remaining {@link
- * ScheduledExecutorService} members throw {@link UnsupportedOperationException}.
+ * <p>{@link #execute(Runnable)} runs inline on the caller thread. Only the scheduling members the
+ * sessions and facades use are implemented; the remaining {@link ScheduledExecutorService} members
+ * throw {@link UnsupportedOperationException}.
  */
-class ManualScheduler implements ScheduledExecutorService {
+public final class ManualScheduler implements ScheduledExecutorService {
 
   private long nowMillis;
   private long sequence;
@@ -41,7 +45,7 @@ class ManualScheduler implements ScheduledExecutorService {
    * @param amount the amount of time to advance.
    * @param unit the unit of {@code amount}.
    */
-  void advance(long amount, TimeUnit unit) {
+  public void advance(long amount, TimeUnit unit) {
     long target = nowMillis + unit.toMillis(amount);
     while (true) {
       ScheduledTask<?> next = queue.peek();
@@ -57,6 +61,36 @@ class ManualScheduler implements ScheduledExecutorService {
     nowMillis = target;
   }
 
+  /**
+   * Returns the most recently scheduled {@link Runnable} whose delay equals {@code delayMillis},
+   * for tests that need a specific timer task (e.g. t1) rather than the last-scheduled one.
+   *
+   * @param delayMillis the scheduling delay in milliseconds.
+   * @return the most recent runnable scheduled at that delay.
+   */
+  public Runnable lastRunnableWithDelay(long delayMillis) {
+    Runnable runnable = lastRunnableByDelay.get(delayMillis);
+    if (runnable == null) {
+      throw new IllegalStateException("no runnable scheduled with delay " + delayMillis);
+    }
+    return runnable;
+  }
+
+  /**
+   * Returns the number of queued tasks that are still live (neither run nor cancelled).
+   *
+   * @return the count of pending, non-cancelled tasks.
+   */
+  public int pendingTaskCount() {
+    int count = 0;
+    for (ScheduledTask<?> task : queue) {
+      if (!task.cancelled && !task.done) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   @Override
   public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
     this.lastRunnableByDelay.put(unit.toMillis(delay), command);
@@ -70,36 +104,6 @@ class ManualScheduler implements ScheduledExecutorService {
             sequence++);
     queue.add(task);
     return task;
-  }
-
-  /**
-   * Returns the most recently scheduled {@link Runnable} whose delay equals {@code delayMillis},
-   * for tests that need a specific timer task (e.g. t1) rather than the last-scheduled one.
-   *
-   * @param delayMillis the scheduling delay in milliseconds.
-   * @return the most recent runnable scheduled at that delay.
-   */
-  Runnable lastRunnableWithDelay(long delayMillis) {
-    Runnable runnable = lastRunnableByDelay.get(delayMillis);
-    if (runnable == null) {
-      throw new IllegalStateException("no runnable scheduled with delay " + delayMillis);
-    }
-    return runnable;
-  }
-
-  /**
-   * Returns the number of queued tasks that are still live (neither run nor cancelled).
-   *
-   * @return the count of pending, non-cancelled tasks.
-   */
-  int pendingTaskCount() {
-    int count = 0;
-    for (ScheduledTask<?> task : queue) {
-      if (!task.cancelled && !task.done) {
-        count++;
-      }
-    }
-    return count;
   }
 
   @Override
