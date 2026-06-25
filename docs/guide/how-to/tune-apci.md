@@ -46,7 +46,7 @@ widths are a shared wire contract.
 Client — override both records:
 
 ```java
-import com.digitalpetri.iec60870.ApciSettings;
+import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;

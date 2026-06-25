@@ -9,9 +9,10 @@ import java.util.concurrent.CompletionStage;
  * <p>A {@code ClientTransport} owns one outgoing connection. Callers establish it with {@link
  * #connect()}, exchange complete length-delimited frame {@link ByteBuf}s with {@link
  * #send(ByteBuf)} and a registered {@link TransportListener}, and tear it down with {@link
- * #disconnect()}. The transport handles length framing, optional TLS, and channel lifecycle; it
- * never exposes networking-framework types other than the {@link ByteBuf} that carries one whole
- * frame.
+ * #disconnect()}. When a protocol binding has to drop only the current wire connection (for example
+ * after a malformed inbound frame) it uses {@link #closeConnection()} instead. The transport
+ * handles length framing, optional TLS, and channel lifecycle; it never exposes
+ * networking-framework types other than the {@link ByteBuf} that carries one whole frame.
  *
  * <p>Register a {@link TransportListener} with {@link #setListener(TransportListener)} before
  * connecting so no inbound frame is missed. Listener callbacks may be invoked on a transport I/O
@@ -39,6 +40,16 @@ public interface ClientTransport {
    * @return a stage that completes when the connection has been closed.
    */
   CompletionStage<Void> disconnect();
+
+  /**
+   * Closes only the current connection, without treating the close as an intentional transport
+   * shutdown.
+   *
+   * <p>This differs from {@link #disconnect()}: persistent transports may reconnect after this
+   * close, and owned transport resources such as event loops remain available. The method is a
+   * no-op if there is no current connection.
+   */
+  void closeConnection();
 
   /**
    * Indicates whether the transport currently has an established connection.

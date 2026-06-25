@@ -39,6 +39,11 @@ public final class FakeClientTransport implements ClientTransport {
   }
 
   @Override
+  public void closeConnection() {
+    connected = false;
+  }
+
+  @Override
   public boolean isConnected() {
     return connected;
   }

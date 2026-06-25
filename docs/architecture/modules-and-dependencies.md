@@ -21,6 +21,9 @@ layer, and of the high-level facade:
   implement. The SPI is shaped in **whole-frame `ByteBuf`s**: `send(ByteBuf)` and `onFrame(ByteBuf)`
   exchange one complete, length-delimited frame each. Turning a frame into an `Apdu` (via
   `ApduFramer`) happens above the SPI, so a future 101-over-TCP can reuse the same transport.
+  `ClientTransport.disconnect()` means intentional shutdown; `ClientTransport.closeConnection()`
+  closes only the current connection so a persistent transport can reconnect after a protocol
+  binding drops malformed input.
 
 `iec60870-cs104` owns the genuinely-104 link/session code (the package `.cs104`):
 
@@ -101,7 +104,10 @@ it:
   allocator)` then `octetTransport.send(ByteBuf)`;
 - registers a `TransportListener` whose `onFrame(ByteBuf)` runs `ApduFramer.decode(profile, frame)`
   then `apciSession.onApdu(apdu)`;
-- routes a failed outbound send or a connection loss to `Session.Events.onClosed`;
+- routes a failed outbound send or a connection loss to `Session.Events.onConnectionLost`;
+- closes the underlying current connection when a malformed inbound frame fails during deframing,
+  using `ClientTransport.closeConnection()` for client sessions and
+  `ServerTransportConnection.close()` for server sessions;
 - performs the `(ApciSettings) sessionSettings` downcast — this is the one place that downcast lives.
 
 The `TcpIec104Client`/`TcpIec104Server` builders are the *only* types that name both the protocol

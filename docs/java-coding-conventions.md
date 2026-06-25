@@ -69,7 +69,7 @@ Use imports and simple names — including inside annotations, generics, and `ca
 are the spots most often left qualified out of habit:
 
 ```java
-import com.digitalpetri.iec104.asdu.object.ReadCommand;
+import com.digitalpetri.iec60870.asdu.object.ReadCommand;
 import java.net.SocketAddress;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -119,7 +119,7 @@ enough:
 
 ```java
 @NullMarked
-package com.digitalpetri.iec104.client;
+package com.digitalpetri.iec60870.client;
 
 import org.jspecify.annotations.NullMarked;
 ```

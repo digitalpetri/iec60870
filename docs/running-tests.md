@@ -8,23 +8,23 @@ to avoid applying the filter to all modules.
 **Run a specific test class:**
 
 ```bash
-mise exec -- mvn -q -pl iec104-core test -Dtest=ClassName
+mise exec -- mvn -q -pl iec60870-core test -Dtest=ClassName
 ```
 
 **Run a specific test method:**
 
 ```bash
-mise exec -- mvn -q -pl iec104-core test -Dtest=ClassName#methodName
+mise exec -- mvn -q -pl iec60870-core test -Dtest=ClassName#methodName
 ```
 
 **Run tests matching a pattern:**
 
 ```bash
-mise exec -- mvn -q -pl iec104-core test -Dtest=*CodecTest
+mise exec -- mvn -q -pl iec60870-core test -Dtest=*CodecTest
 ```
 
-Use the module that owns the code under test, for example `iec104-core`,
-`iec104-transport-tcp`, or `iec104-tests`.
+Use the module that owns the code under test, for example `iec60870-core`,
+`iec60870-transport-tcp`, or `iec60870-tests`.
 
 ## Module Targeting Flags
 
@@ -37,8 +37,8 @@ Use the module that owns the code under test, for example `iec104-core`,
 **`-pl` alone** — the change is entirely within the module being tested:
 
 ```bash
-# Changed and testing iec104-core only
-mise exec -- mvn -q -pl iec104-core test -Dtest=ClassName
+# Changed and testing iec60870-core only
+mise exec -- mvn -q -pl iec60870-core test -Dtest=ClassName
 ```
 
 **`-pl ... -am`** — the change is in a dependency of the module being tested. This
@@ -46,7 +46,7 @@ rebuilds the dependency chain so tests run against the latest code:
 
 ```bash
 # Changed core and testing the Netty module
-mise exec -- mvn -q -pl iec104-transport-tcp -am test -Dtest=ClassName
+mise exec -- mvn -q -pl iec60870-transport-tcp -am test -Dtest=ClassName
 ```
 
 **`-pl ... -amd`** — the change is in a low-level module and you want to test all modules

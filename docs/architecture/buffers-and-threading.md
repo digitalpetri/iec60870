@@ -83,6 +83,11 @@ deframing, so by the time an `Apdu` or `Asdu` exists the buffer is gone. (Netty 
 detection is enabled in the transport-tcp and cross-module test scopes so any missed release surfaces
 loudly as a `LEAK:` log during the build.)
 
+Client transport lifecycle has one extra distinction: `disconnect()` is an intentional shutdown that
+may stop reconnection, while `closeConnection()` closes only the current connection. The cs104
+binding uses that narrower close when a malformed inbound frame cannot be decoded, so a persistent
+TCP client can drop the bad socket and reconnect without the core SPI exposing Netty channel types.
+
 ## Threading and callback serialization
 
 Above the codec boundary the library deals only in immutable objects, and it imposes a clear

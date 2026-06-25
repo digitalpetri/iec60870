@@ -92,19 +92,13 @@ final class LoopbackOctetTransport {
 
     @Override
     public CompletionStage<Void> disconnect() {
-      boolean wasConnected = connected;
-      connected = false;
-      if (wasConnected) {
-        TransportListener serverListener = server.connectionListener();
-        if (serverListener != null) {
-          serverListener.onConnectionLost(null);
-        }
-        TransportListener clientListener = listener;
-        if (clientListener != null) {
-          clientListener.onConnectionLost(null);
-        }
-      }
+      closeCurrentConnection();
       return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public void closeConnection() {
+      closeCurrentConnection();
     }
 
     @Override
@@ -124,6 +118,21 @@ final class LoopbackOctetTransport {
 
     @Nullable TransportListener listener() {
       return listener;
+    }
+
+    private void closeCurrentConnection() {
+      boolean wasConnected = connected;
+      connected = false;
+      if (wasConnected) {
+        TransportListener serverListener = server.connectionListener();
+        if (serverListener != null) {
+          serverListener.onConnectionLost(null);
+        }
+        TransportListener clientListener = listener;
+        if (clientListener != null) {
+          clientListener.onConnectionLost(null);
+        }
+      }
     }
   }
 

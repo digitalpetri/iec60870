@@ -32,9 +32,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>a registered {@link TransportListener} deframes each inbound whole-frame {@link ByteBuf}
  *       with {@link ApduFramer#decode(ProtocolProfile, ByteBuf)} and feeds the {@link Apdu} to
  *       {@link ApciSession#onApdu(Apdu)};
- *   <li>a failed outbound send, or a transport connection loss, closes the session and routes the
- *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
- *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close).
+ *   <li>a failed outbound send, a transport connection loss, or an inbound decode failure closes
+ *       the session and routes the cause to {@link Session.Events#onConnectionLost(Throwable)}
+ *       (distinct from the session's own protocol-error {@link Session.Events#onClosed(Throwable)}
+ *       self-close).
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Apdu}&lt;-&gt;octet wiring that the {@code
@@ -87,7 +88,9 @@ public final class Cs104Binding {
    *
    * <p>The session's outbound APDUs are framed and written to {@code transport}; inbound frames
    * from the transport's {@link TransportListener} are deframed into the session. A failed send or
-   * a transport connection loss closes the session and notifies {@code events}.
+   * a transport connection loss closes the session and notifies {@code events}; a malformed inbound
+   * frame also closes the current transport connection without performing an intentional
+   * disconnect.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -102,17 +105,6 @@ public final class Cs104Binding {
     Objects.requireNonNull(events, "events");
     Objects.requireNonNull(scheduler, "scheduler");
 
-    // The client octet transport SPI exposes only disconnect(), which stops the persistent
-    // ChannelFsm from reconnecting — the opposite of the channel-only close that the Netty
-    // pipeline's
-    // exceptionCaught net performs on a decode failure (which lets the FSM reconnect). There is no
-    // SPI handle that closes just the current channel while leaving the transport free to
-    // reconnect,
-    // so the client's per-failure close handle is a no-op: the binding routes the decode cause
-    // through events.onConnectionLost (matching the Netty client's observable ConnectionClosed +
-    // pending-failure outcome), and on the Netty transport the pre-existing exceptionCaught net
-    // still
-    // performs the channel close. See assemble(...) for the full rationale.
     return assemble(
         ApciSession.Role.CLIENT,
         scheduler,
@@ -120,7 +112,7 @@ public final class Cs104Binding {
         transport::send,
         transport::setListener,
         null,
-        () -> {});
+        transport::closeConnection);
   }
 
   /**
@@ -185,7 +177,7 @@ public final class Cs104Binding {
         apdu -> {
           // Frame the APDU into a whole-frame ByteBuf and hand it to the octet transport, which
           // owns and releases the buffer. A failed write closes the session and routes the loss to
-          // the facade through Session.Events.onClosed.
+          // the facade through Session.Events.onConnectionLost.
           ByteBuf frame = ApduFramer.encode(apdu, profile, allocator);
           frameSink
               .send(frame)
@@ -226,17 +218,13 @@ public final class Cs104Binding {
             // underlying connection down, converging every transport on the existing close
             // handling.
             //
-            // This reproduces, on every transport, what the Netty pipeline's exceptionCaught net
-            // already does today for the TCP transport: close the session, publish a single
-            // ConnectionClosed carrying the decode cause, and close the connection. On the Netty
-            // TCP
-            // transport this is observably idempotent — exceptionCaught also runs and the facade /
-            // pipeline one-shot guards dedupe the notification — while the server connection close
-            // matches its per-connection teardown. The buffer is owned and released by the
-            // transport
-            // after onFrame returns (Netty autoRelease / the SPI's inbound ownership contract), so
-            // it
-            // is neither retained nor released here.
+            // This reproduces, on every transport, the TCP behavior on a decode failure: close the
+            // session, publish a single ConnectionClosed carrying the decode cause, and close the
+            // underlying connection. On the client side closeConnection() leaves persistent
+            // transports free to reconnect; on the server side close() tears down only the accepted
+            // connection. The buffer is owned and released by the transport after onFrame returns
+            // (Netty autoRelease / the SPI's inbound ownership contract), so it is neither retained
+            // nor released here.
             Apdu apdu;
             try {
               apdu = ApduFramer.decode(profile, frame);

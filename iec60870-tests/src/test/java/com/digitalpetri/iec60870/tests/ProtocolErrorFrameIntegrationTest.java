@@ -229,11 +229,9 @@ class ProtocolErrorFrameIntegrationTest {
    * outcome the Netty pipeline's {@code exceptionCaught} net produces, now reproduced on every
    * transport.
    *
-   * <p>On the in-JVM fault transport the client-role close handle is a no-op (the client octet SPI
-   * exposes no reconnect-preserving channel close), so the SESSION is closed but the in-JVM
-   * transport handle itself is not torn down — the close is observed through the {@code
-   * ConnectionClosed} event, not through transport state. No reconnect is asserted (the in-JVM
-   * fault transport does not reconnect).
+   * <p>On the in-JVM fault transport the client-role close handle tears down the current pair but
+   * does not model reconnection; the production Netty transport uses the same close-current-channel
+   * hook while leaving its persistent FSM free to reconnect.
    */
   @Test
   void garbledInboundWholeFrameDecodeFailureDropsConnectionCleanly() {
@@ -283,6 +281,12 @@ class ProtocolErrorFrameIntegrationTest {
         AsduDecodeException.class,
         closed.getCause(),
         "the pending failure's root cause must be the decode failure");
+
+    // (c) the client binding also closed the underlying current connection, so the transport no
+    // longer reports connected after the malformed frame.
+    assertFalse(
+        client.isConnected(),
+        "client transport must be disconnected after a client-side decode failure");
   }
 
   // --- Server-side malformed TypeID: decodable-but-undispatched vs undecodable -------------------

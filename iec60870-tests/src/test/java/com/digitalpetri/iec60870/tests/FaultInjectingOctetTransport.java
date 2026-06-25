@@ -387,11 +387,13 @@ final class FaultInjectingOctetTransport {
 
     @Override
     public CompletionStage<Void> disconnect() {
-      if (connected) {
-        connected = false;
-        notifyLost(null);
-      }
+      closeCurrentConnection(null);
       return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public void closeConnection() {
+      closeCurrentConnection(null);
     }
 
     @Override
@@ -419,6 +421,10 @@ final class FaultInjectingOctetTransport {
 
     /** Abruptly tears down the connection, notifying both peers' listeners of the loss. */
     void fail(@Nullable Throwable cause) {
+      closeCurrentConnection(cause);
+    }
+
+    private void closeCurrentConnection(@Nullable Throwable cause) {
       if (connected) {
         connected = false;
         notifyLost(cause);

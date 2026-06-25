@@ -2,10 +2,12 @@ package com.digitalpetri.iec60870.cs104;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
+import com.digitalpetri.iec60870.AsduDecodeException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -128,6 +130,31 @@ class Cs104BindingTest {
   }
 
   @Test
+  void clientBindingDecodeFailureClosesCurrentConnection() {
+    FakeClientTransport transport = new FakeClientTransport();
+    RecordingEvents events = new RecordingEvents();
+    Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
+
+    binding.bindClient(transport, events, new ManualScheduler());
+
+    ByteBuf frame = ALLOC.buffer(1);
+    frame.writeByte(0x00);
+    try {
+      assertNotNull(transport.listener);
+      transport.listener.onFrame(frame);
+    } finally {
+      frame.release();
+    }
+
+    assertEquals(1, events.closedCount);
+    assertInstanceOf(AsduDecodeException.class, events.lastCloseCause);
+    assertEquals(
+        1,
+        transport.closeConnectionCount,
+        "a client-side decode failure must close the current transport connection");
+  }
+
+  @Test
   void serverBindingFramesOutboundAndRoutesLoss() {
     FakeServerConnection connection = new FakeServerConnection();
     RecordingEvents events = new RecordingEvents();
@@ -208,6 +235,9 @@ class Cs104BindingTest {
     }
 
     @Override
+    public void closeConnection() {}
+
+    @Override
     public boolean isConnected() {
       return true;
     }
@@ -229,6 +259,7 @@ class Cs104BindingTest {
 
     private final List<ByteBuf> sent = new ArrayList<>();
     private @Nullable TransportListener listener;
+    private int closeConnectionCount;
 
     @Override
     public CompletionStage<Void> connect() {
@@ -238,6 +269,11 @@ class Cs104BindingTest {
     @Override
     public CompletionStage<Void> disconnect() {
       return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public void closeConnection() {
+      closeConnectionCount++;
     }
 
     @Override

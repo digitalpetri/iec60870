@@ -37,7 +37,8 @@ import org.slf4j.LoggerFactory;
  * and benefit from the FSM's connect, lazy-reconnect, and serialized state handling without this
  * class reimplementing that logic. The FSM is configured non-lazy and persistent so a dropped
  * connection is retried automatically; an intentional {@link #disconnect()} fires {@link
- * com.digitalpetri.netty.fsm.Event.Disconnect} and stops reconnection.
+ * com.digitalpetri.netty.fsm.Event.Disconnect} and stops reconnection. {@link #closeConnection()}
+ * closes only the current channel and leaves the persistent FSM free to reconnect.
  *
  * <p>Each connect attempt builds the fixed pipeline {@code [SslHandler?] -> frameDecoder ->
  * inboundHandler} via {@link Iec104Pipeline}. When TLS is configured, the {@link
@@ -109,6 +110,20 @@ public class NettyClientTransport implements ClientTransport {
             (v, ex) -> {
               if (ownsEventLoopGroup) {
                 eventLoopGroup.shutdownGracefully();
+              }
+            });
+  }
+
+  @Override
+  public void closeConnection() {
+    channelFsm
+        .getChannel(false)
+        .whenComplete(
+            (channel, ex) -> {
+              if (channel != null) {
+                channel.close();
+              } else if (ex != null) {
+                LOGGER.debug("no active channel to close", ex);
               }
             });
   }

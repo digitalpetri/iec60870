@@ -130,7 +130,7 @@ CA + IOA pair forms a [Point Address](#point-address).
 The APCI flow-control window: **k** is the maximum number of I-frames a station may have
 outstanding (unacknowledged) before it must stop sending; **w** is the number of received
 I-frames after which it must send an acknowledgement. `w` must not exceed `k`.
-*In this library:* `com.digitalpetri.iec60870.ApciSettings` components `k()` and `w()`;
+*In this library:* `com.digitalpetri.iec60870.cs104.ApciSettings` components `k()` and `w()`;
 defaults `k = 12`, `w = 8` (`ApciSettings.defaults()`).
 *See:* [Tune the APCI session](../how-to/tune-apci.md),
 [Timers & window](timers-and-window.md),
@@ -240,7 +240,7 @@ The four APCI timeouts:
 - **t2** — maximum delay before acknowledging received I-frames (should be `< t1`).
 - **t3** — idle period after which a `TESTFR` is sent.
 
-*In this library:* `com.digitalpetri.iec60870.ApciSettings` components `t0()`–`t3()`
+*In this library:* `com.digitalpetri.iec60870.cs104.ApciSettings` components `t0()`–`t3()`
 (`Duration`); defaults t0 = 30 s, t1 = 15 s, t2 = 10 s, t3 = 20 s
 (`ApciSettings.defaults()`).
 *See:* [Timers & window](timers-and-window.md),
