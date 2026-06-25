@@ -33,6 +33,7 @@ import com.digitalpetri.iec60870.server.InterrogationResponse;
 import com.digitalpetri.iec60870.server.PointDefinition;
 import com.digitalpetri.iec60870.server.ServerConfig;
 import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerEvent;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
 import io.netty.buffer.ByteBuf;
@@ -70,9 +71,13 @@ import org.junit.jupiter.api.Test;
  *       pending request);
  *   <li>a <em>structurally invalid / undecodable</em> inbound frame fails inside {@link
  *       com.digitalpetri.iec60870.cs104.ApduFramer#decode} BEFORE the session is reached. The
- *       in-JVM {@code Cs104Binding} listener does not guard the decode, so the decode exception
- *       escapes synchronously back out the sender's stack and the session is left open. This is the
- *       robustness gap called out in {@code behaviorNotes}; the tests pin the current behavior.
+ *       hardened {@code Cs104Binding} listener now guards the deframe: the decode failure does not
+ *       escape back out the sender's stack — instead the session is closed and the decode cause is
+ *       routed through {@code Session.Events.onConnectionLost} (client: surfaced as exactly one
+ *       {@link ClientEvent.ConnectionClosed}; server: surfaced as a {@link
+ *       ServerEvent.ConnectionClosed} plus a {@code connection.close()} teardown), reproducing on
+ *       every transport the clean drop the Netty pipeline's {@code exceptionCaught} net already
+ *       performed for TCP.
  * </ul>
  *
  * <p>All teardown calls {@link FaultInjectingOctetTransport#drainAndRelease()} and closes both
@@ -95,6 +100,12 @@ class ProtocolErrorFrameIntegrationTest {
    */
   private final AtomicReference<@Nullable CompletableFuture<InterrogationResponse>> withheld =
       new AtomicReference<>();
+
+  /**
+   * Records every {@link ServerEvent} the server publishes, for the server-side close assertions.
+   */
+  private final java.util.concurrent.ConcurrentLinkedQueue<ServerEvent> serverEvents =
+      new java.util.concurrent.ConcurrentLinkedQueue<>();
 
   @AfterEach
   void tearDown() {
@@ -204,43 +215,73 @@ class ProtocolErrorFrameIntegrationTest {
     assertFalse(client.isConnected(), "client transport must be disconnected after the self-close");
   }
 
-  // --- Truncated / garbled whole frame: decode failure escapes (robustness gap) -----------------
+  // --- Truncated / garbled whole frame: decode failure drops the connection cleanly -------------
 
   /**
    * A truncated/garbled inbound whole frame fails inside {@code ApduFramer.decode} before the
-   * session is reached. The in-JVM {@code Cs104Binding} listener does not guard the decode, so the
-   * {@link AsduDecodeException} escapes synchronously back out the SERVER's {@code publish(...)}
-   * stack (delivery is synchronous on the corruptNext path), the client's session is left OPEN, and
-   * no {@code ConnectionClosed} is published. This pins the current (gap) behavior — see {@code
-   * behaviorNotes}.
+   * session is reached. The hardened {@code Cs104Binding} listener now guards the deframe: instead
+   * of letting the {@link AsduDecodeException} escape synchronously back out the SERVER's {@code
+   * publish(...)} stack, it closes the client session and routes the decode cause through {@code
+   * Session.Events.onConnectionLost}, which the facade surfaces as exactly one {@link
+   * ClientEvent.ConnectionClosed} carrying that cause (and fails any pending request with a {@link
+   * ConnectionClosedException} whose cause is the decode failure). This is the same observable
+   * outcome the Netty pipeline's {@code exceptionCaught} net produces, now reproduced on every
+   * transport.
+   *
+   * <p>On the in-JVM fault transport the client-role close handle is a no-op (the client octet SPI
+   * exposes no reconnect-preserving channel close), so the SESSION is closed but the in-JVM
+   * transport handle itself is not torn down — the close is observed through the {@code
+   * ConnectionClosed} event, not through transport state. No reconnect is asserted (the in-JVM
+   * fault transport does not reconnect).
    */
   @Test
-  void garbledInboundWholeFrameDecodeFailureEscapesAndSessionStaysOpen() {
-    EventCollector events = startDefaultServerAndConnectedClient();
+  void garbledInboundWholeFrameDecodeFailureDropsConnectionCleanly() {
+    EventCollector events = startWithholdingServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
+
+    // A request the server will never confirm, so it is genuinely pending when the corrupted frame
+    // lands and the decode failure closes the session.
+    CompletableFuture<InterrogationResult> pending =
+        client.interrogateAsync(STATION).toCompletableFuture();
+    assertFalse(pending.isDone(), "interrogation must still be pending before the corruption");
 
     // Corrupt the START octet (frame byte 0) of the next inbound frame to a non-0x68 value, so
     // Apdu.Serde.decode throws an AsduDecodeException at the very first check.
     fault.corruptNext(SERVER_TO_CLIENT, set(0, 0x00));
 
-    // The decode throw propagates synchronously out of the listener, through the (catch-less) fault
-    // relay, and back out the server's publish(...) call.
-    AsduDecodeException thrown =
-        assertThrows(
-            AsduDecodeException.class,
-            () -> server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS),
-            "the decode failure must escape synchronously out of the triggering send");
-    assertTrue(
-        thrown.getMessage().contains("START"),
-        "the failure must be the START-octet check: " + thrown.getMessage());
+    // The decode failure is now swallowed inside the binding's onFrame; the triggering send no
+    // longer throws.
+    server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS);
 
-    // Current behavior: the session is NOT closed — no ConnectionClosed event, client still up.
-    assertFalse(
-        events.events().stream().anyMatch(ClientEvent.ConnectionClosed.class::isInstance),
-        "the malformed frame must be dropped without closing the session (current gap behavior)");
+    // (a) exactly one ConnectionClosed, whose cause is the START-octet AsduDecodeException routed
+    // through events.onConnectionLost.
+    List<ClientEvent.ConnectionClosed> closeEvents =
+        events.events().stream()
+            .filter(ClientEvent.ConnectionClosed.class::isInstance)
+            .map(ClientEvent.ConnectionClosed.class::cast)
+            .toList();
+    assertEquals(1, closeEvents.size(), "the malformed frame must close the session exactly once");
+    AsduDecodeException closeCause =
+        assertInstanceOf(
+            AsduDecodeException.class,
+            closeEvents.get(0).cause(),
+            "ConnectionClosed cause must be the decode failure");
     assertTrue(
-        client.isConnected(),
-        "client stays connected: the in-JVM Cs104Binding has no exceptionCaught safety net");
+        closeCause.getMessage().contains("START"),
+        "the close cause must be the START-octet check: " + closeCause.getMessage());
+
+    // (b) the pending request failed with ConnectionClosedException caused by the decode failure.
+    ExecutionException failure =
+        assertThrows(
+            ExecutionException.class,
+            () -> pending.get(),
+            "pending request must fail on the close");
+    ConnectionClosedException closed =
+        assertInstanceOf(ConnectionClosedException.class, failure.getCause());
+    assertInstanceOf(
+        AsduDecodeException.class,
+        closed.getCause(),
+        "the pending failure's root cause must be the decode failure");
   }
 
   // --- Server-side malformed TypeID: decodable-but-undispatched vs undecodable -------------------
@@ -295,18 +336,22 @@ class ProtocolErrorFrameIntegrationTest {
   /**
    * CASE B — an inbound ASDU whose TypeID byte is UNDEFINED (no {@link AsduType} constant). The
    * server's inbound decode fails in {@code Asdu.Serde.decode} via {@code AsduType.fromId},
-   * throwing an {@link UnsupportedAsduTypeException}. The in-JVM {@code Cs104Binding} listener does
-   * not catch it, so it unwinds synchronously back out the CLIENT's send stack (delivery is
-   * synchronous on the corruptNext path) — where the client's {@code submitToSession} converts the
-   * thrown {@code RuntimeException} into a failed send stage. The net, current behavior: the
-   * client's interrogation future fails with the SERVER's {@code UnsupportedAsduTypeException}, the
-   * SERVER neither mirrors nor closes (no AsduReceived, no ConnectionClosed reaches the client),
-   * and both ends stay up. This pins the current behavior and is the same robustness gap (an
-   * unguarded {@code Cs104Binding.onFrame} decode) as the garbled-whole-frame case — see {@code
-   * behaviorNotes}.
+   * throwing an {@link UnsupportedAsduTypeException}. The hardened {@code Cs104Binding} listener
+   * now guards the deframe: instead of letting that exception unwind synchronously back out the
+   * CLIENT's send stack, the SERVER binding closes its session, routes the decode cause through
+   * {@code Session.Events.onConnectionLost} (surfaced as a server-side {@link
+   * ServerEvent.ConnectionClosed} carrying the {@code UnsupportedAsduTypeException}), and tears the
+   * accepted connection down via {@code connection.close()}.
+   *
+   * <p>The net new behavior: the client's triggering send no longer throws (the server swallows the
+   * decode failure), so the interrogation simply stays pending and the SERVER cleanly closes the
+   * connection with the decode cause. No negative mirror is emitted (decode fails before dispatch).
+   * On this in-JVM fault transport the connection close notifies only the server leg, so the client
+   * does not observe the loss here — the wire-level loss propagation is covered by the real-Netty
+   * close-path tests; this test pins the server-side clean teardown the binding now performs.
    */
   @Test
-  void serverUndecodableTypeIdEscapesIntoSenderAndIsNotMirrored() {
+  void serverUndecodableTypeIdClosesServerConnectionCleanlyAndIsNotMirrored() {
     EventCollector events = startDefaultServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
 
@@ -316,33 +361,48 @@ class ProtocolErrorFrameIntegrationTest {
     // server's inbound decode.
     fault.corruptNext(CLIENT_TO_SERVER, set(6, 41));
 
-    // The server's decode throw unwinds back into the client's own send call; the client's
-    // submitToSession catches it and fails the interrogation future with that exception.
+    // The server's decode failure is now swallowed inside the server binding's onFrame; the
+    // client's
+    // triggering send no longer throws, so the interrogation just stays pending.
     CompletableFuture<InterrogationResult> request =
         client.interrogateAsync(STATION).toCompletableFuture();
-    ExecutionException failure =
-        assertThrows(
-            ExecutionException.class,
-            () -> request.get(),
-            "the server's undecodable-type failure must surface as the client request's failure");
+    assertFalse(
+        request.isDone(),
+        "the interrogation stays pending: the decode failure no longer unwinds into the send");
+
+    // The SERVER tore the connection down cleanly: exactly one server-side ConnectionClosed
+    // carrying
+    // the UnsupportedAsduTypeException naming the undefined type id.
+    List<ServerEvent.ConnectionClosed> serverCloses =
+        serverEvents.stream()
+            .filter(ServerEvent.ConnectionClosed.class::isInstance)
+            .map(ServerEvent.ConnectionClosed.class::cast)
+            .toList();
+    assertEquals(
+        1,
+        serverCloses.size(),
+        "the server must close the connection exactly once on the bad type");
     UnsupportedAsduTypeException cause =
         assertInstanceOf(
             UnsupportedAsduTypeException.class,
-            failure.getCause(),
-            "the request must fail with the server's UnsupportedAsduTypeException");
+            serverCloses.get(0).cause(),
+            "the server close cause must be the UnsupportedAsduTypeException");
     assertTrue(
         cause.getMessage().contains("41"),
         "the failure must name the undefined type id: " + cause.getMessage());
 
-    // Current behavior: the server neither mirrored a negative nor closed; the client never sees a
-    // mirror or a close, and remains connected.
+    // No negative mirror is emitted: decode fails before dispatch, so the client sees no
+    // AsduReceived
+    // and no client-side ConnectionClosed on this in-JVM transport.
     assertFalse(
         events.events().stream().anyMatch(ClientEvent.AsduReceived.class::isInstance),
         "no negative mirror is emitted for an undecodable type id (decode fails before dispatch)");
     assertFalse(
         events.events().stream().anyMatch(ClientEvent.ConnectionClosed.class::isInstance),
-        "the server does not close the session on the undecodable type (current gap behavior)");
-    assertTrue(client.isConnected(), "client stays connected after the escaped decode failure");
+        "the in-JVM connection close notifies only the server leg, not the client");
+
+    // The interrogation is never confirmed (the connection was torn down); release it explicitly.
+    request.cancel(false);
   }
 
   // --- Wiring helpers ---------------------------------------------------------------------------
@@ -428,6 +488,26 @@ class ProtocolErrorFrameIntegrationTest {
             scheduler);
     server.start();
     this.server = server;
+    server
+        .events()
+        .subscribe(
+            new java.util.concurrent.Flow.Subscriber<ServerEvent>() {
+              @Override
+              public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+              }
+
+              @Override
+              public void onNext(ServerEvent item) {
+                serverEvents.add(item);
+              }
+
+              @Override
+              public void onError(Throwable throwable) {}
+
+              @Override
+              public void onComplete() {}
+            });
 
     ClientConfig clientConfig =
         ClientConfig.builder()

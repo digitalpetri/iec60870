@@ -102,8 +102,25 @@ public final class Cs104Binding {
     Objects.requireNonNull(events, "events");
     Objects.requireNonNull(scheduler, "scheduler");
 
+    // The client octet transport SPI exposes only disconnect(), which stops the persistent
+    // ChannelFsm from reconnecting — the opposite of the channel-only close that the Netty
+    // pipeline's
+    // exceptionCaught net performs on a decode failure (which lets the FSM reconnect). There is no
+    // SPI handle that closes just the current channel while leaving the transport free to
+    // reconnect,
+    // so the client's per-failure close handle is a no-op: the binding routes the decode cause
+    // through events.onConnectionLost (matching the Netty client's observable ConnectionClosed +
+    // pending-failure outcome), and on the Netty transport the pre-existing exceptionCaught net
+    // still
+    // performs the channel close. See assemble(...) for the full rationale.
     return assemble(
-        ApciSession.Role.CLIENT, scheduler, events, transport::send, transport::setListener, null);
+        ApciSession.Role.CLIENT,
+        scheduler,
+        events,
+        transport::send,
+        transport::setListener,
+        null,
+        () -> {});
   }
 
   /**
@@ -134,13 +151,20 @@ public final class Cs104Binding {
     Objects.requireNonNull(scheduler, "scheduler");
     Objects.requireNonNull(queuePolicy, "queuePolicy");
 
+    // The server connection SPI exposes close() (a per-connection teardown), which exactly matches
+    // the Netty server's behavior on a decode failure (tear down just this one accepted
+    // connection).
+    // Pass it as the per-failure close handle so a malformed inbound frame closes the session and
+    // the
+    // underlying connection on every transport.
     return assemble(
         ApciSession.Role.SERVER,
         scheduler,
         events,
         connection::send,
         connection::setListener,
-        new ServerQueueConfig(maxOutboundQueue, queuePolicy));
+        new ServerQueueConfig(maxOutboundQueue, queuePolicy),
+        connection::close);
   }
 
   private Session assemble(
@@ -149,7 +173,8 @@ public final class Cs104Binding {
       Session.Events events,
       FrameSink frameSink,
       Consumer<TransportListener> listenerSink,
-      @Nullable ServerQueueConfig queueConfig) {
+      @Nullable ServerQueueConfig queueConfig,
+      Runnable closeConnection) {
 
     // The session is referenced by the Output and the listener below, both of which run only after
     // construction; hold it in a one-element array so they can close it on a failed write or a
@@ -190,7 +215,37 @@ public final class Cs104Binding {
         new TransportListener() {
           @Override
           public void onFrame(ByteBuf frame) {
-            Apdu apdu = ApduFramer.decode(profile, frame);
+            // Deframe and dispatch inbound bytes. A malformed/undecodable frame makes
+            // ApduFramer.decode throw a decode-time RuntimeException (AsduDecodeException on a bad
+            // START/length/control field, UnsupportedAsduTypeException on an undefined TypeID, or
+            // an
+            // IndexOutOfBoundsException on a short/truncated read). Guard the deframe-and-dispatch
+            // so
+            // that failure does not escape back out the transport's delivery stack: route it to the
+            // SAME sink a real transport loss uses (Session.Events.onConnectionLost) and tear the
+            // underlying connection down, converging every transport on the existing close
+            // handling.
+            //
+            // This reproduces, on every transport, what the Netty pipeline's exceptionCaught net
+            // already does today for the TCP transport: close the session, publish a single
+            // ConnectionClosed carrying the decode cause, and close the connection. On the Netty
+            // TCP
+            // transport this is observably idempotent — exceptionCaught also runs and the facade /
+            // pipeline one-shot guards dedupe the notification — while the server connection close
+            // matches its per-connection teardown. The buffer is owned and released by the
+            // transport
+            // after onFrame returns (Netty autoRelease / the SPI's inbound ownership contract), so
+            // it
+            // is neither retained nor released here.
+            Apdu apdu;
+            try {
+              apdu = ApduFramer.decode(profile, frame);
+            } catch (RuntimeException decodeFailure) {
+              session.close();
+              events.onConnectionLost(decodeFailure);
+              closeConnection.run();
+              return;
+            }
             session.onApdu(apdu);
           }
 
