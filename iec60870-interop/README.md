@@ -54,6 +54,24 @@ The mirror: the lib60870-C `interop_client` (controlling station) drives our Jav
 (controlled station) through a scripted sequence and prints `PASS:`/`FAIL:` markers; the test
 asserts the script completes with `fail=0` and that each supported step passed.
 
+### `AbnormalClientVsLib60870ServerInteropTest` — ABNORMAL-path scenarios
+
+Our Java `Iec60870Client` drives the lib60870-C `interop_server` through a
+[Toxiproxy](https://github.com/Shopify/toxiproxy) that sits between them, so the link and the peer can
+be disrupted mid-session. Every assertion is on an *outcome* (a `ConnectionClosed` event was
+published, a request failed with `ConnectionClosedException`, a fresh interrogation round-tripped
+after recovery), never on a wall-clock duration. Coverage:
+
+- **Network partition mid-request** — the proxy is disabled while an interrogation is in flight; the
+  pending request fails and a `ConnectionClosed` event follows.
+- **Peer `SIGKILL` mid-request** — the peer container is killed while an interrogation is in flight;
+  the in-flight call either completes just before the kill lands or fails cleanly afterward, but a
+  `ConnectionClosed` event always follows.
+- **Peer restart with auto-reconnect** — the peer is restarted behind the stable proxy port and the
+  client's persistent transport transparently reconnects and resumes.
+- **Half-open stall** — a frozen link (no FIN) leaves a half-open connection that trips the `t1` timer,
+  and the client closes the connection.
+
 ## Building the lib60870-C image
 
 The interop tests build the image automatically the first time they run, so a manual build is

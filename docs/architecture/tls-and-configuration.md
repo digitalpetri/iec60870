@@ -5,8 +5,11 @@
 TLS is configured in core but applied by the transport. The core type is `TlsOptions`
 (`com.digitalpetri.iec60870.TlsOptions`), a small immutable holder that carries:
 
-- an `javax.net.ssl.SSLContext` supplying the key and trust material, and
-- a `clientAuthRequired` flag selecting mutual authentication.
+- an `javax.net.ssl.SSLContext` supplying the key and trust material,
+- a `clientAuthRequired` flag selecting mutual authentication, and
+- a `verifyHostname` flag (default `true`) that, on a client, enables JDK endpoint identification (the
+  `HTTPS` algorithm) so a certificate valid for a different host is rejected during the handshake; it
+  has no effect on a server.
 
 It is built with a fluent builder seeded from the context:
 
@@ -103,10 +106,10 @@ configs also hold the non-transport behavioral knobs:
 
 - **`ClientConfig`** — `originatorAddress`, an optional `pointCatalog`, `startDataTransferOnConnect`
   (default `true`), `commandTimeout` (10 s), `requestTimeout` (30 s, for interrogation/read/clock-sync),
-  `callbackExecutor`, and a `typeCodecRegistry`.
+  and `callbackExecutor`.
 - **`ServerConfig`** — the hosted `stations`, the `ServerHandler`, an `OutboundQueuePolicy` for a full
   outbound queue, the `TimeTagStyle` used when reporting monitor data (default `CP56`),
-  `maxConnections` (16), `callbackExecutor`, and a `typeCodecRegistry`.
+  `maxConnections` (16), and `callbackExecutor`.
 
 ### SessionSettings — the neutral session-settings handle
 

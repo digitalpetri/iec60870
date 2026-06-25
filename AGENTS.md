@@ -51,7 +51,7 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-cs104`,
 `iec60870-application`, `iec60870-transport-tcp`, `iec60870-examples`, `iec60870-tests`,
 `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
-`iec60870-core` are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `codec`, `address`,
+`iec60870-core` are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `address`,
 `transport`, and `session`. The 104 link/session package `cs104` (`ApciSession`, `Apdu`,
 `ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`, while the
 high-level packages `client`, `server`, `point`, and `catalog` live in `iec60870-application`.

@@ -128,8 +128,8 @@ import org.jspecify.annotations.NullMarked;
 
 `@Nullable` is a `TYPE_USE` annotation. Per the [Google Java Style Guide on type-use
 annotations](https://google.github.io/styleguide/javaguide.html#s4.8.5-annotations), it appears
-immediately before the annotated type, after any modifiers (`private @Nullable Iec104Client client;`,
-not `@Nullable private Iec104Client client;`). Place it on fields, method parameters, return types,
+immediately before the annotated type, after any modifiers (`private @Nullable Iec60870Client client;`,
+not `@Nullable private Iec60870Client client;`). Place it on fields, method parameters, return types,
 and type arguments — never on local variables (the IntelliJ inspection rejects `@Nullable` on a local
 with "Nullability annotation is not applicable to local variables"). On a nested or fully-qualified
 type the annotation binds to the simple type name, not the qualifier:
@@ -148,7 +148,7 @@ guarded for `null` in teardown: annotate the field `@Nullable`, then capture a n
 where the test body uses it.
 
 ```java
-private @Nullable Iec104Client client;
+private @Nullable Iec60870Client client;
 
 @AfterEach
 void tearDown() {
@@ -160,13 +160,13 @@ void tearDown() {
 @Test
 void connects() {
   client = TcpIec104Client.builder()./* ... */.build();
-  Iec104Client client = requireNonNull(this.client);
+  Iec60870Client client = requireNonNull(this.client);
   client.connect();
 }
 ```
 
 When a field is read across many test methods, a small private accessor that narrows once
-(`private Iec104Client client() { return requireNonNull(this.client); }`) is cleaner than repeating
+(`private Iec60870Client client() { return requireNonNull(this.client); }`) is cleaner than repeating
 the narrowing in every method.
 
 ## Documentation

@@ -119,7 +119,7 @@ to decode at runtime. The constructor validates each field's range and throws
 | `cotLength` | Cause-of-transmission octets; `2` includes the [originator address](../reference/glossary.md) octet, `1` omits it | `2` | Peer uses a 1-octet COT (no originator address) | Must match the peer. With `1`, the originator address is not carried on the wire. Range `1..2` |
 | `commonAddressLength` | Common address (station address) octets, little-endian | `2` | Peer uses a 1-octet common address | Must match the peer; with `1`, common addresses are limited to `0..255`. Range `1..2` |
 | `ioaLength` | Information object address octets, little-endian | `3` | Peer uses a 1- or 2-octet IOA | Must match the peer; fewer octets caps the addressable IOA range. Range `1..3` |
-| `maxAsduLength` | Maximum ASDU length in octets | `249` | Peer enforces a smaller max, or you want to bound frame size | Frames that would exceed this are not produced. Range `1..249` |
+| `maxAsduLength` | Maximum ASDU length in octets | `249` | Peer enforces a smaller max, or you want to bound frame size | Frames that would exceed this are not produced. Range `1..255` (the default is `249`) |
 
 The common real case is "104 default but with one different field." `ProtocolProfile` is a record with
 no `withX` convenience methods, so start from the default and re-construct using its component

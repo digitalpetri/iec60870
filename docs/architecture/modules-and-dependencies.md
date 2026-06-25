@@ -114,7 +114,8 @@ The `TcpIec104Client`/`TcpIec104Server` builders are the *only* types that name 
 (104) and the transport (TCP); they construct the `NettyClientTransport`/`NettyServerTransport`, then
 call `Cs104Binding.bindClient(...)` / `bindServer(...)` to produce the `Session` / session factory.
 Because `Cs104Binding` depends only on `cs104` + core + `netty-buffer`, the same binding would serve
-a 101-over-TCP builder (`Ft12LinkLayer` over `NettyOctetTransport`) or a serial builder unchanged.
+a 101-over-TCP builder (`Ft12LinkLayer` over `NettyClientTransport`/`NettyServerTransport`) or a
+serial builder unchanged.
 
 A caller who already has a transport and a `Session` can bypass the builders entirely and construct
 `new DefaultIec60870Client(clientTransport, clientConfig, sessionFactory)` directly; the high-level
@@ -139,7 +140,8 @@ The corresponding future builder names, mirroring `TcpIec104Client`/`TcpIec104Se
 - **`SerialIec101Client` / `SerialIec101Server`** — assemble `{Ft12LinkLayer(cs101) +
   SerialOctetTransport(transport-serial)}`;
 - **`TcpIec101Client` / `TcpIec101Server`** (optional) — 101-over-TCP, assembling `{Ft12LinkLayer(cs101)
-  + NettyOctetTransport(transport-tcp)}`, proving `transport-tcp` is reused by both protocols.
+  + NettyClientTransport/NettyServerTransport(transport-tcp)}`, proving `transport-tcp` is reused by
+  both protocols.
 
 These slots exist only as documentation; they add nothing to the build.
 
@@ -183,9 +185,9 @@ back into core.
 | Module | Compile dependencies | Notes |
 |---|---|---|
 | `iec60870-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`/transport SPI; no channel/handler |
-| `iec60870-cs104` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 104 link/session engine; `netty-buffer` confined to the `Apdu`/`ControlField` `Serde` codecs; published API module |
+| `iec60870-cs104` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 104 link/session engine; `netty-buffer` confined to the `Apdu`/`ControlField` `Serde` codecs; published API module |
 | `iec60870-application` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `org.slf4j:slf4j-api` | **zero Netty**; depends on core only (never on cs104). Guarded by `NoNettyInApplicationTest` |
-| `iec60870-transport-tcp` | `iec60870-application`, `iec60870-cs104`, `iec60870-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler`; only the `Tcp*` builders reference `cs104`/`application` (they call `Cs104Binding`); the octet classes (`NettyOctetTransport`, pipeline, decoder) stay cs104- and application-free |
+| `iec60870-transport-tcp` | `iec60870-application`, `iec60870-cs104`, `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler`; only the `Tcp*` builders reference `cs104`/`application` (they call `Cs104Binding`); the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoder) stay cs104- and application-free |
 
 The sink modules (`iec60870-examples`, `iec60870-tests`, `iec60870-interop`) name `client`/`server`/
 `point` types directly, so each declares a **direct** `iec60870-application` dependency rather than

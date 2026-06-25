@@ -78,8 +78,9 @@ form).
 
 **Application Service Data Unit** — the application payload carried inside an I-format
 APDU: a TypeID, a cause of transmission, addressing, and one or more information objects.
-*In this library:* `com.digitalpetri.iec60870.asdu.Asdu` (a record), with `AsduType`,
-`Cause`, and `InformationObject` records.
+*In this library:* `com.digitalpetri.iec60870.asdu.Asdu` (a record), with the `AsduType`
+and `Cause` enums and the `InformationObject` type (its per-TypeID implementations in
+`asdu.object` are records).
 *See:* [Work with raw ASDUs](../how-to/work-with-raw-asdus.md),
 [Coverage matrix](coverage-matrix.md).
 

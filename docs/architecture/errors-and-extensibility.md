@@ -26,7 +26,8 @@ RuntimeException
     ├── ConnectionClosedException       operation on a closed/lost connection; pending requests failed on loss
     ├── NegativeConfirmationException   peer answered a request with P/N=1 (carries Cause and the ASDU)
     ├── UnsupportedAsduTypeException    type identification undefined, or defined but with no typed object mapping
-    └── SequenceNumberException         APCI N(S)/N(R) violated the k/w flow-control rules
+    ├── SequenceNumberException         APCI N(S)/N(R) violated the k/w flow-control rules
+    └── RequestInProgressException      a conflicting request to the same target is still in flight
 ```
 
 When each is used:
@@ -39,6 +40,7 @@ When each is used:
 | `NegativeConfirmationException` | A *blocking* request (e.g. `interrogate`, `read`, `synchronizeClock`) receives a confirming ASDU with the P/N bit set | client request correlation |
 | `UnsupportedAsduTypeException` | `AsduType.fromId(int)` sees an undefined type identification, or a typed object is required for a type that is only reachable via the raw codec | decode dispatch; `AsduType.fromId` |
 | `SequenceNumberException` | An inbound I-frame's N(S) does not match V(R), or an N(R) acknowledges frames that were never sent | `ApciSession.onApdu(...)` |
+| `RequestInProgressException` | A blocking request is issued while a conflicting request to the same target is still in flight (their responses could not be told apart) | client request serialization in `DefaultIec60870Client` |
 
 A `SequenceNumberException` (and a t1 `ProtocolTimeoutException`) is fatal to the connection: the
 `ApciSession` closes itself and reports the cause through `Events.onClosed`, which the facade surfaces
@@ -85,8 +87,10 @@ Even without a custom codec, an application can drop to the raw layer at any tim
 - **Server.** `ServerHandler.onRawAsdu(ServerContext, Asdu)` is offered every received ASDU before the
   standard dispatch. Returning `true` claims the ASDU — the standard dispatch is skipped and the
   handler is responsible for any reply via `ServerContext.send(Asdu)`. Returning `false` (the default)
-  defers to standard handling. This is the server-side hook for private TypeIDs and any bespoke
-  procedure (including a file-transfer state machine built on the `F_*` types).
+  defers to standard handling. This is the server-side hook for a bespoke procedure built on a
+  standard, supported TypeID the facade does not itself act on. It cannot deliver unmodeled TypeIDs
+  such as the `F_*` file-transfer types: those have no registered codec, so an inbound `F_*` frame
+  fails to decode and tears the connection down before any hook runs.
 
 Together these cover the modeled procedures and the bespoke ones built on standard TypeIDs: a
 received ASDU of a supported type that the facade does not act on is still surfaced as a raw `Asdu`
