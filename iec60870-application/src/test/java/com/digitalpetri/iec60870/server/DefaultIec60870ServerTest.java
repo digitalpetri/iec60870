@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
@@ -28,6 +29,7 @@ import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.fakes.ControllableServerSession;
 import com.digitalpetri.iec60870.fakes.FakeServerTransport;
 import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointCapability;
@@ -36,6 +38,7 @@ import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import com.digitalpetri.iec60870.session.Session;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -714,6 +717,149 @@ class DefaultIec60870ServerTest {
 
   private SingleCommand singleCommand() {
     return new SingleCommand(POINT.objectAddress(), true, new QualifierOfCommand(0, false));
+  }
+
+  // --- #6: BLOCK-policy outbound backpressure on the publishing thread -------------------------
+
+  /**
+   * Builds a BLOCK-policy server with a small positive outbound bound and block timeout, wiring
+   * each accepted connection to a {@link ControllableServerSession} captured into {@code
+   * sessionRef}.
+   */
+  private DefaultIec60870Server blockServer(
+      Duration blockTimeout, AtomicReference<ControllableServerSession> sessionRef) {
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(new ServerHandler() {})
+            .timeTagStyle(TimeTagStyle.NONE)
+            .callbackExecutor(DIRECT)
+            .eventQueuePolicy(OutboundQueuePolicy.BLOCK)
+            .maxOutboundQueue(1)
+            .outboundBlockTimeout(blockTimeout)
+            .build();
+    DefaultIec60870Server.SessionFactory factory =
+        (connection, events, scheduler) -> {
+          ControllableServerSession session = new ControllableServerSession(events);
+          sessionRef.set(session);
+          return session;
+        };
+    return new DefaultIec60870Server(transport, config, factory);
+  }
+
+  @Test
+  void blockPolicyAwaitsCapacityBeforeSendingMonitor() {
+    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
+    server.start();
+    transport.accept("client");
+    ControllableServerSession session = sessionRef.get();
+    session.simulateDataTransferStarted();
+
+    // Capacity is reported available: the publisher awaits once, then the monitor is sent.
+    session.awaitOutcome(ControllableServerSession.Outcome.RETURN_TRUE);
+    server.publish(POINT, PointValue.single(false), Cause.SPONTANEOUS);
+
+    assertEquals(1, session.awaitCalls(), "BLOCK must await capacity before sending");
+    assertEquals(
+        1, session.sentAsdus().size(), "the monitor must be sent once capacity is granted");
+    assertEquals(AsduType.M_SP_NA_1, session.sentAsdus().get(0).type());
+
+    server.close();
+  }
+
+  @Test
+  void blockPolicyTimeoutFallsThroughToSendAsdu() {
+    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    DefaultIec60870Server server = blockServer(Duration.ofMillis(20), sessionRef);
+    server.start();
+    transport.accept("client");
+    ControllableServerSession session = sessionRef.get();
+    session.simulateDataTransferStarted();
+
+    // The await "times out" (returns false). The server ignores the boolean and falls through to
+    // sendAsdu, where the real session's last-resort bound would drop the newest; the fake records
+    // the offered ASDU so the fall-through is observable.
+    session.awaitOutcome(ControllableServerSession.Outcome.RETURN_FALSE);
+    server.publish(POINT, PointValue.single(false), Cause.SPONTANEOUS);
+
+    assertEquals(1, session.awaitCalls(), "the publisher must still have awaited capacity");
+    assertEquals(
+        1,
+        session.sentAsdus().size(),
+        "a BLOCK timeout falls through to sendAsdu rather than dropping on the publisher thread");
+
+    server.close();
+  }
+
+  @Test
+  void blockPolicyInterruptedAwaitPreservesInterruptFlagAndDropsMonitor() throws Exception {
+    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
+    server.start();
+    transport.accept("client");
+    ControllableServerSession session = sessionRef.get();
+    session.simulateDataTransferStarted();
+
+    // awaitSendCapacity throws InterruptedException: enqueueMonitor re-asserts the interrupt flag
+    // and returns without sending. Run on a dedicated thread so we can read its interrupt status.
+    session.awaitOutcome(ControllableServerSession.Outcome.THROW_INTERRUPTED);
+    AtomicReference<@Nullable Boolean> interruptObserved = new AtomicReference<>();
+    Thread publisher =
+        new Thread(
+            () -> {
+              server.publish(POINT, PointValue.single(false), Cause.SPONTANEOUS);
+              interruptObserved.set(Thread.currentThread().isInterrupted());
+            },
+            "block-publisher");
+    publisher.start();
+    publisher.join(5_000);
+
+    assertFalse(publisher.isAlive(), "the publisher must return after the interrupt");
+    assertEquals(1, session.awaitCalls(), "the publisher must have awaited capacity");
+    assertEquals(
+        Boolean.TRUE,
+        interruptObserved.get(),
+        "enqueueMonitor must re-assert the thread interrupt flag after InterruptedException");
+    assertTrue(
+        session.sentAsdus().isEmpty(),
+        "an interrupted await must drop the monitor rather than send it");
+
+    server.close();
+  }
+
+  @Test
+  void blockPolicyConnectionClosedWhileBlockedDropsMonitorCleanly() throws Exception {
+    AtomicReference<ControllableServerSession> sessionRef = new AtomicReference<>();
+    DefaultIec60870Server server = blockServer(Duration.ofSeconds(15), sessionRef);
+    server.start();
+    transport.accept("client");
+    ControllableServerSession session = sessionRef.get();
+    session.simulateDataTransferStarted();
+
+    // The publisher parks inside awaitSendCapacity; while it is parked the connection closes
+    // (SessionEvents.onClosed -> ServerConnection.close marks closed). When the wait releases, the
+    // closed-after-wait guard short-circuits before sendAsdu, so no monitor is sent.
+    session.awaitOutcome(ControllableServerSession.Outcome.BLOCK_UNTIL_RELEASED);
+    Thread publisher =
+        new Thread(
+            () -> server.publish(POINT, PointValue.single(false), Cause.SPONTANEOUS),
+            "block-publisher");
+    publisher.start();
+
+    assertTrue(session.awaitParked(5_000), "the publisher must park inside awaitSendCapacity");
+    // Close the connection underneath the parked publisher, then release the wait.
+    session.fireClosed(new RuntimeException("connection lost while blocked"));
+    session.releaseAwait();
+    publisher.join(5_000);
+
+    assertFalse(publisher.isAlive(), "the publisher must return after release");
+    assertTrue(session.isClosed(), "the connection must have been closed underneath the publisher");
+    assertTrue(
+        session.sentAsdus().isEmpty(),
+        "a connection closed while blocked must drop the monitor, not send it");
+
+    server.close();
   }
 
   @Test

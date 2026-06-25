@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -595,6 +596,130 @@ class ApciSessionTest {
     session.onApdu(sFrame(1)); // acks one frame; window reopens; queued asdu(4) flushes
 
     assertTrue(parked.get(5, TimeUnit.SECONDS), "the parked publisher must unblock, not deadlock");
+  }
+
+  @Test
+  void boundedSendQueueUnderBlockPolicyDropsNewestAsLastResort() {
+    // BLOCK shares the last-resort drop-newest guard in sendAsdu (the switch's DROP_NEWEST, BLOCK
+    // case): if a publisher offers past the bound without first awaiting capacity, the newly
+    // offered
+    // ASDU is dropped so the bound is never exceeded. SERVER role withholds I-frames before
+    // STARTDT,
+    // so every offered ASDU lands in the send queue and the bound is exercised directly.
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.SERVER,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            2,
+            OutboundQueuePolicy.BLOCK);
+    session.onConnected();
+
+    for (int i = 0; i < 5; i++) {
+      session.sendAsdu(asdu(i));
+    }
+
+    assertEquals(
+        2, session.pendingSendCount(), "BLOCK's last-resort guard must never exceed the bound");
+    assertTrue(output.iFrames().isEmpty(), "server withholds I-frames before STARTDT");
+
+    // The retained ASDUs are the earliest two (ioa 0 and 1); newest offers were dropped. Starting
+    // data transfer flushes exactly the bounded history.
+    session.onApdu(uFrame(UFunction.STARTDT_ACT));
+    assertEquals(2, output.iFrames().size());
+  }
+
+  @Test
+  void awaitSendCapacityReturnsFalseWhenQueueStaysFullPastTimeout() throws Exception {
+    // bound = 1: stuff the queue to the bound with the window kept closed (no acks) so it can never
+    // drain, then await a short timeout. Because the queue is genuinely full-and-stuck, the false
+    // return is guaranteed regardless of timing; the only timing dependence is a harmless lower
+    // bound on elapsed wall time, asserted as a terminal outcome rather than an exact duration.
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.CLIENT,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            1,
+            OutboundQueuePolicy.BLOCK);
+    session.onConnected();
+
+    // k = 3: three I-frames transmit immediately, the fourth queues and reaches the bound. No acks
+    // arrive, so the window stays closed and the queue can never drain.
+    session.sendAsdu(asdu(1));
+    session.sendAsdu(asdu(2));
+    session.sendAsdu(asdu(3));
+    session.sendAsdu(asdu(4));
+
+    assertEquals(1, session.pendingSendCount(), "the queue is at its bound and cannot drain");
+
+    long start = System.nanoTime();
+    boolean capacity = session.awaitSendCapacity(40);
+    long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+    assertFalse(capacity, "a stuck full queue must time out, returning false");
+    assertTrue(elapsedMillis >= 30, "the await must respect the bounded timeout before giving up");
+    assertEquals(1, session.pendingSendCount(), "the timed-out wait must not alter the queue");
+  }
+
+  @Test
+  void awaitSendCapacityThrowsInterruptedExceptionWhenParkedPublisherIsInterrupted()
+      throws Exception {
+    // bound = 1: park a publisher on a full-and-stuck queue (window closed, no acks), then
+    // interrupt
+    // it and assert InterruptedException propagates out of awaitSendCapacity.
+    ApciSession session =
+        new ApciSession(
+            ApciSession.Role.CLIENT,
+            SETTINGS,
+            scheduler,
+            output,
+            events,
+            1,
+            OutboundQueuePolicy.BLOCK);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+    session.sendAsdu(asdu(2));
+    session.sendAsdu(asdu(3));
+    session.sendAsdu(asdu(4)); // queued; pending == 1 == bound
+
+    assertEquals(1, session.pendingSendCount());
+
+    CountDownLatch parked = new CountDownLatch(1);
+    AtomicReference<@Nullable Throwable> thrown = new AtomicReference<>();
+    Thread publisher =
+        new Thread(
+            () -> {
+              parked.countDown();
+              try {
+                // A long timeout so the wait only ends via interruption, never a timeout.
+                session.awaitSendCapacity(60_000);
+              } catch (Throwable t) {
+                thrown.set(t);
+              }
+            },
+            "block-publisher");
+    publisher.start();
+
+    // Wait until the publisher has started, then give it a moment to enter the parked await before
+    // interrupting; the interrupt must surface as InterruptedException regardless of exact timing.
+    assertTrue(parked.await(5, TimeUnit.SECONDS), "the publisher thread must start");
+    Thread.sleep(50);
+    publisher.interrupt();
+    publisher.join(5_000);
+
+    assertFalse(publisher.isAlive(), "the interrupted publisher must terminate");
+    assertInstanceOf(
+        InterruptedException.class,
+        thrown.get(),
+        "interrupting a parked publisher must raise InterruptedException");
+    assertEquals(
+        1, session.pendingSendCount(), "the interrupted wait must leave the queue untouched");
   }
 
   // --- Fixtures --------------------------------------------------------------------------------
