@@ -29,21 +29,21 @@ The library deliberately exposes two levels of abstraction, and a caller can mov
 them on the same connection.
 
 **The raw protocol layer** models the wire faithfully. `Asdu`, `AsduType`, `Cause`, and the
-per-type `InformationObject` records in `com.digitalpetri.iec104.asdu.object` are direct,
+per-type `InformationObject` records in `com.digitalpetri.iec60870.asdu.object` are direct,
 immutable representations of what travels on the wire, each with a co-located `Serde` that
 encodes and decodes it. A caller who needs full control — conformance testing, private TypeIDs,
-unusual cause/qualifier combinations — builds an `Asdu` and sends it with `Iec104Client.send(Asdu)`,
+unusual cause/qualifier combinations — builds an `Asdu` and sends it with `Iec60870Client.send(Asdu)`,
 and observes every inbound `Asdu` through the event stream. Nothing is hidden at this layer.
 
-**The high-level facade** turns that wire model into a domain API. `Iec104Client` offers
-`interrogate`, `read`, `commands().single(...)`, and `synchronizeClock`; `Iec104Server` hosts
+**The high-level facade** turns that wire model into a domain API. `Iec60870Client` offers
+`interrogate`, `read`, `commands().single(...)`, and `synchronizeClock`; `Iec60870Server` hosts
 `Station`s with `PointDefinition`s and answers requests from a current-value image. Values are
 expressed as `PointValue<T>` with `Quality`, addressed by `PointAddress`, and delivered as typed
 `ClientEvent`/`ServerEvent` records. This layer correlates request/response, manages the command
 select-before-operate sequence, projects monitor objects onto domain point values, and serializes
 event delivery onto a callback executor.
 
-The escape hatch is always present: `Iec104Client.send(Asdu)` / `events()` on the client, and
+The escape hatch is always present: `Iec60870Client.send(Asdu)` / `events()` on the client, and
 `ServerContext.send(Asdu)` / `ServerHandler.onRawAsdu(...)` on the server, let an application drop
 to the raw layer for anything the facade does not model — without leaving the high-level API.
 
@@ -52,27 +52,37 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
 ## Component map
 
 ```
-                         iec104-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
+                         iec60870-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
                          ┌───────────────────────────────────────────────────────────────┐
                          │  TcpIec104Client.builder()        TcpIec104Server.builder()    │
    user-facing  ───────► │  host/port/tls  ──► NettyClientTransport / NettyServerTransport │
-   entry points          │  Iec104FrameDecoder / Iec104FrameEncoder  (the ByteBuf boundary)│
+   entry points          │  Iec104FrameDecoder (the whole-frame ByteBuf boundary)         │
+                         │  builders delegate 104 assembly to Cs104Binding (in cs104)      │
                          └───────────────────────────────────────────────────────────────┘
-                                 │ implements                       returns the core interface
-                                 ▼ .transport interfaces            (Iec104Client / Iec104Server)
+            assembles {Session + transport}     returns the application interface
+            and injects them into ───┐          (Iec60870Client / Iec60870Server)
+                                     ▼
    ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-   │ iec104-core  (no Netty channel/handler types; ByteBuf only inside .asdu/.apci Serde)       │
-   │                                                                                            │
-   │  HIGH-LEVEL FACADE                                                                          │
-   │   .client   Iec104Client (+ DefaultIec104Client), CommandService, Command, CommandResult,  │
+   │ iec60870-application  (NO Netty — speaks Asdu + the Session SPI only)                       │
+   │   .client   Iec60870Client (+ DefaultIec60870Client), CommandService, Command, CommandResult,  │
    │             ClientEvent, InterrogationResult, ClientConfig                                 │
-   │   .server   Iec104Server (+ DefaultIec104Server), Station, PointDefinition, StationRegistry,│
+   │   .server   Iec60870Server (+ DefaultIec60870Server), Station, PointDefinition, StationRegistry,│
    │             ServerHandler, ServerContext, ServerEvent, ServerConfig, request/decision types│
    │   .point    PointValue<T>, PointType, Quality, PointCapability, TimeTagStyle, MonitorMapping │
    │   .catalog  PointCatalog, CatalogEntry, ObservedCatalog, ObservationMode, MergePolicy       │
+   └──────────────────────────────────────────────────────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+   │ iec60870-cs104  (the 104 link/session engine; ByteBuf only inside the Apdu Serde)          │
+   │   .cs104   ApciSession implements Session (V(S)/V(R), k/w, t1/t2/t3), Apdu, ControlField,   │
+   │            UFunction, ApduFramer, ApciSettings, Cs104Binding                                │
+   └──────────────────────────────────────────────────────────────────────────────────────────┘
+        iec60870-application and iec60870-cs104 both depend on core ──┐ (Session SPI + raw model)
+                                                                      ▼
+   ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+   │ iec60870-core  (no Netty channel/handler types; ByteBuf only inside .asdu Serde + SPI)     │
    │                                                                                            │
-   │  APCI SESSION ENGINE                                                                        │
-   │   .apci     ApciSession (V(S)/V(R), k/w window, t1/t2/t3), Apdu, ControlField, UFunction    │
+   │  SESSION SPI                                                                                │
+   │   .session  Session (Asdu-shaped SPI: sendAsdu, start/stopDataTransfer, Events)             │
    │                                                                                            │
    │  RAW PROTOCOL MODEL + CODECS                                                                │
    │   .asdu          Asdu, AsduType, Cause, InformationObject, InformationObjectCodec(s)         │
@@ -82,11 +92,11 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .address       CommonAddress, InformationObjectAddress, OriginatorAddress, PointAddress   │
    │                                                                                            │
    │  CONFIG + ERRORS (package root)                                                             │
-   │   ProtocolProfile, ApciSettings, TlsOptions                                                 │
-   │   Iec104Exception (+ AsduDecodeException, ProtocolTimeoutException, ConnectionClosed-,       │
+   │   ProtocolProfile, SessionSettings, OutboundQueuePolicy, TlsOptions                         │
+   │   Iec60870Exception (+ AsduDecodeException, ProtocolTimeoutException, ConnectionClosed-,       │
    │                    NegativeConfirmation-, UnsupportedAsduType-, SequenceNumberException)     │
    │                                                                                            │
-   │  TRANSPORT INTERFACES (no Netty)                                                            │
+   │  TRANSPORT INTERFACES (no Netty channel/handler; whole-frame ByteBuf)                       │
    │   .transport  ClientTransport, ServerTransport, ServerTransportConnection, TransportListener │
    └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -94,14 +104,16 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
 ### How a message moves through the stack
 
 Outbound (client issuing a command): the facade (`CommandService`) builds a domain `Command`, maps
-it to a wire `Asdu`, and hands it to the `ApciSession`, which wraps it in an I-format `Apdu` honoring
-the `k` window. The transport's `Iec104FrameEncoder` calls `Apdu.Serde.encode(...)` into a Netty
-`ByteBuf` and writes it to the channel.
+it to a wire `Asdu`, and hands it to its injected `Session` via `sendAsdu(...)`. For a 104 stack the
+session is an `ApciSession`, which wraps the `Asdu` in an I-format `Apdu` honoring the `k` window;
+the session's `Output` (wired in the `Tcp*` builder) runs `ApduFramer.encode(...)` into a Netty
+`ByteBuf` and writes it through the octet transport.
 
 Inbound (a spontaneous measurement): the transport's `Iec104FrameDecoder` frames on the `0x68`
-start/length, calls `Apdu.Serde.decode(...)` to produce an `Apdu`, and delivers it through the
-`TransportListener`. The `ApciSession` validates the sequence number, advances V(R), and delivers the
-contained `Asdu` to the client, which emits one `ClientEvent.AsduReceived` plus one
+start/length and delivers one whole-frame `ByteBuf` through the `TransportListener`. The builder's
+inbound glue runs `ApduFramer.decode(...)` to produce an `Apdu` and feeds it to `ApciSession.onApdu`.
+The session validates the sequence number, advances V(R), and delivers the contained `Asdu` to the
+facade through `Session.Events.onAsdu`, which emits one `ClientEvent.AsduReceived` plus one
 `ClientEvent.PointUpdated` per information object — serially, on the callback executor.
 
 The single architectural rule that makes this clean: the `ByteBuf` exists only inside the `Serde`

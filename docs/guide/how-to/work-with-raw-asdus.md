@@ -6,7 +6,7 @@ bytes on the wire. This page is about that lower layer. You drop to it for one o
 exact wire control of a TypeID the facade *does* model — for conformance testing or debugging — or you
 need to send and receive a TypeID the facade does **not** act on, such as the file-transfer `F_*` types
 or a private procedure. The escape hatch lives on the high-level
-[`Iec104Client`](../../architecture/two-layer-api.md) and `Iec104Server`, so you never give up your
+[`Iec60870Client`](../../architecture/two-layer-api.md) and `Iec60870Server`, so you never give up your
 connection to use it.
 
 If you only want to read points and issue ordinary single, double, set-point, or interrogation
@@ -28,7 +28,7 @@ docs.
 ## The raw types at a glance
 
 The raw layer maps IEC 104 jargon onto a small set of concrete Java types, all under
-`com.digitalpetri.iec104`:
+`com.digitalpetri.iec60870`:
 
 | IEC 104 term | Java type | Where it lives |
 |---|---|---|
@@ -73,14 +73,14 @@ exactly as `RawAsduExample` does. `InterrogationCommand` is the `asdu.object` re
 TypeIDs.
 
 ```java
-import com.digitalpetri.iec104.address.CommonAddress;
-import com.digitalpetri.iec104.address.InformationObjectAddress;
-import com.digitalpetri.iec104.address.OriginatorAddress;
-import com.digitalpetri.iec104.asdu.Asdu;
-import com.digitalpetri.iec104.asdu.AsduType;
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.asdu.element.QualifierOfInterrogation;
-import com.digitalpetri.iec104.asdu.object.InterrogationCommand;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
+import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.AsduType;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import java.util.List;
 
 // C_IC_NA_1 station (global) interrogation for common address 1.
@@ -107,8 +107,8 @@ transmission (so the originator address is present), a 2-octet common address, a
 information object address. For non-default widths, see [Tune the APCI session](./tune-apci.md).
 
 ```java
-import com.digitalpetri.iec104.ProtocolProfile;
-import com.digitalpetri.iec104.asdu.Asdu;
+import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.asdu.Asdu;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -153,15 +153,15 @@ here.
 
 ## Send a raw ASDU from the client
 
-On an open, started connection, `Iec104Client.send(Asdu)` transmits any ASDU as-is, bypassing the
+On an open, started connection, `Iec60870Client.send(Asdu)` transmits any ASDU as-is, bypassing the
 high-level command and request helpers. This is the client-side escape hatch for private TypeIDs and
 conformance work.
 
 ```java
-import com.digitalpetri.iec104.asdu.Asdu;
-import com.digitalpetri.iec104.client.Iec104Client;
+import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.client.Iec60870Client;
 
-// client is an open, started Iec104Client (see Getting Started).
+// client is an open, started Iec60870Client (see Getting Started).
 client.send(asdu);                 // fire-and-forget; throws ConnectionClosedException if closed
 // or, non-blocking:
 // client.sendAsync(asdu).thenRun(() -> ...);
@@ -180,7 +180,7 @@ Every inbound ASDU is published as `ClientEvent.AsduReceived(asdu)`, in addition
 is still observable — it is never silently dropped. Match `AsduReceived` in your subscriber's `onNext`:
 
 ```java
-import com.digitalpetri.iec104.client.ClientEvent;
+import com.digitalpetri.iec60870.client.ClientEvent;
 
 // inside Flow.Subscriber<ClientEvent>#onNext(ClientEvent event):
 switch (event) {
@@ -205,10 +205,10 @@ Return `false` (the default) to defer to standard handling. For a non-blocking r
 observation.
 
 ```java
-import com.digitalpetri.iec104.asdu.Asdu;
-import com.digitalpetri.iec104.asdu.AsduType;
-import com.digitalpetri.iec104.server.ServerContext;
-import com.digitalpetri.iec104.server.ServerHandler;
+import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.AsduType;
+import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerHandler;
 
 ServerHandler handler = new ServerHandler() {
   @Override
@@ -253,14 +253,14 @@ See the [coverage matrix](../reference/coverage-matrix.md) for what is modeled a
 
 ## The runnable example
 
-[`RawAsduExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/RawAsduExample.java)
+[`RawAsduExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/RawAsduExample.java)
 is the shipped end-to-end demonstration of everything above, and it needs no peer. It builds a
 `C_IC_NA_1` station interrogation and an `M_ME_NB_1` scaled measured value, encodes each to bytes with
 `Asdu.Serde`, prints the hex, decodes it back, and prints the round-tripped object. Run it with:
 
 ```bash
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.RawAsduExample
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.RawAsduExample
 ```
 
 It prints four labeled lines per ASDU — `built`, `encoded` (hex), `decoded`, and `objects`. The
@@ -275,7 +275,7 @@ C_IC_NA_1 station interrogation
 ```
 
 The first octet `64` is the TypeID (100 = `C_IC_NA_1`) and the trailing `14` is the qualifier
-(20 = station). See the [examples README](../../../iec104-examples/README.md) for the full set of
+(20 = station). See the [examples README](../../../iec60870-examples/README.md) for the full set of
 runnable examples.
 
 ## See also

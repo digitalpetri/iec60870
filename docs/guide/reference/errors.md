@@ -30,13 +30,13 @@ This is the fast-lookup table; the rest of the page is detail.
 
 ### The hierarchy
 
-All library exceptions are unchecked and extend `Iec104Exception`, so an application can catch that
+All library exceptions are unchecked and extend `Iec60870Exception`, so an application can catch that
 one type to handle any library-specific failure uniformly. Every exception below lives in the root
-package `com.digitalpetri.iec104`.
+package `com.digitalpetri.iec60870`.
 
 ```text
 RuntimeException
-└── Iec104Exception                   base — catch to handle any library failure
+└── Iec60870Exception                   base — catch to handle any library failure
     ├── AsduDecodeException           malformed / truncated / out-of-range wire data on decode
     ├── ProtocolTimeoutException      an expected response did not arrive in time
     ├── ConnectionClosedException     operation on a closed/lost connection; pending requests fail on loss
@@ -109,7 +109,7 @@ confirmation)`:
 
 Only transport/session failures — a timeout, a disconnect — throw from a command. A protocol-level
 rejection is the non-positive result above. This mirrors the canonical
-[`ClientExample`](../../../iec104-examples/README.md) line `client.commands().single(SWITCH, true)`.
+[`ClientExample`](../../../iec60870-examples/README.md) line `client.commands().single(SWITCH, true)`.
 For [select-before-operate](glossary.md), the result reflects the *execute*
 confirmation, not the select; see [Send commands](../how-to/send-commands.md) for the full
 procedure.
@@ -172,7 +172,7 @@ The authoritative per-operation lookup. Each row is grounded in the operation's 
 | `client.synchronizeClock(...)` | (void) | `NegativeConfirmationException` | `ProtocolTimeoutException` | `ConnectionClosedException` |
 | `client.commands().send(...)` / helpers | `CommandResult` (`positive` may be `false`) | **non-positive `CommandResult`** (not thrown) | `ProtocolTimeoutException` | `ConnectionClosedException` |
 | `client.send(asdu)` (raw) | (void) | — (responses arrive via `events()`) | — | `ConnectionClosedException` |
-| `server.start()` | (void) | — | — | `Iec104Exception` on bind failure |
+| `server.start()` | (void) | — | — | `Iec60870Exception` on bind failure |
 | `server.publish(...)` | (void) | — | — | skips un-started connections (see note) |
 
 Notes:
@@ -185,8 +185,8 @@ Notes:
    cross-cutting condition rather than something specific to one call.
 2. **`publish` argument errors.** `server.publish(...)` throws `IllegalArgumentException` if no
    station hosts the point or the value's runtime type does not match the point's type. That is a
-   *programming error*, **not** an `Iec104Exception` — it is outside the `Iec104Exception` family, so
-   "catch `Iec104Exception` to handle any library failure" still holds. `publish` also skips
+   *programming error*, **not** an `Iec60870Exception` — it is outside the `Iec60870Exception` family, so
+   "catch `Iec60870Exception` to handle any library failure" still holds. `publish` also skips
    connections that have not started data transfer rather than failing.
 
 ## Interpreting a negative confirmation
@@ -227,7 +227,7 @@ declined. They can arrive either as the `cause()` of a `CommandResult` or as the
 | `UNKNOWN_COMMON_ADDRESS` | 46 | Wrong [Common Address (CA)](glossary.md) — no such station (`CommonAddress`). |
 | `UNKNOWN_INFORMATION_OBJECT_ADDRESS` | 47 | Wrong [IOA](glossary.md) — the station has no such object (`InformationObjectAddress`). |
 
-`Cause` lives in `com.digitalpetri.iec104.asdu`; the full set of COT constants is listed in the
+`Cause` lives in `com.digitalpetri.iec60870.asdu`; the full set of COT constants is listed in the
 [glossary](glossary.md).
 
 ## Failures on the async API

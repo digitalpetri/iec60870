@@ -5,9 +5,17 @@ the codecs read and write, and which thread runs application callbacks.
 
 ## Buffer ownership
 
-The only place a `ByteBuf` appears in `iec104-core` is inside the `Serde` classes of the raw model
-(`Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`, `CommonAddress.Serde`, the per-type
-`InformationObjectCodec`s, and the element/time `Serde`s). They follow one uniform rule:
+`ByteBuf` appears in `iec60870-core` in two places. The first is inside the `Serde` classes of the
+raw model (`Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`, `CommonAddress.Serde`, the per-type
+`InformationObjectCodec`s, and the element/time `Serde`s). The second is on the **octet transport
+SPI** (`com.digitalpetri.iec60870.transport`), where `ByteBuf` is the sanctioned codec-boundary type
+that carries one complete, length-delimited frame across the seam. The transport SPI exchanges
+whole-frame `ByteBuf`s; turning a frame into an `Apdu` (via `ApduFramer`) happens *above* the SPI,
+not inside the transport.
+
+### Codec `Serde` rule
+
+The raw-model `Serde` classes follow one uniform rule:
 
 > **The codec never allocates and never releases the buffer. Allocation and release are the
 > transport's job.**
@@ -35,24 +43,50 @@ buffer's default byte order.
 ```
   encode path (outbound)                      decode path (inbound)
   ─────────────────────                       ─────────────────────
-  transport allocates ByteBuf                 transport receives bytes, frames on 0x68 + length
+  facade frames Apdu -> ByteBuf via            decoder frames on 0x68 + length, emits one
+  ApduFramer.encode(apdu, profile, alloc)      whole-frame ByteBuf via in.readRetainedSlice(...)
         │                                            │
-  Apdu.Serde.encode(apdu, profile, buf)        Apdu.Serde.decode(profile, buf)
-        │  (writes; never releases)                  │  (reads; never releases)
-  transport writes buf to channel,             decoder slices one frame with a
-  Netty releases it after the write            non-retained in.readSlice(...); Netty's
-                                               ByteToMessageDecoder owns and releases
-                                               the cumulative inbound buffer
+  transport.send(byteBuf)                      TransportListener.onFrame(byteBuf)
+        │  (transport writes-and-flushes,            │  (transport owns; facade deframes
+        │   then releases)                           │   synchronously via ApduFramer.decode)
+  raw ByteBuf write to channel                 InboundFrameHandler auto-releases the slice
+                                               after onFrame returns
 ```
 
-In `iec104-transport-tcp`, `Iec104FrameEncoder` allocates (or is handed) the outbound buffer, calls
-`encode`, and lets Netty release it after the channel write; `Iec104FrameDecoder` performs the
-length-field framing on the `0x68` start octet and length octet, slices exactly one frame with a
-non-retained `in.readSlice(frameLength)` (no `retain`/`release`), and calls `decode` on that slice to
-produce an `Apdu`. Netty's `ByteToMessageDecoder` owns the cumulative inbound buffer and releases it;
-the slice is just a view into it. Because the codecs do not release, the transport's reference counting
-stays correct and there is no double-free or use-after-free across the boundary. A caller using the
-high-level facade never sees a `ByteBuf` at all — it is gone by the time an `Apdu` or `Asdu` exists.
+In `iec60870-transport-tcp`, framing is pure octet handling — no `Apdu` is parsed there. On the
+inbound path, `Iec104FrameDecoder` performs the length-field framing on the `0x68` start octet and
+length octet, slices exactly one whole frame with `in.readRetainedSlice(frameLength)` (a slice with
+its own `+1` reference count), and emits that `ByteBuf` downstream; the terminal
+`InboundFrameHandler` is a `SimpleChannelInboundHandler<ByteBuf>` with auto-release on, so it
+releases the slice once the listener's `onFrame` returns — balancing the retain. On the outbound
+path there is no encoder handler: the protocol layer above the SPI frames each `Apdu` into a complete
+length-delimited `ByteBuf` (via `ApduFramer.encode`) and the transport writes-and-flushes that buffer
+raw, with Netty releasing it after the write.
+
+### Octet transport SPI ownership
+
+The `ByteBuf` that crosses the transport SPI is reference-counted, and ownership transfers in a
+single uniform direction at each call:
+
+- **Inbound** — `TransportListener.onFrame(ByteBuf)`: the transport **owns** the frame. The listener
+  must decode it synchronously within the call and must **not** retain it past the call or release
+  it. This mirrors Netty's `SimpleChannelInboundHandler`, which auto-releases the message after the
+  callback returns.
+- **Outbound** — `ClientTransport.send(ByteBuf)` / `ServerTransportConnection.send(ByteBuf)`: the
+  caller allocates the frame; the transport writes-and-flushes it and releases it. The caller must
+  **not** release it after calling `send`.
+
+Because the codecs do not release and the SPI transfers ownership cleanly in one direction per call,
+reference counting stays correct and there is no double-free or use-after-free across the boundary. A
+caller using the high-level facade never sees a `ByteBuf` at all — the facade does the framing and
+deframing, so by the time an `Apdu` or `Asdu` exists the buffer is gone. (Netty PARANOID leak
+detection is enabled in the transport-tcp and cross-module test scopes so any missed release surfaces
+loudly as a `LEAK:` log during the build.)
+
+Client transport lifecycle has one extra distinction: `disconnect()` is an intentional shutdown that
+may stop reconnection, while `closeConnection()` closes only the current connection. The cs104
+binding uses that narrower close when a malformed inbound frame cannot be decoded, so a persistent
+TCP client can drop the bad socket and reconnect without the core SPI exposing Netty channel types.
 
 ## Threading and callback serialization
 
@@ -61,9 +95,10 @@ threading contract so application code never has to reason about transport I/O t
 
 ### The layers and their threads
 
-- **Transport I/O threads.** A `TransportListener` (`onApdu`, `onConnectionLost`) and the transport
+- **Transport I/O threads.** A `TransportListener` (`onFrame`, `onConnectionLost`) and the transport
   lifecycle stages may run on a Netty I/O thread. These callbacks must return promptly and must not
-  block — the transport interfaces document this explicitly.
+  block — the transport interfaces document this explicitly. `onFrame` additionally must decode its
+  frame `ByteBuf` synchronously without retaining it (the transport owns and releases the buffer).
 - **The `ApciSession`.** All its state is guarded by a single internal `ReentrantLock`; its timer
   callbacks (scheduled on an injected `ScheduledExecutorService`) take the same lock. A caller may
   invoke any session method from any thread. Critically, the session invokes its `Output` and
@@ -78,7 +113,7 @@ threading contract so application code never has to reason about transport I/O t
 
 ### Serialization guarantees
 
-Event delivery is **serial**. A subscriber to `Iec104Client.events()` or `Iec104Server.events()`
+Event delivery is **serial**. A subscriber to `Iec60870Client.events()` or `Iec60870Server.events()`
 never observes two events concurrently; events arrive in order on the callback executor. The
 configuration docs note that the executor should preserve submission order — a single-threaded
 executor is the simplest choice that does. On the server, `ServerHandler` callbacks for a single
@@ -97,7 +132,9 @@ The practical rule for application code:
 
 | Resource | Owner | Rule |
 |---|---|---|
-| Outbound/inbound `ByteBuf` | Transport (`iec104-transport-tcp`) | Allocates and releases; codecs only read/write |
+| Inbound frame `ByteBuf` (`onFrame`) | Transport (`iec60870-transport-tcp`) | Transport owns; listener decodes synchronously, never retains or releases |
+| Outbound frame `ByteBuf` (`send`) | Caller allocates, transport releases | Caller frames via `ApduFramer.encode`; transport writes-and-flushes then releases; caller never releases after `send` |
+| Codec `Serde` `ByteBuf` | Caller of the `Serde` | Codec only reads/writes; never allocates or releases |
 | One connection's protocol state | `ApciSession` | Single internal lock; callbacks run under it, must not block |
 | Application callback thread | `callbackExecutor` (client/server config) | Serial event delivery; safe to block here |
 | Blocking-call completion | `callbackExecutor` | Blocking facade methods complete on this executor |

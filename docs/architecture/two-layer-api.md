@@ -7,7 +7,7 @@ never hides it.
 ## The raw protocol layer
 
 The raw layer is a faithful, immutable model of the wire. Its center is the `Asdu` record in
-`com.digitalpetri.iec104.asdu`:
+`com.digitalpetri.iec60870.asdu`:
 
 ```java
 public record Asdu(
@@ -27,7 +27,7 @@ The supporting types:
   positive/negative (`negative`) bits of the cause octet are modeled separately on `Asdu`, not inside
   `Cause`.
 - **`InformationObject`** — a sealed-by-convention interface (`address()` only) implemented by one
-  record per supported TypeID in `com.digitalpetri.iec104.asdu.object`. Examples:
+  record per supported TypeID in `com.digitalpetri.iec60870.asdu.object`. Examples:
   `SinglePointInformation`, `MeasuredValueScaledWithCp56Time`, `SingleCommand`,
   `InterrogationCommand`. Each carries exactly the fields that follow the information object address
   on the wire.
@@ -45,6 +45,12 @@ handles the full data unit identifier and dispatches to a per-type `InformationO
 elements; `InformationObjectCodec` implementations only encode/decode the elements *after* the IOA,
 because `Asdu.Serde` frames the IOA centrally. The codecs are `ByteBuf`-based and never allocate or
 release the buffer — see [buffers-and-threading.md](buffers-and-threading.md).
+
+Below the raw layer sits the **octet transport SPI** (`.transport`): `ClientTransport.send(ByteBuf)`
+and `TransportListener.onFrame(ByteBuf)` exchange one complete, length-delimited frame each. The
+`Apdu`↔`ByteBuf` translation (`ApduFramer`, built on `Apdu.Serde`) lives *above* this SPI, so the SPI
+itself is protocol-agnostic and reusable. A caller of the high-level facade never sees either an
+`Apdu` or a `ByteBuf` — the facade does the framing and deframing.
 
 A caller rarely calls `Serde` directly. The escape hatch into the raw layer is on the high-level
 client and server:
@@ -64,12 +70,21 @@ The facade turns the wire model into a domain API. It correlates requests with r
 command procedures, projects monitor objects onto point values, and delivers everything serially on a
 callback executor.
 
+The high-level layer lives in its own module, `iec60870-application`, which depends on
+`iec60870-core` only and carries **no Netty**. The facades speak purely in terms of `Asdu` and the
+neutral `Session` SPI: a `DefaultIec60870Client` is built around an injected `Session`, and a
+`DefaultIec60870Server` around a per-connection session factory. The protocol-specific session (a
+104 `ApciSession`) and its `Apdu`/`ByteBuf` framing are assembled outside the facade — by
+`Cs104Binding` in `iec60870-cs104`, which the `TcpIec104Client`/`TcpIec104Server` builders invoke —
+so the high-level layer itself never names a wire frame. See
+[modules-and-dependencies.md](modules-and-dependencies.md).
+
 ### Client
 
-`Iec104Client` (interface; `DefaultIec104Client` is the implementation) drives one connection:
+`Iec60870Client` (interface; `DefaultIec60870Client` is the implementation) drives one connection:
 
 ```java
-public interface Iec104Client extends AutoCloseable {
+public interface Iec60870Client extends AutoCloseable {
   void connect();                                   // + connectAsync()
   void startDataTransfer(); void stopDataTransfer();// + *Async()
   Flow.Publisher<ClientEvent> events();
@@ -129,7 +144,7 @@ switch (event) {
 
 ### Server
 
-`Iec104Server` (interface; `DefaultIec104Server` is the implementation) is the controlled station. It
+`Iec60870Server` (interface; `DefaultIec60870Server` is the implementation) is the controlled station. It
 hosts `Station`s, answers requests from a per-station value image, and spontaneously publishes
 values:
 
@@ -187,8 +202,8 @@ the values.
 
 | Need | Use |
 |---|---|
-| Read points, issue standard commands, interrogate | High-level: `Iec104Client` facade |
-| Host an outstation with a value image | High-level: `Iec104Server` + `Station` |
+| Read points, issue standard commands, interrogate | High-level: `Iec60870Client` facade |
+| Host an outstation with a value image | High-level: `Iec60870Server` + `Station` |
 | Per-point values with quality and timestamps | `PointValue<T>` and `ClientEvent.PointUpdated` |
 | Conformance / exact wire control of a modeled type | Raw: build `Asdu`, `client.send(asdu)` / `events()` |
 | Receiving an unmodeled or unsupported type | Raw: `ClientEvent.AsduReceived` / `ServerHandler.onRawAsdu` |

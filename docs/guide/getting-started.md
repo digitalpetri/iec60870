@@ -3,8 +3,8 @@
 Install the library, learn the two-layer mental model, then run a controlled station and a
 controlling station end to end.
 
-*A [controlling station](reference/glossary.md) (master) is an `Iec104Client`; a
-[controlled station](reference/glossary.md) (outstation, or RTU) is an `Iec104Server`. This guide
+*A [controlling station](reference/glossary.md) (master) is an `Iec60870Client`; a
+[controlled station](reference/glossary.md) (outstation, or RTU) is an `Iec60870Server`. This guide
 uses "client" for the master and "server" for the outstation throughout.*
 
 You are in the [user guide](README.md). This is the tutorial: read it first, then branch to the
@@ -12,22 +12,24 @@ You are in the [user guide](README.md). This is the tutorial: read it first, the
 
 ## Install
 
-Declare both modules: `iec104-core` (the Netty-free public API — the protocol model and the
-`Iec104Client` / `Iec104Server` APIs) and `iec104-transport-tcp` (the Netty-backed TCP/TLS transport
-and the `TcpIec104Client` / `TcpIec104Server` builders). The transport module pulls in `iec104-core`
-transitively, but your code uses types from both, so declare both directly.
+Declare both modules: `iec60870-core` (the Netty-free protocol model and SPIs — `Asdu`, the addresses,
+and the `Session`/transport interfaces) and `iec60870-transport-tcp` (the Netty-backed TCP/TLS transport
+and the `TcpIec104Client` / `TcpIec104Server` builders). The transport module transitively pulls in
+`iec60870-core` and `iec60870-application` — the module that owns the `Iec60870Client` / `Iec60870Server`
+facades — so the facade types are on your classpath. Your code uses types from `iec60870-core` and
+`iec60870-transport-tcp` directly, so declare both.
 
 Maven:
 
 ```xml
 <dependency>
-  <groupId>com.digitalpetri.iec104</groupId>
-  <artifactId>iec104-core</artifactId>
+  <groupId>com.digitalpetri.iec60870</groupId>
+  <artifactId>iec60870-core</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-  <groupId>com.digitalpetri.iec104</groupId>
-  <artifactId>iec104-transport-tcp</artifactId>
+  <groupId>com.digitalpetri.iec60870</groupId>
+  <artifactId>iec60870-transport-tcp</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -35,8 +37,8 @@ Maven:
 Gradle (Kotlin DSL):
 
 ```kotlin
-implementation("com.digitalpetri.iec104:iec104-core:0.1.0-SNAPSHOT")
-implementation("com.digitalpetri.iec104:iec104-transport-tcp:0.1.0-SNAPSHOT")
+implementation("com.digitalpetri.iec60870:iec60870-core:0.1.0-SNAPSHOT")
+implementation("com.digitalpetri.iec60870:iec60870-transport-tcp:0.1.0-SNAPSHOT")
 ```
 
 The library targets **Java 17**.
@@ -47,7 +49,7 @@ The library targets **Java 17**.
 > coordinate above.
 
 > **mise is for building this repository, not for consuming the library.** Contributors building the
-> IEC 104 repository itself use [`mise`](https://mise.jdx.dev/) to get the pinned Java 17 + Maven
+> IEC 60870 repository itself use [`mise`](https://mise.jdx.dev/) to get the pinned Java 17 + Maven
 > toolchain (`mise install`, then `mise exec -- mvn …`), and the example run commands below use it
 > because they run the in-repo examples. As a downstream consumer you only need Java 17, your own
 > build tool, and the Maven coordinate above — but until the artifact is published, you must first
@@ -60,9 +62,9 @@ Three ideas carry the whole library. Internalize them before the code.
 
 ### Two layers, one connection
 
-The high-level facade — `Iec104Client` / `Iec104Server`, points, commands, events — sits on a raw
-ASDU layer: `com.digitalpetri.iec104.asdu.Asdu`, `AsduType`, `Cause`,
-`com.digitalpetri.iec104.asdu.InformationObject` records, and a co-located `Serde` for each type. The
+The high-level facade — `Iec60870Client` / `Iec60870Server`, points, commands, events — sits on a raw
+ASDU layer: `com.digitalpetri.iec60870.asdu.Asdu`, `AsduType`, `Cause`,
+`com.digitalpetri.iec60870.asdu.InformationObject` records, and a co-located `Serde` for each type. The
 facade never hides that layer. `client.send(Asdu)` and `client.events()` on the client, and
 `ServerContext.send(Asdu)` and `ServerHandler.onRawAsdu(...)` on the server, are an always-present
 escape hatch for [TypeIDs](reference/coverage-matrix.md) the facade does not model.
@@ -104,13 +106,13 @@ Full story → [buffers-and-threading.md](../architecture/buffers-and-threading.
 ## Hello, server
 
 > **These Hello sections are an annotated reading of the runnable
-> [`ServerExample`](../../iec104-examples/README.md) / [`ClientExample`](../../iec104-examples/README.md),
+> [`ServerExample`](../../iec60870-examples/README.md) / [`ClientExample`](../../iec60870-examples/README.md),
 > not separate code you build here.** They walk a trimmed three-point excerpt so the moving parts are
 > easy to see; [Run it](#run-it) executes those example files directly. That is why the transcript
 > there reports **8** points (the example hosts one of every type) rather than the **3** shown below.
 
 The server is a controlled station hosting three points on
-[Common Address (CA)](reference/glossary.md) `1` (`com.digitalpetri.iec104.address.CommonAddress`):
+[Common Address (CA)](reference/glossary.md) `1` (`com.digitalpetri.iec60870.address.CommonAddress`):
 
 | Point | Address (CA, IOA) | `PointType` | Capabilities |
 |---|---|---|---|
@@ -119,7 +121,7 @@ The server is a controlled station hosting three points on
 | `switchPoint` | `1, 300` | `SINGLE_POINT` | `REPORTED, COMMANDABLE` |
 
 This is a deliberately trimmed mirror of the runnable
-[`ServerExample`](../../iec104-examples/README.md), which hosts one point of *every* type. The three
+[`ServerExample`](../../iec60870-examples/README.md), which hosts one point of *every* type. The three
 addresses match the example so the client section and the "Run it" transcript line up. For how to map
 a real-world signal to a `PointType`, see [Choosing a point type](reference/choosing-a-point-type.md).
 
@@ -127,13 +129,13 @@ Present the addresses as constants — in a real `main` they would be `static fi
 `ServerExample` — so the handler below can reference `switchPoint`:
 
 ```java
-import com.digitalpetri.iec104.address.CommonAddress;
-import com.digitalpetri.iec104.address.PointAddress;
-import com.digitalpetri.iec104.point.PointCapability;
-import com.digitalpetri.iec104.point.PointType;
-import com.digitalpetri.iec104.point.PointValue;
-import com.digitalpetri.iec104.server.PointDefinition;
-import com.digitalpetri.iec104.server.Station;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.PointAddress;
+import com.digitalpetri.iec60870.point.PointCapability;
+import com.digitalpetri.iec60870.point.PointType;
+import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.server.PointDefinition;
+import com.digitalpetri.iec60870.server.Station;
 
 CommonAddress station = CommonAddress.of(1);
 PointAddress status = PointAddress.of(1, 100);       // single-point status
@@ -141,7 +143,7 @@ PointAddress measurement = PointAddress.of(1, 150);  // scaled measured value
 PointAddress switchPoint = PointAddress.of(1, 300);  // commandable single point
 ```
 
-Build the `com.digitalpetri.iec104.server.Station`. Each point is added with `.point(...)`, and the
+Build the `com.digitalpetri.iec60870.server.Station`. Each point is added with `.point(...)`, and the
 interrogation-group assignment with `.group(...)` references a point that has already been added. A
 point's common address must equal the station's.
 
@@ -163,7 +165,7 @@ Station controlledStation =
         .build();
 ```
 
-Plug in a `com.digitalpetri.iec104.server.ServerHandler` that accepts the single command on
+Plug in a `com.digitalpetri.iec60870.server.ServerHandler` that accepts the single command on
 `switchPoint` and updates the station image, so the controlling station receives the new value as
 return information. `ServerHandler` is a default-method interface, so override only `onCommand`; all
 other operations fall through to the default outstation behavior, which answers interrogations and
@@ -171,12 +173,12 @@ reads from the station image. (The default `onCommand` itself rejects with
 `UNKNOWN_INFORMATION_OBJECT_ADDRESS`, so handling commands means overriding it.)
 
 ```java
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.asdu.object.SingleCommand;
-import com.digitalpetri.iec104.server.CommandDecision;
-import com.digitalpetri.iec104.server.CommandRequest;
-import com.digitalpetri.iec104.server.ServerContext;
-import com.digitalpetri.iec104.server.ServerHandler;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.asdu.object.SingleCommand;
+import com.digitalpetri.iec60870.server.CommandDecision;
+import com.digitalpetri.iec60870.server.CommandRequest;
+import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerHandler;
 
 ServerHandler handler =
     new ServerHandler() {
@@ -191,15 +193,15 @@ ServerHandler handler =
     };
 ```
 
-Build and start the `com.digitalpetri.iec104.transport.tcp.TcpIec104Server`. `bindAddress` defaults
-to `"0.0.0.0"` and `port` to `2404` (the standard IEC 104 port); `build()` returns the core
-`com.digitalpetri.iec104.server.Iec104Server` interface.
+Build and start the `com.digitalpetri.iec60870.transport.tcp.TcpIec104Server`. `bindAddress` defaults
+to `"0.0.0.0"` and `port` to `2404` (the standard IEC 104 port); `build()` returns the
+`com.digitalpetri.iec60870.server.Iec60870Server` interface (an `iec60870-application` type).
 
 ```java
-import com.digitalpetri.iec104.server.Iec104Server;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.server.Iec60870Server;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
 
-Iec104Server server =
+Iec60870Server server =
     TcpIec104Server.builder()
         .bindAddress("0.0.0.0")
         .port(2404)
@@ -210,7 +212,7 @@ Iec104Server server =
 server.start();   // binds and begins accepting connections
 ```
 
-`start()` binds and begins accepting connections; it throws if the bind fails. `Iec104Server` is
+`start()` binds and begins accepting connections; it throws if the bind fails. `Iec60870Server` is
 `AutoCloseable`, so call `server.close()` (or use try-with-resources) to unbind and close
 connections when you are done.
 
@@ -229,17 +231,17 @@ does not match the point's `PointType`. For periodic and spontaneous publishing 
 ## Hello, client
 
 The client is a controlling station that targets the same CA and the same point addresses as the
-server above. Build the `com.digitalpetri.iec104.transport.tcp.TcpIec104Client`, then **subscribe a
-`Flow.Subscriber<ClientEvent>` before connecting** so no early events are missed. `Iec104Client` is
+server above. Build the `com.digitalpetri.iec60870.transport.tcp.TcpIec104Client`, then **subscribe a
+`Flow.Subscriber<ClientEvent>` before connecting** so no early events are missed. `Iec60870Client` is
 `AutoCloseable`, so build it in a try-with-resources.
 
 ```java
-import com.digitalpetri.iec104.client.ClientEvent;
-import com.digitalpetri.iec104.client.Iec104Client;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
 import java.util.concurrent.Flow;
 
-try (Iec104Client client =
+try (Iec60870Client client =
     TcpIec104Client.builder()
         .host("127.0.0.1")
         .port(2404)
@@ -260,12 +262,12 @@ the call returns. To gate STARTDT yourself, set `startDataTransferOnConnect(fals
 `client.startDataTransfer()` after `connect()`.
 
 Run the requests inside the try block. First a [general interrogation](reference/glossary.md) of CA
-`1`: `interrogate(...)` returns an `com.digitalpetri.iec104.client.InterrogationResult`, and
+`1`: `interrogate(...)` returns an `com.digitalpetri.iec60870.client.InterrogationResult`, and
 `pointValues()` projects the reported monitor objects onto domain values.
 
 ```java
-import com.digitalpetri.iec104.client.CommandResult;
-import com.digitalpetri.iec104.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.CommandResult;
+import com.digitalpetri.iec60870.client.InterrogationResult;
 import java.time.Instant;
 
 InterrogationResult snapshot = client.interrogate(station);   // general interrogation of CA 1
@@ -283,11 +285,11 @@ client.synchronizeClock(station, Instant.now());
 ```
 
 `commands().single(switchPoint, true)` is a [direct-execute](reference/glossary.md) helper that
-returns a `com.digitalpetri.iec104.client.CommandResult`. A non-positive result is a **protocol
+returns a `com.digitalpetri.iec60870.client.CommandResult`. A non-positive result is a **protocol
 rejection, not an exception**: the controlled station refused the command, and
 `command.positive()` is `false` with the reason in `command.cause()`. By contrast,
 transport/session failures — a timeout, a dropped connection, a negative confirmation on a request —
-throw `com.digitalpetri.iec104.*` exceptions (`ProtocolTimeoutException`, `ConnectionClosedException`,
+throw `com.digitalpetri.iec60870.*` exceptions (`ProtocolTimeoutException`, `ConnectionClosedException`,
 `NegativeConfirmationException`). Only the command-level rejection is encoded in the result. See the
 [error model](reference/errors.md) for the full split. (The example does not wrap these in a
 try/catch; neither does the snippet above.)
@@ -328,19 +330,19 @@ rules, see [Handle events](how-to/handle-events.md).
 
 ## Run it
 
-This runs the [`ServerExample`](../../iec104-examples/README.md) /
-[`ClientExample`](../../iec104-examples/README.md) files that the Hello sections excerpt — not the
+This runs the [`ServerExample`](../../iec60870-examples/README.md) /
+[`ClientExample`](../../iec60870-examples/README.md) files that the Hello sections excerpt — not the
 trimmed three-point snippets above. Because the example server hosts one point of *every* type, the
 transcript below reports **8** points rather than the **3** in the walkthrough. Build the examples
 module first:
 
 ```bash
-mise exec -- mvn -q -pl iec104-examples -am compile
+mise exec -- mvn -q -pl iec60870-examples -am compile
 ```
 
-[`ServerExample`](../../iec104-examples/README.md) hosts one point of *every* type — a superset of
+[`ServerExample`](../../iec60870-examples/README.md) hosts one point of *every* type — a superset of
 the three-point server above — and republishes a fresh value for every point every two seconds.
-[`ClientExample`](../../iec104-examples/README.md) runs the same operations as the client section:
+[`ClientExample`](../../iec60870-examples/README.md) runs the same operations as the client section:
 connect (with STARTDT), general interrogation, a single command, clock sync, then it lingers for
 spontaneous updates.
 
@@ -348,12 +350,12 @@ Start the server in one shell and the client in another:
 
 ```bash
 # shell 1 — controlled station
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.ServerExample
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.ServerExample
 
 # shell 2 — controlling station
-mise exec -- mvn -q -pl iec104-examples exec:java \
-    -Dexec.mainClass=com.digitalpetri.iec104.examples.ClientExample
+mise exec -- mvn -q -pl iec60870-examples exec:java \
+    -Dexec.mainClass=com.digitalpetri.iec60870.examples.ClientExample
 ```
 
 The server shell prints (the spontaneous "tick" lines repeat every two seconds):
@@ -403,7 +405,7 @@ an ephemeral loopback port, runs the client logic, and asserts that interrogatio
 clock sync all succeed:
 
 ```bash
-mise exec -- mvn -q -pl iec104-examples -am test
+mise exec -- mvn -q -pl iec60870-examples -am test
 ```
 
 ## Where to next
@@ -427,7 +429,7 @@ You can now do real work on the high-level layer. Open the page that matches you
 Reference pages you will return to: the [coverage matrix](reference/coverage-matrix.md), the
 [glossary](reference/glossary.md), [choosing a point type](reference/choosing-a-point-type.md), the
 [timers & window](reference/timers-and-window.md), and the [error model](reference/errors.md). The
-runnable [examples](../../iec104-examples/README.md) are the executable companion to every page, and
+runnable [examples](../../iec60870-examples/README.md) are the executable companion to every page, and
 the project [README](../../README.md) has the coordinates and the one-paragraph "what is this."
 
 Power users who want the as-built internals — the wire model, the `ApciSession` engine, buffer

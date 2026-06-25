@@ -3,8 +3,8 @@
 A server is a [controlled station](../reference/glossary.md): it hosts one or more
 [`Station`](../reference/glossary.md)s, answers requests from a per-station *value image*, and
 spontaneously publishes monitored values to connected masters. You build one with the
-`TcpIec104Server` builder, which returns a `com.digitalpetri.iec104.server.Iec104Server`. Every
-snippet on this page maps to the runnable [`ServerExample`](../../../iec104-examples/README.md),
+`TcpIec104Server` builder, which returns a `com.digitalpetri.iec60870.server.Iec60870Server`. Every
+snippet on this page maps to the runnable [`ServerExample`](../../../iec60870-examples/README.md),
 the canonical implementation to copy from. This page is the other end of the wire from a
 [client](./connect-and-interrogate.md): the client (controlling station / master) drives the
 connection; the server (controlled station / slave) hosts the data and accepts commands.
@@ -25,27 +25,27 @@ For the signal → `PointType` mapping (and the value/quality type each carries)
 ## Build and start the server
 
 Build the server with `TcpIec104Server.builder()`, add at least one station, optionally set a
-handler, then `start()` it. The returned `Iec104Server` is `AutoCloseable`, so use
+handler, then `start()` it. The returned `Iec60870Server` is `AutoCloseable`, so use
 try-with-resources or call `close()` when you are done.
 
 ```java
-import com.digitalpetri.iec104.server.Iec104Server;
-import com.digitalpetri.iec104.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.server.Iec60870Server;
+import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
 
-Iec104Server server =
+Iec60870Server server =
     TcpIec104Server.builder()
         .bindAddress("0.0.0.0")   // default; listen on all interfaces
         .port(2404)               // default IEC 104 port
         .addStation(station)      // built below
         .handler(handler)         // optional; see "Handle incoming commands"
-        .build();                 // returns com.digitalpetri.iec104.server.Iec104Server
+        .build();                 // returns com.digitalpetri.iec60870.server.Iec60870Server
 
-server.start();                   // bind + accept; throws Iec104Exception on bind failure
+server.start();                   // bind + accept; throws Iec60870Exception on bind failure
 // ... run ...
 server.close();                   // stop: close connections, unbind; never throws checked
 ```
 
-`start()` throws `com.digitalpetri.iec104.Iec104Exception` if the transport fails to bind (for
+`start()` throws `com.digitalpetri.iec60870.Iec60870Exception` if the transport fails to bind (for
 example, the port is already in use); see the [error model](../reference/errors.md). `close()` is
 equivalent to `stop()` but never throws a checked exception, so it composes with try-with-resources.
 
@@ -83,13 +83,13 @@ A point's address is a [`PointAddress`](../reference/glossary.md) — a `CommonA
 equal the station's common address, and IOAs within a station must be unique.
 
 ```java
-import com.digitalpetri.iec104.address.CommonAddress;
-import com.digitalpetri.iec104.address.PointAddress;
-import com.digitalpetri.iec104.point.PointCapability;
-import com.digitalpetri.iec104.point.PointType;
-import com.digitalpetri.iec104.point.PointValue;
-import com.digitalpetri.iec104.server.PointDefinition;
-import com.digitalpetri.iec104.server.Station;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.PointAddress;
+import com.digitalpetri.iec60870.point.PointCapability;
+import com.digitalpetri.iec60870.point.PointType;
+import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.server.PointDefinition;
+import com.digitalpetri.iec60870.server.Station;
 
 CommonAddress ca = CommonAddress.of(1);
 
@@ -124,7 +124,7 @@ for which `PointType` matches your signal and the value/quality type it carries,
 [glossary](../reference/glossary.md) for common address, IOA, and interrogation group.
 
 This page's station hosts a deliberately small set of points. For a station that hosts one point of
-*every* monitor type, copy [`ServerExample`](../../../iec104-examples/README.md) (see
+*every* monitor type, copy [`ServerExample`](../../../iec60870-examples/README.md) (see
 [From the example](#from-the-example)).
 
 ### Capabilities
@@ -143,7 +143,7 @@ rejecting each command (see [Handle incoming commands](#handle-incoming-commands
 
 ### The catalog (optional, descriptive only)
 
-The `com.digitalpetri.iec104.catalog` package (`PointCatalog`, `CatalogEntry`) holds *descriptive
+The `com.digitalpetri.iec60870.catalog` package (`PointCatalog`, `CatalogEntry`) holds *descriptive
 metadata* — browse names, display names, engineering units — **not** the live value image. It is
 consumed primarily on the **client** side (attached via `ClientConfig.Builder.pointCatalog(...)`) to
 label received values. A server author defines live behavior with `Station` and `PointDefinition`;
@@ -166,8 +166,8 @@ Construct a `PointValue<T>` with its static factories, and refine it with `withQ
 `withTimestamp(...)`.
 
 ```java
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.point.Quality;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.point.Quality;
 
 // Update the image and report to every started connection:
 server.publish(breakerStatus, PointValue.single(true), Cause.SPONTANEOUS);
@@ -200,13 +200,13 @@ Override `ServerHandler.onCommand(ServerContext, CommandRequest)`. Pattern-match
 interface whose methods all have defaults, so implement only what you customize.
 
 ```java
-import com.digitalpetri.iec104.asdu.Cause;
-import com.digitalpetri.iec104.asdu.object.SingleCommand;
-import com.digitalpetri.iec104.point.PointValue;
-import com.digitalpetri.iec104.server.CommandDecision;
-import com.digitalpetri.iec104.server.CommandRequest;
-import com.digitalpetri.iec104.server.ServerContext;
-import com.digitalpetri.iec104.server.ServerHandler;
+import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.asdu.object.SingleCommand;
+import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.server.CommandDecision;
+import com.digitalpetri.iec60870.server.CommandRequest;
+import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerHandler;
 
 ServerHandler handler = new ServerHandler() {
   @Override
@@ -276,7 +276,7 @@ scanner.scheduleAtFixedRate(
 // Remember to shut the scanner down alongside the server.
 ```
 
-[`ServerExample`](../../../iec104-examples/README.md) uses exactly this pattern (a single-thread
+[`ServerExample`](../../../iec60870-examples/README.md) uses exactly this pattern (a single-thread
 scheduled executor on a two-second cycle).
 
 ### Which cause to use
@@ -296,7 +296,7 @@ Add as many `PointDefinition`s as you need to one `Station`, and add as many `St
 to the server with repeated `.addStation(...)` — **each station must use a distinct common address.**
 
 ```java
-Iec104Server server =
+Iec60870Server server =
     TcpIec104Server.builder()
         .addStation(stationA)   // CommonAddress.of(1)
         .addStation(stationB)   // CommonAddress.of(2) — distinct CA
@@ -323,7 +323,7 @@ connection lifecycle and request traffic. `ServerEvent` is a sealed type whose v
 `AsduReceived`, and `ConnectionClosed`.
 
 ```java
-import com.digitalpetri.iec104.server.ServerEvent;
+import com.digitalpetri.iec60870.server.ServerEvent;
 // server.events() is a java.util.concurrent.Flow.Publisher<ServerEvent>.
 // Subscribe a Flow.Subscriber before start() to catch early events; events arrive serially.
 ```
@@ -333,8 +333,8 @@ mechanics, the threading rules, and what fires when — lives in [handle events]
 
 ## From the example
 
-[`ServerExample`](../../../iec104-examples/README.md)
-(`iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java`) is the
+[`ServerExample`](../../../iec60870-examples/README.md)
+(`iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java`) is the
 copy-from-able implementation of everything above. It hosts, on common address `1`:
 
 - one `REPORTED` point of every monitor `PointType` at IOAs `100`–`160` (single-point,
@@ -346,7 +346,7 @@ The seven monitor points belong to interrogation group `1` and the commandable p
 Its handler accepts the command on IOA `300` and writes the image with
 `CommandDecision.acceptAndUpdate`, so the master receives the new value as return information. A
 `ScheduledExecutorService` republishes a fresh value for every point every two seconds with
-`Cause.SPONTANEOUS`. Run it from the [examples README](../../../iec104-examples/README.md);
+`Cause.SPONTANEOUS`. Run it from the [examples README](../../../iec60870-examples/README.md);
 `ExampleInteropTest` drives a real client against it.
 
 ## See also

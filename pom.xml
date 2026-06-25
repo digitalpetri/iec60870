@@ -4,14 +4,14 @@
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.digitalpetri.iec104</groupId>
-  <artifactId>iec104-parent</artifactId>
+  <groupId>com.digitalpetri.iec60870</groupId>
+  <artifactId>iec60870-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
-  <name>IEC 104</name>
+  <name>IEC 60870</name>
   <description>IEC 60870-5-104 for Java</description>
-  <url>https://github.com/digitalpetri/iec104</url>
+  <url>https://github.com/digitalpetri/iec60870</url>
 
   <developers>
     <developer>
@@ -30,18 +30,21 @@
   </licenses>
 
   <scm>
-    <url>https://github.com/digitalpetri/iec104</url>
-    <connection>scm:git:git://github.com/digitalpetri/iec104.git</connection>
-    <developerConnection>scm:git:git@github.com:digitalpetri/iec104.git</developerConnection>
+    <url>https://github.com/digitalpetri/iec60870</url>
+    <connection>scm:git:git://github.com/digitalpetri/iec60870.git</connection>
+    <developerConnection>scm:git:git@github.com:digitalpetri/iec60870.git</developerConnection>
     <tag>HEAD</tag>
   </scm>
 
   <modules>
-    <module>iec104-core</module>
-    <module>iec104-transport-tcp</module>
-    <module>iec104-examples</module>
-    <module>iec104-tests</module>
-    <module>iec104-interop</module>
+    <module>iec60870-core</module>
+    <module>iec60870-test-support</module>
+    <module>iec60870-cs104</module>
+    <module>iec60870-application</module>
+    <module>iec60870-transport-tcp</module>
+    <module>iec60870-examples</module>
+    <module>iec60870-tests</module>
+    <module>iec60870-interop</module>
   </modules>
 
   <properties>

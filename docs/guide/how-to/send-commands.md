@@ -2,7 +2,7 @@
 
 Issue control-direction commands from a connected client and read whether the controlled station
 accepted or rejected them. This page assumes you already have a connected
-[`Iec104Client`](../../architecture/two-layer-api.md) — the
+[`Iec60870Client`](../../architecture/two-layer-api.md) — the
 [controlling station](../reference/glossary.md) (master). If you do not yet have one, start with
 [Getting Started](../getting-started.md) and the
 [Connect & interrogate](connect-and-interrogate.md) recipe, which cover connecting, starting data
@@ -41,21 +41,21 @@ The mental model is three small pieces:
 - a **`CommandResult`** carries the station's *answer* — accepted or rejected, plus the
   [cause of transmission](../reference/glossary.md) of the confirming ASDU.
 
-Every snippet below assumes an in-scope, connected `Iec104Client client` and these constants, matching
-the shipped [`ClientExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ClientExample.java)
-and [`ServerExample`](../../../iec104-examples/src/main/java/com/digitalpetri/iec104/examples/ServerExample.java):
+Every snippet below assumes an in-scope, connected `Iec60870Client client` and these constants, matching
+the shipped [`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
+and [`ServerExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java):
 
 ```java
-import com.digitalpetri.iec104.address.CommonAddress;
-import com.digitalpetri.iec104.address.PointAddress;
-import com.digitalpetri.iec104.asdu.element.DoubleCommandState;
-import com.digitalpetri.iec104.asdu.element.NormalizedValue;
-import com.digitalpetri.iec104.asdu.element.StepCommandState;
-import com.digitalpetri.iec104.client.Command;
-import com.digitalpetri.iec104.client.CommandMode;
-import com.digitalpetri.iec104.client.CommandResult;
-import com.digitalpetri.iec104.client.CommandService;
-import com.digitalpetri.iec104.client.Iec104Client;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.PointAddress;
+import com.digitalpetri.iec60870.asdu.element.DoubleCommandState;
+import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
+import com.digitalpetri.iec60870.asdu.element.StepCommandState;
+import com.digitalpetri.iec60870.client.Command;
+import com.digitalpetri.iec60870.client.CommandMode;
+import com.digitalpetri.iec60870.client.CommandResult;
+import com.digitalpetri.iec60870.client.CommandService;
+import com.digitalpetri.iec60870.client.Iec60870Client;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -307,5 +307,5 @@ client-side result makes sense.
 - [Glossary](../reference/glossary.md) — SBO, S/E, `QU`/`QL`, COT, activation confirmation.
 - [Two-layer API](../../architecture/two-layer-api.md) — how the high-level facade correlates a command
   with its confirmation.
-- [Examples README](../../../iec104-examples/README.md) — how to run `ClientExample` and
+- [Examples README](../../../iec60870-examples/README.md) — how to run `ClientExample` and
   `ServerExample`.

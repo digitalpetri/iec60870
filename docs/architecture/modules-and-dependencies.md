@@ -1,41 +1,84 @@
 # Modules and Dependencies
 
-The library is a Maven multi-module build under the `iec104-parent` POM. Two modules matter to a
-caller: `iec104-core` (the protocol and the high-level API) and `iec104-transport-tcp` (the Netty
-TCP/TLS transport). A third module, `iec104-tests`, holds cross-module integration tests.
+The library is a Maven multi-module build under the `iec60870-parent` POM. Four modules matter to a
+caller: `iec60870-core` (the protocol model and SPIs), `iec60870-cs104` (the 104 link/session
+engine), `iec60870-application` (the high-level `Iec60870Client`/`Iec60870Server` API, with no
+Netty), and `iec60870-transport-tcp` (the Netty TCP/TLS transport plus the builders that assemble a
+104 stack). A further module, `iec60870-tests`, holds cross-module integration tests, and an
+internal `iec60870-test-support` module holds the shared, test-only fixtures those suites reuse.
 
-## The core-vs-transport split
+## The core / cs104 / application / transport split
 
-`iec104-core` owns everything that is independent of how bytes reach the network:
+`iec60870-core` owns everything that is independent of how bytes reach the network, of the 104 link
+layer, and of the high-level facade:
 
-- the raw protocol model and codecs (`.asdu`, `.apci`, `.address`, `.asdu.element`, `.asdu.time`);
-- the APCI session engine (`com.digitalpetri.iec104.apci.ApciSession`) — the symmetric sequence /
-  window / timer state machine used by both client and server;
+- the raw protocol model and codecs (`.asdu`, `.address`, `.asdu.element`, `.asdu.time`);
+- the **`Session` SPI** (`.session`) — the protocol-neutral data-transfer lifecycle contract — but
+  **no** session engine: the concrete 104 `ApciSession` lives in `iec60870-cs104`;
+- the error model (package-root exceptions) and the configuration types (`ProtocolProfile`, the
+  neutral `SessionSettings` marker, the neutral `OutboundQueuePolicy`, `TlsOptions`);
+- the **octet transport SPI** (`.transport`) — `ClientTransport`, `ServerTransport`,
+  `ServerTransportConnection`, `TransportListener` — which the implementations drive but do not
+  implement. The SPI is shaped in **whole-frame `ByteBuf`s**: `send(ByteBuf)` and `onFrame(ByteBuf)`
+  exchange one complete, length-delimited frame each. Turning a frame into an `Apdu` (via
+  `ApduFramer`) happens above the SPI, so a future 101-over-TCP can reuse the same transport.
+  `ClientTransport.disconnect()` means intentional shutdown; `ClientTransport.closeConnection()`
+  closes only the current connection so a persistent transport can reconnect after a protocol
+  binding drops malformed input.
+
+`iec60870-cs104` owns the genuinely-104 link/session code (the package `.cs104`):
+
+- the APCI session engine `com.digitalpetri.iec60870.cs104.ApciSession` — the symmetric sequence /
+  window / timer state machine used by both roles — which `implements` the core `Session` SPI;
+- the `Apdu` / `ControlField` / `UFunction` model and the `Apdu.Serde` codec, plus the `ApduFramer`
+  `Apdu`↔`ByteBuf` bridge that the assembly layer uses to frame and deframe whole frames;
+- `ApciSettings`, the 104 `k`/`w` window and `t0`–`t3` timer parameters, which `implements` the
+  neutral `SessionSettings` marker from core;
+- `Cs104Binding`, the **assembly point** that wires an `ApciSession` to a core octet transport
+  handle (see below). It depends only on `cs104` + core + `netty-buffer` and imports nothing from
+  `transport-tcp` or `application`, so any octet transport — TCP today, a future serial transport —
+  can be bound to a 104 session through it.
+
+It depends on `iec60870-core` (and `netty-buffer` for the `ByteBuf` codec boundary). The dependency
+direction is one-way: core never references `cs104`, so the future 101 link layer can be added as a
+sibling module with no surgery on core.
+
+`iec60870-application` owns the high-level layer and carries **no Netty at all** (not even
+`ByteBuf`):
+
 - the high-level client and server *interfaces* and their default implementations
-  (`Iec104Client` / `DefaultIec104Client`, `Iec104Server` / `DefaultIec104Server`);
-- the point and catalog model (`.point`, `.catalog`), the error model (package-root exceptions),
-  and the configuration types (`ProtocolProfile`, `ApciSettings`, `TlsOptions`);
-- the **transport interfaces** (`.transport`) — `ClientTransport`, `ServerTransport`,
-  `ServerTransportConnection`, `TransportListener` — which the core implementations drive but do not
-  implement.
+  (`Iec60870Client` / `DefaultIec60870Client`, `Iec60870Server` / `DefaultIec60870Server`);
+- the point and catalog model (`.point`, `.catalog`), the command/station model, and the
+  configuration records (`ClientConfig`, `ServerConfig`).
 
-`iec104-transport-tcp` owns the Netty side:
+It depends on `iec60870-core` only and speaks purely in terms of `Asdu` + the `Session` SPI. The
+facades never construct an `ApciSession` or touch `Apdu`/`ByteBuf` framing; instead they accept an
+**injected `Session`** (client) or a **per-connection session factory** (server), so the
+protocol-specific session and its wire framing are assembled elsewhere. A `NoNettyInApplicationTest`
+guard fails the build if any `io.netty.*` token appears in the application's main sources.
+
+`iec60870-transport-tcp` owns the Netty side:
 
 - `NettyClientTransport` / `NettyServerTransport`, the implementations of the core transport
   interfaces;
-- the framing codec handlers `Iec104FrameDecoder` / `Iec104FrameEncoder`, which sit at the
-  `ByteBuf` boundary and call the core `Apdu.Serde`;
+- the framing handler `Iec104FrameDecoder`, which slices one whole-frame `ByteBuf` per complete
+  frame off the wire, and `InboundFrameHandler`, which forwards each frame to the `TransportListener`
+  (outbound is a raw `ByteBuf` write — there is no encoder handler);
 - TLS via Netty's `SslHandler`, and the client channel lifecycle via
   `com.digitalpetri.netty:netty-channel-fsm`;
 - the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server`, whose builders carry the
   transport knobs (`host`, `port`, `localBind`, `TlsOptions`, bootstrap/event-loop customization).
 
-A builder in the transport module constructs the Netty transport plus a `DefaultIec104Client` /
-`DefaultIec104Server`, and `build()` returns the **core interface** type:
+A builder in the transport module is the **104 assembly point**: it constructs the Netty transport,
+delegates the 104 session wiring to a `Cs104Binding` (in `cs104`), and hands the assembled `Session`
+(client) / session factory (server) to `new DefaultIec60870Client(...)` /
+`new DefaultIec60870Server(...)`. The builder itself contains no `new ApciSession(...)` and no direct
+`ApduFramer` call — that wiring lives entirely in `Cs104Binding`. `build()` then returns the
+**application interface** type:
 
 ```java
-// Returns com.digitalpetri.iec104.client.Iec104Client — a core type.
-try (Iec104Client client = TcpIec104Client.builder()
+// Returns com.digitalpetri.iec60870.client.Iec60870Client — an application type.
+try (Iec60870Client client = TcpIec104Client.builder()
         .host("127.0.0.1").port(2404)
         .startDataTransferOnConnect(true)
         .build()) {
@@ -46,51 +89,125 @@ try (Iec104Client client = TcpIec104Client.builder()
 
 This is a deliberate placement. The protocol methods on the returned object — `connect`,
 `startDataTransfer`, `interrogate`, `read`, `commands`, `events`, `synchronizeClock`, `send`,
-`close`, and the `*Async` variants — are all defined on the core `Iec104Client` interface. Only the
-*transport wiring* (host, port, TLS) lives on the transport-module builder, because the dependency
-rule below forbids transport wiring from appearing in core.
+`close`, and the `*Async` variants — are all defined on the application `Iec60870Client` interface.
+Only the *transport wiring* (host, port, TLS) lives in the transport-module builder; the 104 session
+assembly itself is delegated to `Cs104Binding` in `cs104`.
 
-A caller who already has a transport implementation can bypass the builders entirely and construct
-`new DefaultIec104Client(clientTransport, clientConfig)` directly; the high-level behavior is
-identical.
+### `Cs104Binding`: the 104 session assembly
+
+`com.digitalpetri.iec60870.cs104.Cs104Binding` is the single, reusable place the `Apdu`↔octet wiring
+lives. Given a core octet transport handle (a `ClientTransport`, or a `ServerTransportConnection` for
+one accepted server connection) plus an `ApciSettings`, a `ProtocolProfile`, a `ByteBufAllocator`
+(defaulting to an unpooled allocator), the facade's `Session.Events` sink, and the shared scheduler,
+it:
+
+- constructs an `ApciSession` whose `Output.send(Apdu)` runs `ApduFramer.encode(apdu, profile,
+  allocator)` then `octetTransport.send(ByteBuf)`;
+- registers a `TransportListener` whose `onFrame(ByteBuf)` runs `ApduFramer.decode(profile, frame)`
+  then `apciSession.onApdu(apdu)`;
+- routes a failed outbound send or a connection loss to `Session.Events.onConnectionLost`;
+- closes the underlying current connection when a malformed inbound frame fails during deframing,
+  using `ClientTransport.closeConnection()` for client sessions and
+  `ServerTransportConnection.close()` for server sessions;
+- performs the `(ApciSettings) sessionSettings` downcast — this is the one place that downcast lives.
+
+The `TcpIec104Client`/`TcpIec104Server` builders are the *only* types that name both the protocol
+(104) and the transport (TCP); they construct the `NettyClientTransport`/`NettyServerTransport`, then
+call `Cs104Binding.bindClient(...)` / `bindServer(...)` to produce the `Session` / session factory.
+Because `Cs104Binding` depends only on `cs104` + core + `netty-buffer`, the same binding would serve
+a 101-over-TCP builder (`Ft12LinkLayer` over `NettyClientTransport`/`NettyServerTransport`) or a
+serial builder unchanged.
+
+A caller who already has a transport and a `Session` can bypass the builders entirely and construct
+`new DefaultIec60870Client(clientTransport, clientConfig, sessionFactory)` directly; the high-level
+behavior is identical.
+
+## Future module slots (documented, not built)
+
+Two sibling slots are named here so the layering is clear, but **no code and no `<module>` entry
+exist for them in this effort**:
+
+- **`iec60870-cs101`** (`com.digitalpetri.iec60870.cs101`, → core). The IEC 60870-5-101 link layer:
+  an `Ft12LinkLayer` that `implements` the core `Session` SPI as a **peer of `ApciSession`** — not a
+  transport plugged under it. It would own FT1.2 framing and `LinkSettings` the way `cs104` owns
+  `Apdu`/`ApciSettings`, and would depend on core only.
+- **`iec60870-transport-serial`** (`com.digitalpetri.iec60870.transport.serial`). A `SerialOctetTransport`
+  that `implements` the core octet transport SPI over a serial port (e.g. jSerialComm). Its octet
+  classes depend on **core only** — the same octet-classes-stay-core-only rule `transport-tcp`
+  follows; only its convenience builders depend on `application` + `cs101` + core.
+
+The corresponding future builder names, mirroring `TcpIec104Client`/`TcpIec104Server`:
+
+- **`SerialIec101Client` / `SerialIec101Server`** — assemble `{Ft12LinkLayer(cs101) +
+  SerialOctetTransport(transport-serial)}`;
+- **`TcpIec101Client` / `TcpIec101Server`** (optional) — 101-over-TCP, assembling `{Ft12LinkLayer(cs101)
+  + NettyClientTransport/NettyServerTransport(transport-tcp)}`, proving `transport-tcp` is reused by
+  both protocols.
+
+These slots exist only as documentation; they add nothing to the build.
 
 ## Dependency rules (the boundary that keeps core transport-agnostic)
 
 The split is enforced by a strict rule about which types may cross which package boundary.
 
 **No Netty runtime type appears in core or in the high-level public API.** Concretely, the following
-must never appear in any `iec104-core` package:
+must never appear in any `iec60870-core` package:
 
 - `io.netty.channel.*` — `Channel`, `EventLoopGroup`, `ChannelHandler`, `ServerBootstrap`;
 - `io.netty.handler.*` — including `SslHandler` and the TLS engine wiring;
-- pooled or otherwise transport-owned `ByteBuf` in any high-level public API signature.
+- a `ByteBuf` in any *high-level* public API signature (`Iec60870Client`/`Iec60870Server`, the
+  event/command/point/catalog model).
 
-The single, *deliberate* exception is `netty-buffer`. The raw codec layer encodes and decodes through
-co-located `Serde` classes that operate on `io.netty.buffer.ByteBuf`, and core declares a direct
-`netty-buffer` dependency for exactly that reason. The `iec104-core` POM documents this in a comment:
+The single, *deliberate* exception is `netty-buffer`. `ByteBuf` is the sanctioned codec-boundary
+type: the raw codec layer encodes and decodes through co-located `Serde` classes that operate on
+`io.netty.buffer.ByteBuf`, **and** the octet transport SPI exchanges whole-frame `ByteBuf`s. Core
+declares a direct `netty-buffer` dependency for exactly that reason. The `iec60870-core` POM
+documents this in a comment:
 
 > Deliberate netty-buffer dependency: the raw codec layer encodes/decodes ASDUs through co-located
 > Serde classes that operate on Netty ByteBuf. ByteBuf is confined to the codec layer; it must not
 > appear in high-level client/server/model public API signatures, and no netty-channel/handler types
 > are permitted in core.
 
-So `ByteBuf` is allowed, but only inside the nested `Serde` classes of `.asdu`, `.apci`, `.address`,
-`.asdu.element`, and `.asdu.time` (for example `Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`,
-`CommonAddress.Serde`). It must not reach `Iec104Client`, `Iec104Server`, the event/command/point/
-catalog types, `ProtocolProfile`, or `ApciSettings`. Above the `Serde` boundary everything is an
-immutable Java object; the `ApciSession` itself never touches a `ByteBuf`.
+So `ByteBuf` is allowed inside the nested `Serde` classes of core's `.asdu`, `.address`,
+`.asdu.element`, and `.asdu.time` (for example `Asdu.Serde`, `CommonAddress.Serde`) and of cs104's
+`.cs104` (`Apdu.Serde`, `ControlField.Serde`), and on the `.transport` octet SPI (`send(ByteBuf)`,
+`onFrame(ByteBuf)`). It must not reach `Iec60870Client`, `Iec60870Server`, the
+event/command/point/catalog types, `ProtocolProfile`, or `ApciSettings`. Above those boundaries
+everything is an immutable Java object; the `ApciSession` itself never touches a `ByteBuf`.
 
-The transport interfaces in `.transport` are the formal seam. They are expressed entirely in core
-types — they exchange `Apdu` objects, `SocketAddress`, and `java.security.cert.Certificate`, never a
-Netty type — so `iec104-transport-tcp` can implement them with Netty without that detail leaking
+The octet transport SPI in `.transport` is the formal seam. It is expressed entirely in core types —
+whole-frame `ByteBuf`s, `SocketAddress`, and `java.security.cert.Certificate`, never a Netty channel
+or handler type — so `iec60870-transport-tcp` can implement it with Netty without that detail leaking
 back into core.
 
 ### Dependency table
 
 | Module | Compile dependencies | Notes |
 |---|---|---|
-| `iec104-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`; no channel/handler |
-| `iec104-transport-tcp` | `iec104-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler` |
+| `iec60870-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`/transport SPI; no channel/handler |
+| `iec60870-cs104` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 104 link/session engine; `netty-buffer` confined to the `Apdu`/`ControlField` `Serde` codecs; published API module |
+| `iec60870-application` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `org.slf4j:slf4j-api` | **zero Netty**; depends on core only (never on cs104). Guarded by `NoNettyInApplicationTest` |
+| `iec60870-transport-tcp` | `iec60870-application`, `iec60870-cs104`, `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler`; only the `Tcp*` builders reference `cs104`/`application` (they call `Cs104Binding`); the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoder) stay cs104- and application-free |
+
+The sink modules (`iec60870-examples`, `iec60870-tests`, `iec60870-interop`) name `client`/`server`/
+`point` types directly, so each declares a **direct** `iec60870-application` dependency rather than
+relying on transitive reach through `iec60870-transport-tcp`. The internal dependency graph is
+acyclic with a single source (`core`): `cs104 → core`, `application → core` (`application` and
+`cs104` are incomparable siblings — no edge between them), `transport-tcp → {application, cs104,
+core}`, and the sinks → `{application, transport-tcp}` (examples also → `core`). Nothing depends back
+into the application or transport modules.
+
+`iec60870-test-support` is an internal, test-only module that holds the shared, core-level test
+fixtures (the deterministic `ManualScheduler`, the `RecordingEvents` `Session.Events` recorder, the
+frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
+`LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, and the
+`ParanoidLeakDetection` JUnit extension). It depends on **core only** — plus `netty-buffer` for the
+`ByteBuf` boundary and `junit-jupiter-api` for the extension — and is consumed at `test` scope by
+`iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, and `iec60870-tests`. Keeping it
+core-only mirrors the octet-classes-stay-core-only rule and means it can never become a path for a
+`cs104`/`application`/`transport-tcp` type to leak across module boundaries. It is never published
+(its deploy, sign, and install steps are skipped).
 
 Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,
 `netty-channel-fsm` `1.0.x`, SLF4J `2.0.x`). The `netty-channel-fsm` dependency excludes

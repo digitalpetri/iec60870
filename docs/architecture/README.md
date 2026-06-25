@@ -1,12 +1,15 @@
 # IEC 60870-5-104 Library — Architecture
 
-This is the architecture reference for the `com.digitalpetri.iec104` library, a Java 17
+This is the architecture reference for the `com.digitalpetri.iec60870` library, a Java 17
 implementation of IEC 60870-5-104 (the TCP/IP companion standard to IEC 60870-5-101). The library
-is split into a protocol core (`iec104-core`) that owns the wire model, codecs, APCI session engine,
-and the high-level client/server APIs, and a Netty-backed transport (`iec104-transport-tcp`) that
-supplies the TCP/TLS plumbing and the user-facing `TcpIec104Client` / `TcpIec104Server` entry points.
-Everything a caller touches above the socket lives in core; the transport module is the only place
-that knows about channels, event loops, and TLS engines.
+is split into four modules: a protocol core (`iec60870-core`) that owns the wire model, codecs, and
+the `Session`/transport SPIs; a 104 link/session module (`iec60870-cs104`) that owns the APCI session
+engine (`ApciSession`); a high-level application module (`iec60870-application`) that owns the
+client/server facades and the station/point model; and a Netty-backed transport
+(`iec60870-transport-tcp`) that supplies the TCP/TLS plumbing and the user-facing `TcpIec104Client` /
+`TcpIec104Server` entry points. Everything a caller touches above the socket lives in the
+core/cs104/application modules — none of which use Netty runtime types; the transport module is the
+only place that knows about channels, event loops, and TLS engines.
 
 These documents describe the system **as built**. They are written for someone integrating the
 library or extending it, not for someone editing the protocol internals.
@@ -19,7 +22,7 @@ library or extending it, not for someone editing the protocol internals.
   dependency rules that keep Netty runtime types out of core, and the libraries each module pulls in.
 - [two-layer-api.md](two-layer-api.md) — the raw layer (`Asdu`, `AsduType`, `Cause`,
   `InformationObject` records, addresses, co-located `Serde` codecs) and the high-level layer
-  (`Iec104Client` / `Iec104Server`, station/point model, commands, events, catalog).
+  (`Iec60870Client` / `Iec60870Server`, station/point model, commands, events, catalog).
 - [protocol-coverage.md](protocol-coverage.md) — the coverage matrix: every ASDU type identification
   in the 101/104 tables, its mnemonic, direction, and Java record name, plus the out-of-scope file
   transfer types and why they are raw-layer only.
@@ -38,10 +41,10 @@ library or extending it, not for someone editing the protocol internals.
 
 | Concern | Where it lives |
 |---|---|
-| Wire model and codecs | `iec104-core` packages `.asdu`, `.apci`, `.address` |
-| APCI flow-control engine | `iec104-core` `com.digitalpetri.iec104.apci.ApciSession` |
-| High-level client | `iec104-core` `com.digitalpetri.iec104.client` |
-| High-level server | `iec104-core` `com.digitalpetri.iec104.server` |
-| Point / catalog model | `iec104-core` packages `.point`, `.catalog` |
-| Transport interfaces (no Netty) | `iec104-core` `com.digitalpetri.iec104.transport` |
-| Netty TCP/TLS transport + builders | `iec104-transport-tcp` |
+| Wire model and codecs | `iec60870-core` packages `.asdu`, `.address` |
+| APCI flow-control engine | `iec60870-cs104` `com.digitalpetri.iec60870.cs104.ApciSession` |
+| High-level client | `iec60870-application` `com.digitalpetri.iec60870.client` |
+| High-level server | `iec60870-application` `com.digitalpetri.iec60870.server` |
+| Point / catalog model | `iec60870-application` packages `.point`, `.catalog` |
+| Transport interfaces (no Netty) | `iec60870-core` `com.digitalpetri.iec60870.transport` |
+| Netty TCP/TLS transport + builders | `iec60870-transport-tcp` |

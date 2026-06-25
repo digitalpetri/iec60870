@@ -3,10 +3,13 @@
 ## TLS
 
 TLS is configured in core but applied by the transport. The core type is `TlsOptions`
-(`com.digitalpetri.iec104.TlsOptions`), a small immutable holder that carries:
+(`com.digitalpetri.iec60870.TlsOptions`), a small immutable holder that carries:
 
-- an `javax.net.ssl.SSLContext` supplying the key and trust material, and
-- a `clientAuthRequired` flag selecting mutual authentication.
+- an `javax.net.ssl.SSLContext` supplying the key and trust material,
+- a `clientAuthRequired` flag selecting mutual authentication, and
+- a `verifyHostname` flag (default `true`) that, on a client, enables JDK endpoint identification (the
+  `HTTPS` algorithm) so a certificate valid for a different host is rejected during the handshake; it
+  has no effect on a server.
 
 It is built with a fluent builder seeded from the context:
 
@@ -18,7 +21,7 @@ TlsOptions options = TlsOptions.builder(sslContext)
 
 `TlsOptions` contains **no transport-specific types** — just the standard `SSLContext`. This is what
 lets TLS be configured against the core API while the actual engine (Netty's `SslHandler`) lives only
-in `iec104-transport-tcp`. The transport translates `TlsOptions` into its concrete TLS engine; the
+in `iec60870-transport-tcp`. The transport translates `TlsOptions` into its concrete TLS engine; the
 `clientAuthRequired` flag requires client authentication on a server and has no effect on a client.
 `TlsOptions` is passed to the transport-module builders (`TcpIec104Client.builder().tls(...)` /
 `TcpIec104Server.builder().tls(...)`), not to `ClientConfig`/`ServerConfig`, because transport
@@ -30,7 +33,7 @@ The connection is not considered established until the TLS handshake completes. 
 contract states it plainly: `ClientTransport.connect()`'s returned stage completes **only after the
 handshake succeeds** when TLS is configured. In the Netty implementation this means waiting on the
 `SslHandler`'s handshake future before completing the connect stage. Consequently
-`Iec104Client.connect()` (which blocks on `connectAsync()`) returns only once the secure channel is
+`Iec60870Client.connect()` (which blocks on `connectAsync()`) returns only once the secure channel is
 fully up — and, when `startDataTransferOnConnect` is set, after the `STARTDT` handshake as well. A
 handshake or trust failure surfaces as a failed connect, mapped to the typed exceptions described in
 [errors-and-extensibility.md](errors-and-extensibility.md).
@@ -42,7 +45,8 @@ On the server side, the only TLS context exposed to the application is deliberat
 
 - `SocketAddress remoteAddress()`, and
 - `Optional<java.security.cert.Certificate> peerCertificate()` — the peer's certificate when the
-  connection is secured with TLS and the peer presented one, otherwise empty.
+  connection is secured with TLS and the peer presented one; always empty for a non-TLS or serial
+  transport, which carries no peer certificate.
 
 There is no leak of `SSLSession`, `SslHandler`, or any other engine type into core; the connection
 surfaces just the remote address and the peer certificate, which is all a server needs to authorize a
@@ -65,7 +69,11 @@ station-wide wire field widths that both peers must agree on:
 | `cotLength` | Cause-of-transmission octets; `1` omits the originator address octet, `2` includes it | 1..2 | 2 |
 | `commonAddressLength` | Common address octets (little-endian) | 1..2 | 2 |
 | `ioaLength` | Information object address octets (little-endian) | 1..3 | 3 |
-| `maxAsduLength` | Maximum ASDU length in octets | 1..249 | 249 |
+| `maxAsduLength` | Maximum ASDU length in octets | 1..255 | 249 |
+
+The `maxAsduLength` bound is the single-octet ceiling (`255`); it is validated only at construction
+and never enforced at encode/decode. The previous `249` ceiling was the 104-specific maximum; the
+relaxed `1..255` range admits 104's `249` and any single-octet frame a future protocol profile needs.
 
 `ProtocolProfile.iec104Default()` returns `(2, 2, 3, 249)` — the standard 104 profile, with an
 originator address present. The profile is what `Asdu.Serde` and `Apdu.Serde` consult to know how many
@@ -91,15 +99,37 @@ rejects out-of-range window sizes, `w > k`, and any non-positive duration. See
 
 ### Where the profiles are used
 
-Both records are set on `ClientConfig` and `ServerConfig` (defaulting to `ProtocolProfile.iec104Default()`
-and `ApciSettings.defaults()`), which also hold the non-transport behavioral knobs:
+The `ProtocolProfile` is set on `ClientConfig` and `ServerConfig` (defaulting to
+`ProtocolProfile.iec104Default()`). The APCI parameters are *not* held directly; both configs carry a
+neutral `SessionSettings` handle instead (see below), defaulting to `ApciSettings.defaults()`. The
+configs also hold the non-transport behavioral knobs:
 
 - **`ClientConfig`** — `originatorAddress`, an optional `pointCatalog`, `startDataTransferOnConnect`
   (default `true`), `commandTimeout` (10 s), `requestTimeout` (30 s, for interrogation/read/clock-sync),
-  `callbackExecutor`, and a `typeCodecRegistry`.
-- **`ServerConfig`** — the hosted `stations`, the `ServerHandler`, an `EventQueuePolicy` for a full
+  and `callbackExecutor`.
+- **`ServerConfig`** — the hosted `stations`, the `ServerHandler`, an `OutboundQueuePolicy` for a full
   outbound queue, the `TimeTagStyle` used when reporting monitor data (default `CP56`),
-  `maxConnections` (16), `callbackExecutor`, and a `typeCodecRegistry`.
+  `maxConnections` (16), and `callbackExecutor`.
+
+### SessionSettings — the neutral session-settings handle
+
+`ClientConfig` and `ServerConfig` do not name `ApciSettings` directly; they carry a
+`SessionSettings sessionSettings` component. `SessionSettings` is a non-sealed marker interface in the
+core root package, and `ApciSettings implements SessionSettings`. The protocol-specific settings that
+parameterize a session are inherently protocol-specific (104's `k`/`w` window and `t0`-`t3` timers
+live on `ApciSettings`), so the neutral configs hold the marker and the binding that assembles the
+concrete session downcasts the handle to the type it understands. The marker is deliberately
+*not* sealed: a sealed hierarchy would force its permitted subtypes into the core module, but the
+protocol-specific settings live in their own protocol modules (which depend on core, not the
+reverse), so an open marker keeps that dependency direction correct.
+
+### OutboundQueuePolicy — a full outbound session queue
+
+A single neutral `OutboundQueuePolicy` enum in the core root package governs what happens when a
+session's bounded outbound queue is full and another ASDU is offered: `DROP_OLDEST` (the default,
+exposed as `OutboundQueuePolicy.DEFAULT`), `DROP_NEWEST`, or `BLOCK` (backpressure). It reads
+correctly for a 104 `k`-window draining the head of the queue *and* a future 101 stop-and-wait
+window of one. `ServerConfig.eventQueuePolicy` is this type.
 
 Both configs are built with a defaults-seeded builder, so a usable configuration needs only the
 fields an application actually wants to change.
