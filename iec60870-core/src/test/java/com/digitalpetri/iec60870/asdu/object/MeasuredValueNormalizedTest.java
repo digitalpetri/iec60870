@@ -51,8 +51,7 @@ class MeasuredValueNormalizedTest {
     }
   }
 
-  // Deliberate null to verify the constructor's null-check; passing null is the intended test
-  // input.
+  // Passing null is deliberate here: it verifies the constructor's null-check.
   @SuppressWarnings("DataFlowIssue")
   @Test
   void rejectsNullComponent() {

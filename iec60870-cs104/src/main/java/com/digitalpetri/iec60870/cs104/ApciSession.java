@@ -296,10 +296,10 @@ public final class ApciSession implements Session {
       }
       // Enforce the configured outbound queue bound (0 == unbounded). The bound applies to ASDUs
       // that cannot be transmitted immediately; flushSendQueue below drains as many as the window
-      // allows. BLOCK is never honored by parking here (that would block the caller under the
-      // lock);
-      // the publisher is expected to have awaited capacity via awaitSendCapacity(...) first, and as
-      // a last-resort guard a full BLOCK queue drops the newest so the bound is never exceeded.
+      // allows. BLOCK is never honored by parking here because that would block the caller under
+      // the lock; the publisher is expected to have awaited capacity via awaitSendCapacity(...)
+      // first. As a last-resort guard, a full BLOCK queue drops the newest so the bound is never
+      // exceeded.
       if (maxOutboundQueue > 0 && sendQueue.size() >= maxOutboundQueue) {
         switch (queuePolicy) {
           case DROP_OLDEST -> {

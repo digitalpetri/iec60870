@@ -129,11 +129,9 @@ class SelfCloseNoReconnectIntegrationTest {
         Await.DEFAULT_TIMEOUT);
 
     // 3b. THE load-bearing inverse assertion. The protocol self-close called
-    // transport.disconnect(),
-    // so the persistent FSM is OUT of the reconnect loop: over a generous settle window NO second
-    // ConnectionOpened appears and the client stays disconnected. Contrast
-    // ReconnectIntegrationTest,
-    // which asserts the OPPOSITE for an unsolicited drop.
+    // transport.disconnect(), so the persistent FSM is OUT of the reconnect loop: over a generous
+    // settle window NO second ConnectionOpened appears and the client stays disconnected. Contrast
+    // ReconnectIntegrationTest, which asserts the OPPOSITE for an unsolicited drop.
     awaitWithin(
         "transport observed the self-close (FSM left Connected)",
         () -> !client.isConnected(),

@@ -150,8 +150,8 @@ public class NettyServerTransport implements ServerTransport {
                         shutdownGroups()
                             .whenComplete(
                                 (v, ex) -> {
-                                  // null is the only valid completion value for a
-                                  // CompletableFuture<Void>.
+                                  // CompletableFuture<Void> only accepts null as a completion
+                                  // value.
                                   //noinspection DataFlowIssue
                                   result.complete(null);
                                 }));

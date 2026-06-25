@@ -546,8 +546,8 @@ class ClientVsLib60870ServerInteropTest {
   @Test
   @DisplayName("Clock synchronization is positively confirmed")
   void clockSync() {
-    // synchronizeClock throws on a negative confirmation; reaching the next line means ACT_CON
-    // positive (contract section 6).
+    // synchronizeClock throws on a negative confirmation; reaching the next line means a positive
+    // ACT_CON arrived (contract section 6).
     client().synchronizeClock(STATION, Instant.now());
   }
 

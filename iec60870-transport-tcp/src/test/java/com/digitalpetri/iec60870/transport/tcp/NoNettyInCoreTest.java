@@ -39,8 +39,8 @@ class NoNettyInCoreTest {
           Pattern.compile("\\bEventLoopGroup\\b"),
           Pattern.compile("\\bSslHandler\\b"),
           Pattern.compile("\\bChannelHandler\\b"),
-          // Netty's Channel, but not the SocketChannel/etc. that core never references; the bare
-          // word is enough for this tree.
+          // Netty's Channel, but not SocketChannel/etc., which core never references; matching just
+          // the bare word is enough for this tree.
           Pattern.compile("\\bio\\.netty\\.channel\\.Channel\\b"));
 
   @Test

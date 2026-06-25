@@ -198,10 +198,9 @@ class ServerVsLib60870ClientInteropTest {
                     PointValue.counter(
                         new BinaryCounterReading(COUNTER_VALUE, 0, false, false, false)),
                     PointCapability.REPORTED))
-            // Group assignments (contract section 3): group 1 = non-time points, group 2 unused
-            // here
-            // (the client script only issues a STATION interrogation, so any group mapping
-            // suffices).
+            // Group assignments (contract section 3): group 1 = non-time points, group 2 is unused
+            // here. The client script only issues a STATION interrogation, so any group mapping
+            // suffices.
             .group(1, PointAddress.of(1, IOA_SINGLE))
             .group(1, PointAddress.of(1, IOA_DOUBLE))
             .group(1, PointAddress.of(1, IOA_STEP))
@@ -262,8 +261,8 @@ class ServerVsLib60870ClientInteropTest {
     ToStringConsumer logs = new ToStringConsumer();
 
     // The container IS managed by this try-with-resources; the inspection misfires because the
-    // fluent withX() builder methods return SELF, so it can't prove the chained value is the same
-    // instance that gets closed.
+    // fluent withX() builder methods return SELF, so it can't prove that the chained value is the
+    // same instance that gets closed.
     //noinspection resource
     try (GenericContainer<?> client =
         new GenericContainer<>(
@@ -289,11 +288,9 @@ class ServerVsLib60870ClientInteropTest {
       client.withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger("interop_client")));
 
       // One-shot under OneShotStartupCheckStrategy: start() blocks until the client process exits
-      // and
-      // the startup check runs, bounded by the startup timeout, so it never hangs. A non-zero exit
-      // (the client returns 1 when fail != 0) surfaces as a ContainerLaunchException; catch it so
-      // the
-      // captured client log drives a readable assertion instead of an opaque stack trace.
+      // and the startup check runs, bounded by the startup timeout, so it never hangs. A non-zero
+      // exit surfaces as a ContainerLaunchException when the client returns 1 for fail != 0; catch
+      // it so the captured client log drives a readable assertion instead of an opaque stack trace.
       ContainerLaunchException launchFailure = null;
       try {
         client.start();

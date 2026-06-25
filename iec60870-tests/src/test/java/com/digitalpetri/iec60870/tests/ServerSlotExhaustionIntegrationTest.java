@@ -110,9 +110,7 @@ class ServerSlotExhaustionIntegrationTest {
     assertTrue(admitted.isConnected() && !admitted.isClosed(), "the admitted socket should remain");
 
     // 3. Free the slot by closing the admitted connection. Await the admitted child's closeFuture
-    // on
-    // the SERVER side: that listener is what fires the slot-freeing decrement, so awaiting it
-    // removes
+    // on the SERVER side: that listener fires the slot-freeing decrement, so awaiting it removes
     // any race between the client's close and the server reclaiming the slot. Only THEN open a new
     // connection, which must now be admitted (stays open) — proving the slot was reused.
     admitted.close();

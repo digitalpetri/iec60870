@@ -267,9 +267,8 @@ public final class TcpIec104Server {
       }
       ServerConfig serverConfig = serverConfigBuilder.build();
 
-      // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
-      // delegates the full per-connection ApciSession + framing assembly to Cs104Binding (see its
-      // Javadoc).
+      // The builder is the sole 104 assembly point, but it holds no Apdu<->octet wiring itself.
+      // Cs104Binding owns the full per-connection ApciSession + framing assembly (see its Javadoc).
       Cs104Binding binding = new Cs104Binding(apci, profile);
 
       // The outbound-queue bound and policy are passed as scalars rather than the ServerConfig

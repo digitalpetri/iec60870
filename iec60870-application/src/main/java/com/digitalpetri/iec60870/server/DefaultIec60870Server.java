@@ -384,8 +384,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     private final SocketAddress remoteAddress;
     private final Session session;
 
-    // Serializes handler dispatch for this connection: each dispatched ASDU chains off the
-    // previous.
+    // Serializes handler dispatch; each ASDU chains off the previous dispatch.
     private volatile CompletableFuture<Void> dispatchTail = CompletableFuture.completedFuture(null);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -687,8 +686,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
         echo = asdu.objects().get(0);
       } else if (asdu.type() == AsduType.C_TS_TA_1) {
         // CP56Time2a carries a two-digit year mapped to 2000..2099, so synthesize a time within
-        // that
-        // century (the epoch year 1970 is out of range and would throw at construction).
+        // that century (the epoch year 1970 is out of range and would throw at construction).
         echo =
             new TestCommandWithCp56Time(
                 ZERO_ADDRESS, UShort.valueOf(0), Cp56Time2a.from(EPOCH_2000, ZoneOffset.UTC));
@@ -812,9 +810,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
       PointType type = definition.get().type();
 
       // Build the monitor object FIRST so a runtime type mismatch (an accepted value whose type
-      // does
-      // not match the point definition) throws before the station image is mutated, leaving the
-      // image uncorrupted.
+      // does not match the point definition) throws before the station image is mutated, leaving
+      // the image uncorrupted.
       InformationObject monitor =
           MonitorMapping.toMonitorObject(
               type, target.objectAddress(), value, config.timeTagStyle());

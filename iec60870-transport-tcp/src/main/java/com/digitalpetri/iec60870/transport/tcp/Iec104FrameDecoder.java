@@ -65,8 +65,8 @@ public class Iec104FrameDecoder extends ByteToMessageDecoder {
 
     int startIndex = in.readerIndex();
 
-    // Validate the START octet without consuming it; a bad START is unrecoverable for a byte
-    // stream.
+    // Validate the START octet without consuming it; a bad START cannot be recovered from in a
+    // byte stream.
     int start = in.getUnsignedByte(startIndex);
     if (start != START_OCTET) {
       throw new AsduDecodeException(
@@ -83,10 +83,10 @@ public class Iec104FrameDecoder extends ByteToMessageDecoder {
     }
 
     // Slice exactly one full frame and emit it. readRetainedSlice advances the reader index by
-    // frameLength (consuming the frame from the accumulation buffer) and returns a slice with its
-    // own +1 reference count, independent of the cumulative buffer. The downstream auto-releasing
-    // InboundFrameHandler releases that reference after forwarding the frame to the listener,
-    // balancing the retain here.
+    // frameLength, consumes the frame from the accumulation buffer, and returns a slice with its
+    // own +1 reference count, independent of the cumulative buffer. The downstream
+    // auto-releasing InboundFrameHandler releases that reference after forwarding the frame to the
+    // listener, balancing the retain here.
     out.add(in.readRetainedSlice(frameLength));
   }
 }

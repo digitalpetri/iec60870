@@ -55,8 +55,8 @@ public record ReadCommand(InformationObjectAddress address) implements Informati
      * @param buffer the caller-owned buffer to read from.
      * @return the decoded read command.
      */
-    // The buffer parameter matches the codec method-reference signature; C_RD_NA_1 reads no
-    // elements.
+    // C_RD_NA_1 has no elements to read; the buffer parameter is present only to match the
+    // codec method-reference signature.
     @SuppressWarnings("unused")
     public static ReadCommand decode(InformationObjectAddress address, ByteBuf buffer) {
       return new ReadCommand(address);

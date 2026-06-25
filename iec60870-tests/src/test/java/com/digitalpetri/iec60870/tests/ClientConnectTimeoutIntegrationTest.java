@@ -93,8 +93,7 @@ class ClientConnectTimeoutIntegrationTest {
         TcpIec104Client.builder()
             .host("127.0.0.1")
             .port(port)
-            // Short t0 -> short CONNECT_TIMEOUT_MILLIS so a SYN-timeout (if the OS drops) is
-            // bounded;
+            // Short t0 -> short CONNECT_TIMEOUT_MILLIS bounds a SYN-timeout if the OS drops;
             // a refused port fails even faster. Either way the connect attempt resolves promptly.
             .apci(
                 new ApciSettings(
@@ -120,8 +119,7 @@ class ClientConnectTimeoutIntegrationTest {
                     .connectAsync()
                     .toCompletableFuture()
                     // Bound a little over t0 to absorb scheduling jitter; the connect itself is
-                    // capped by CONNECT_TIMEOUT_MILLIS, so a real timeout here would indicate a
-                    // hang.
+                    // capped by CONNECT_TIMEOUT_MILLIS, so timing out here would indicate a hang.
                     .get(10, TimeUnit.SECONDS),
             "the initial connect to a dead port must fail exceptionally");
     // Sanity: a cause is present (the connect failure) and the client is not connected.
@@ -132,8 +130,7 @@ class ClientConnectTimeoutIntegrationTest {
     // 2. THE load-bearing retry proof. Without calling connect() again, bring up a real server on
     // the SAME port. The persistent, non-lazy ChannelFsm must, on its own, transition
     // ReconnectWait -> Reconnecting -> Connected and re-establish the TCP socket. isConnected()
-    // reflects FSM State.Connected, so its flipping to true with NO further connect() call is
-    // direct
+    // reflects FSM State.Connected, so flipping to true with NO further connect() call is direct
     // evidence the failed connect left the FSM in its retry loop. (The IEC session/ConnectionOpened
     // is only re-armed by an explicit connect(), exercised in step 3; a pure FSM reconnect does not
     // by itself publish ConnectionOpened.) If the FSM had parked instead of retrying, isConnected()

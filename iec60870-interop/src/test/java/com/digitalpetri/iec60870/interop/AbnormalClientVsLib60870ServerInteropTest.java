@@ -182,10 +182,8 @@ class AbnormalClientVsLib60870ServerInteropTest {
     Iec60870Client client = connectThroughProxy(events, ApciSettings.defaults());
 
     // Fire an interrogation asynchronously, then hard-partition the link before it can complete.
-    // Toxiproxy.disable() drops the established TCP connection, so the request must fail cleanly
-    // and
-    // a ConnectionClosed event must be published. The request *might* race to completion first; we
-    // accept either, but a ConnectionClosed is mandatory.
+    // Toxiproxy.disable() drops the established TCP connection. The request may fail cleanly or
+    // race to completion first, but a ConnectionClosed event must be published either way.
     CompletionStage<InterrogationResult> inFlight =
         client.interrogateAsync(STATION, QualifierOfInterrogation.STATION);
 

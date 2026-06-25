@@ -378,7 +378,7 @@ class ApciSessionTest {
     ApciSession session = new ApciSession(ApciSession.Role.CLIENT, wide, scheduler, output, events);
     session.onConnected();
 
-    // Drive the peer's acknowledgements forward so the window keeps reopening while V(S) climbs to
+    // Drive peer acknowledgements forward to keep reopening the window while V(S) climbs to
     // 32767, then wraps to 0.
     for (int i = 0; i <= 32767; i++) {
       session.sendAsdu(asdu(i & 0xFF));
@@ -500,8 +500,7 @@ class ApciSessionTest {
 
     session.sendAsdu(asdu(1));
 
-    // The re-entrant close must have stopped flushSendQueue before arming t1/t3 on a closed
-    // session.
+    // The re-entrant close must stop flushSendQueue before it arms t1/t3 on a closed session.
     assertEquals(
         0, local.pendingTaskCount(), "a re-entrant close during send must leave no live timers");
   }
@@ -602,10 +601,8 @@ class ApciSessionTest {
   void boundedSendQueueUnderBlockPolicyDropsNewestAsLastResort() {
     // BLOCK shares the last-resort drop-newest guard in sendAsdu (the switch's DROP_NEWEST, BLOCK
     // case): if a publisher offers past the bound without first awaiting capacity, the newly
-    // offered
-    // ASDU is dropped so the bound is never exceeded. SERVER role withholds I-frames before
-    // STARTDT,
-    // so every offered ASDU lands in the send queue and the bound is exercised directly.
+    // offered ASDU is dropped so the bound is never exceeded. SERVER role withholds I-frames before
+    // STARTDT, so every offered ASDU lands in the send queue and the bound is exercised directly.
     ApciSession session =
         new ApciSession(
             ApciSession.Role.SERVER,
@@ -670,8 +667,7 @@ class ApciSessionTest {
   void awaitSendCapacityThrowsInterruptedExceptionWhenParkedPublisherIsInterrupted()
       throws Exception {
     // bound = 1: park a publisher on a full-and-stuck queue (window closed, no acks), then
-    // interrupt
-    // it and assert InterruptedException propagates out of awaitSendCapacity.
+    // interrupt it and assert InterruptedException propagates out of awaitSendCapacity.
     ApciSession session =
         new ApciSession(
             ApciSession.Role.CLIENT,

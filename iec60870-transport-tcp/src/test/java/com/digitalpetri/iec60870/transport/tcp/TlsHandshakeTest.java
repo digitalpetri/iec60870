@@ -242,12 +242,12 @@ class TlsHandshakeTest {
             assertThrows(ExecutionException.class, () -> await(client.connect()));
         LOGGER.info("expected mid-handshake drop failure: {}", failure.getCause().toString());
 
-        // The abrupt close is surfaced as a clean handshake/connect failure. Whether it lands as an
-        // SSLException or a ClosedChannelException depends on how far the handshake progressed
-        // before
-        // the peer dropped the link, so accept the whole IOException family rather than pinning a
-        // timing-dependent subtype. The bounded await() above already guarantees this is a real
-        // failure and not a hang (a hang would surface as a TimeoutException test failure instead).
+        // The abrupt close is surfaced as a clean handshake/connect failure. Whether it lands as
+        // an SSLException or a ClosedChannelException depends on how far the handshake progressed
+        // before the peer dropped the link, so accept the whole IOException family rather than
+        // pinning a timing-dependent subtype. The bounded await() above already guarantees this is
+        // a real failure and not a hang (a hang would surface as a TimeoutException test failure
+        // instead).
         Throwable cause = failure.getCause();
         assertInstanceOf(
             IOException.class,

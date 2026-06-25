@@ -193,14 +193,13 @@ class Cs104BindingTest {
     Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
 
     Session session = binding.bindClient(transport, events, new ManualScheduler());
-    // CLIENT role => data transfer is started on connect, so an outbound I-frame is transmitted
+    // CLIENT role starts data transfer on connect, so an outbound I-frame is transmitted
     // immediately.
     session.onConnected();
 
-    // The send returns a synchronously-failed future; the binding's whenComplete error branch
-    // closes
-    // the session and routes the cause through Session.Events.onConnectionLost (which defaults to
-    // onClosed).
+    // The send returns a synchronously failed future; the binding's whenComplete error branch
+    // closes the session and routes the cause through Session.Events.onConnectionLost (which
+    // defaults to onClosed).
     session.sendAsdu(sampleAsdu());
 
     assertEquals(
@@ -284,8 +283,7 @@ class Cs104BindingTest {
     @Override
     public CompletionStage<Void> send(ByteBuf frame) {
       // The binding transfers ownership to the transport; keep a copy for assertions and release
-      // the
-      // handed-over buffer, mirroring a real transport's write-and-release.
+      // the handed-over buffer, mirroring a real transport's write-and-release.
       sent.add(frame.copy());
       frame.release();
       return CompletableFuture.completedFuture(null);

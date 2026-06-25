@@ -155,7 +155,7 @@ class ProtocolErrorFrameIntegrationTest {
     server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS);
 
     // (a) the pending request failed with ConnectionClosedException caused by
-    // SequenceNumberException
+    // SequenceNumberException.
     ExecutionException failure =
         assertThrows(
             ExecutionException.class, pending::get, "pending request must fail on the close");
@@ -249,8 +249,8 @@ class ProtocolErrorFrameIntegrationTest {
     // Apdu.Serde.decode throws an AsduDecodeException at the very first check.
     fault.corruptNext(SERVER_TO_CLIENT, set(0, 0x00));
 
-    // The decode failure is now swallowed inside the binding's onFrame; the triggering send no
-    // longer throws.
+    // The decode failure is now swallowed inside the binding's onFrame; sending the triggering
+    // frame no longer throws.
     server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS);
 
     // (a) exactly one ConnectionClosed, whose cause is the START-octet AsduDecodeException routed
@@ -304,14 +304,14 @@ class ProtocolErrorFrameIntegrationTest {
     EventCollector events = startDefaultServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
 
-    // Rewrite the next client->server I-frame's TypeID (frame byte 6) to M_EI_NA_1 (70) — a valid
-    // type with no server dispatch path — while keeping it structurally decodable (one information
-    // object). HOLD it: the fault relay is synchronous and re-entrant, and the session advances its
-    // send sequence number only AFTER output.send returns, so delivering the corrupted frame inline
-    // would let the server's synchronous mirror reply (carrying N(R)=1) arrive before the client's
-    // V(S) is incremented and spuriously trip the acknowledgement guard. Holding the frame and
-    // releasing it after interrogateAsync returns delivers it (and the synchronous reply) only once
-    // the client's V(S) reflects the sent frame.
+    // Rewrite the next client->server I-frame's TypeID (frame byte 6) to M_EI_NA_1 (70), a valid
+    // type with no server dispatch path, while keeping it structurally decodable (one information
+    // object). HOLD it: the fault relay is synchronous and re-entrant, and the session advances
+    // its send sequence number only AFTER output.send returns, so delivering the corrupted frame
+    // inline would let the server's synchronous mirror reply (carrying N(R)=1) arrive before the
+    // client's V(S) is incremented and spuriously trip the acknowledgement guard. Holding and
+    // releasing the frame after interrogateAsync returns delivers it (and the synchronous reply)
+    // only once the client's V(S) reflects the sent frame.
     fault.holdNext(CLIENT_TO_SERVER);
     fault.corruptNext(CLIENT_TO_SERVER, set(6, AsduType.M_EI_NA_1.typeId()));
     CompletableFuture<InterrogationResult> request =
@@ -319,8 +319,7 @@ class ProtocolErrorFrameIntegrationTest {
     fault.release(CLIENT_TO_SERVER);
 
     // The server mirrored the unknown type back NEGATIVE; the client sees it as an AsduReceived
-    // with
-    // P/N set and cause UNKNOWN_TYPE_ID.
+    // with P/N set and cause UNKNOWN_TYPE_ID.
     assertTrue(
         events.events().stream()
             .filter(ClientEvent.AsduReceived.class::isInstance)
@@ -360,24 +359,21 @@ class ProtocolErrorFrameIntegrationTest {
     EventCollector events = startDefaultServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
 
-    // Rewrite the TypeID byte (frame byte 6) of the next client->server I-frame to 41 — an
-    // undefined
-    // type identification — so AsduType.fromId throws UnsupportedAsduTypeException during the
-    // server's inbound decode.
+    // Rewrite the TypeID byte (frame byte 6) of the next client->server I-frame to 41, which is an
+    // undefined type identification, so AsduType.fromId throws UnsupportedAsduTypeException during
+    // the server's inbound decode.
     fault.corruptNext(CLIENT_TO_SERVER, set(6, 41));
 
-    // The server's decode failure is now swallowed inside the server binding's onFrame; the
-    // client's
-    // triggering send no longer throws, so the interrogation just stays pending.
+    // The server binding now swallows the decode failure inside onFrame; the client's triggering
+    // send no longer throws, so the interrogation just stays pending.
     CompletableFuture<InterrogationResult> request =
         client.interrogateAsync(STATION).toCompletableFuture();
     assertFalse(
         request.isDone(),
         "the interrogation stays pending: the decode failure no longer unwinds into the send");
 
-    // The SERVER tore the connection down cleanly: exactly one server-side ConnectionClosed
-    // carrying
-    // the UnsupportedAsduTypeException naming the undefined type id.
+    // The SERVER tore the connection down cleanly: exactly one server-side ConnectionClosed carries
+    // the UnsupportedAsduTypeException that names the undefined type id.
     List<ServerEvent.ConnectionClosed> serverCloses =
         serverEvents.stream()
             .filter(ServerEvent.ConnectionClosed.class::isInstance)
@@ -397,9 +393,8 @@ class ProtocolErrorFrameIntegrationTest {
         cause.getMessage().contains("41"),
         "the failure must name the undefined type id: " + cause.getMessage());
 
-    // No negative mirror is emitted: decode fails before dispatch, so the client sees no
-    // AsduReceived
-    // and no client-side ConnectionClosed on this in-JVM transport.
+    // No negative mirror is emitted: decode fails before dispatch, so the client sees neither an
+    // AsduReceived nor a client-side ConnectionClosed on this in-JVM transport.
     assertFalse(
         events.events().stream().anyMatch(ClientEvent.AsduReceived.class::isInstance),
         "no negative mirror is emitted for an undecodable type id (decode fails before dispatch)");

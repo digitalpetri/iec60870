@@ -56,8 +56,8 @@ class TestCommandTest {
 
   @Test
   void rejectsNullComponent() {
-    // null is the intended negative-test input for this @NotNull parameter; verify the ctor rejects
-    // it
+    // Passing null is deliberate here: it verifies the constructor rejects the @NotNull parameter
+    // violation.
     //noinspection ConstantConditions
     assertThrows(NullPointerException.class, () -> new TestCommand(IOA, null));
   }

@@ -694,9 +694,8 @@ class DefaultIec60870ClientTest {
   @Test
   void transportLossDoesNotDisconnectButProtocolErrorCloseDoes() {
     // A transport-level connection loss (peer drop, send failure) must NOT call
-    // transport.disconnect:
-    // doing so would fire Event.Disconnect on the persistent ChannelFsm and stop its
-    // auto-reconnect.
+    // transport.disconnect: doing so would fire Event.Disconnect on the persistent ChannelFsm and
+    // stop its auto-reconnect.
     client.connect();
     assertEquals(0, transport.disconnectCount());
 
@@ -732,8 +731,8 @@ class DefaultIec60870ClientTest {
 
     CompletionStage<List<InformationObject>> stage = client.readAsync(point);
 
-    // A spontaneous update on the same CA+IOA must not complete the read (it carries COT
-    // SPONTANEOUS, not REQUEST).
+    // A spontaneous update on the same CA+IOA must not complete the read; it carries COT
+    // SPONTANEOUS, not REQUEST.
     session().deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
     assertFalse(
         stage.toCompletableFuture().isDone(), "a SPONTANEOUS update must not complete a read");
@@ -797,15 +796,15 @@ class DefaultIec60870ClientTest {
 
       CompletionStage<InterrogationResult> stage = timingClient.interrogateAsync(STATION);
 
-      // The activation is confirmed, but the activation termination that would complete the
-      // interrogation never arrives.
+      // The activation is confirmed, but the activation termination never arrives to complete the
+      // interrogation.
       requireNonNull(quietSession.get()).deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
       assertFalse(
           stage.toCompletableFuture().isDone(),
           "an ACT_CON without ACT_TERM must leave the interrogation pending");
       assertEquals(1, timingClient.pendingRequestCount());
 
-      // Advancing past the request timeout fires it; a confirmed-but-unterminated request still
+      // Advancing past the request timeout fires it. A confirmed-but-unterminated request still
       // times out and is cleaned up.
       clock.advance(50, TimeUnit.MILLISECONDS);
 
@@ -969,8 +968,8 @@ class DefaultIec60870ClientTest {
               .commands()
               .sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
 
-      // The SELECT confirmation never arrives, so the first-phase command timeout fires and no
-      // EXECUTE is ever sent.
+      // The SELECT confirmation never arrives, so the first-phase command timeout fires before any
+      // EXECUTE is sent.
       assertFalse(stage.toCompletableFuture().isDone());
       assertEquals(1, timingClient.pendingRequestCount());
 
@@ -1032,8 +1031,8 @@ class DefaultIec60870ClientTest {
                 .filter(
                     s -> {
                       try {
-                        // getNow(null) is the idiomatic "value-if-absent" probe; null is the
-                        // intended sentinel here.
+                        // getNow(null) is the idiomatic "value-if-absent" probe.
+                        // Null is the intended sentinel here.
                         //noinspection DataFlowIssue
                         s.toCompletableFuture().getNow(null);
                         return false; // completed normally -> not rejected (never happens here)

@@ -119,8 +119,8 @@ class Iec104FrameCodecTest {
 
   @Test
   void partialReadWithdrawnLengthOctet() {
-    // Feeding only the START octet must not consume it or hang; the frame completes once the
-    // length octet and body arrive.
+    // Feeding only the START octet must not consume it or hang; the frame completes after both
+    // the length octet and body arrive.
     byte[] frame = wireBytes(sFrame());
     EmbeddedChannel channel = new EmbeddedChannel(new Iec104FrameDecoder());
     try {

@@ -115,8 +115,8 @@ class TlsIntegrationTest {
             .startDataTransferOnConnect(true)
             .build();
 
-    // The handshake fails certificate validation, so connect() throws and the client never reports
-    // itself connected.
+    // The handshake fails certificate validation, so connect() throws and the client is never
+    // reported as connected.
     assertThrows(RuntimeException.class, () -> client.connect());
     assertFalse(client.isConnected(), "client must not be connected after a failed handshake");
   }
@@ -155,9 +155,8 @@ class TlsIntegrationTest {
     SelfSignedTls tls = SelfSignedTls.generate();
     SSLContext clientSsl = tls.trustingClientContext();
 
-    // A raw (non-TLS) server socket accepts the TCP connection then closes it before any
-    // ServerHello
-    // is sent, so the client's TLS handshake fails mid-flight instead of completing.
+    // A raw (non-TLS) server socket accepts the TCP connection, then closes it before sending any
+    // ServerHello, so the client's TLS handshake fails mid-flight instead of completing.
     try (ServerSocket peer = new ServerSocket()) {
       peer.bind(null);
       int port = peer.getLocalPort();

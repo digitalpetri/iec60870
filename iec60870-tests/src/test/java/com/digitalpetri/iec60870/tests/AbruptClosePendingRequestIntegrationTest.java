@@ -139,8 +139,7 @@ class AbruptClosePendingRequestIntegrationTest {
     acceptedChildChannels.close().awaitUninterruptibly();
 
     // 4a. The pending interrogation future must complete exceptionally with
-    // ConnectionClosedException
-    // (failAllPending on the transport-loss path).
+    // ConnectionClosedException (failAllPending on the transport-loss path).
     ExecutionException failure =
         assertThrows(
             ExecutionException.class,
@@ -189,14 +188,13 @@ class AbruptClosePendingRequestIntegrationTest {
             .bindAddress("127.0.0.1")
             .port(port)
             .addStation(station)
-            // Answer STARTDT normally, but never confirm the interrogation: return a future that is
-            // never completed (captured for tearDown). The interrogation stays pending on the
+            // Answer STARTDT normally, but never confirm the interrogation: return a future that
+            // is never completed (captured for tearDown). The interrogation stays pending on the
             // client.
             .handler(new WithholdingHandler(withheld))
             .serverBootstrapCustomizer(
                 bootstrap -> {
-                  // SO_LINGER=0 so a later close() of an accepted child is a hard RST (abrupt
-                  // drop).
+                  // SO_LINGER=0 makes a later close() of an accepted child an abrupt hard RST.
                   bootstrap.childOption(ChannelOption.SO_LINGER, 0);
                   // Capture accepted children via handler() on the PARENT channel; childHandler
                   // (the IEC pipeline) is left untouched.

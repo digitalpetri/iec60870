@@ -123,8 +123,8 @@ class ReconnectIntegrationTest {
 
     // 3a. The client must observe ConnectionClosed for the unsolicited drop. There is no distinct
     // ConnectionLost event: a transport-level loss maps to ConnectionClosed (with a cause present).
-    // This is routed through Session.Events.onConnectionLost, the path the regression fix kept free
-    // of transport.disconnect().
+    // This is routed through Session.Events.onConnectionLost, which the regression fix kept free of
+    // transport.disconnect().
     awaitCount(
         "ConnectionClosed after unsolicited drop",
         () -> count(events, ClientEvent.ConnectionClosed.class) >= 1,
@@ -165,8 +165,8 @@ class ReconnectIntegrationTest {
         () -> count(events, ClientEvent.DataTransferStarted.class) > startsBefore,
         Await.DEFAULT_TIMEOUT);
 
-    // Event ordering: the post-reconnect ConnectionOpened must follow the ConnectionClosed from the
-    // drop, proving the reopen is a genuine reconnect rather than a stale duplicate of the
+    // Event ordering: the post-reconnect ConnectionOpened must follow the ConnectionClosed from
+    // the drop, proving the reopen is a genuine reconnect rather than a stale duplicate of the
     // original.
     assertSecondOpenFollowsAClose(events);
 

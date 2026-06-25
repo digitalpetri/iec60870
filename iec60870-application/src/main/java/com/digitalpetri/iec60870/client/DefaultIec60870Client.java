@@ -154,10 +154,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
     this.callbackExecutor = config.callbackExecutor();
     this.publisher = new SubmissionPublisher<>(callbackExecutor, Flow.defaultBufferSize());
 
-    // The facade owns the Session.Events sink; the factory wires the session to it. The factory is
-    // responsible for routing inbound frames to the session and for routing a transport-level
-    // connection loss to Session.Events.onClosed, so the facade learns of every close through that
-    // single sink.
+    // The facade owns the Session.Events sink; the factory wires the session to it. The factory
+    // routes inbound frames to the session and transport-level connection loss to
+    // Session.Events.onClosed, so the facade learns of every close through that single sink.
     this.session =
         Objects.requireNonNull(
             sessionFactory.apply(new SessionEvents(), this.scheduler), "session");
@@ -473,9 +472,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
       PendingRequest request = finished;
       PendingRequest.Outcome finalOutcome = outcome;
       request.cancelTimeout();
-      // Complete off the I/O thread and off the session lock: a SELECT_BEFORE_OPERATE continuation
-      // re-enters session.sendAsdu, which must observe the already-advanced V(R) and must not run
-      // under the session lock.
+      // Complete off the I/O thread and off the session lock: a SELECT_BEFORE_OPERATE
+      // continuation re-enters session.sendAsdu, which must observe the already-advanced V(R) and
+      // must not run under the session lock.
       callbackExecutor.execute(
           () -> {
             if (finalOutcome == PendingRequest.Outcome.COMPLETED) {
@@ -1030,12 +1029,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
         return Outcome.IGNORED;
       }
       // A read response carries cause REQUEST; a spontaneous/periodic update on the same CA+IOA
-      // must
-      // not complete the read early. Gate on the cause before matching the addressed object.
+      // must not complete the read early. Gate on the cause before matching the addressed object.
       if (asdu.cause() != Cause.REQUEST) {
         return Outcome.IGNORED;
       }
-      // Otherwise correlate by the addressed object, delivering only the matching object(s) rather
+      // Otherwise correlate by the addressed object. Deliver only the matching object(s) rather
       // than the whole ASDU, so a response carrying several objects does not hand unrelated points
       // back to this read. Test for a match first so an unrelated response (the common case on this
       // hot path) allocates nothing.

@@ -143,11 +143,9 @@ public final class Cs104Binding {
     Objects.requireNonNull(scheduler, "scheduler");
     Objects.requireNonNull(queuePolicy, "queuePolicy");
 
-    // The server connection SPI exposes close() (a per-connection teardown), which exactly matches
-    // the Netty server's behavior on a decode failure (tear down just this one accepted
-    // connection).
-    // Pass it as the per-failure close handle so a malformed inbound frame closes the session and
-    // the
+    // The server connection SPI exposes close() (a per-connection teardown), exactly matching the
+    // Netty server's decode-failure behavior: tear down just this one accepted connection. Use it
+    // as the per-failure close handle so a malformed inbound frame closes both the session and the
     // underlying connection on every transport.
     return assemble(
         ApciSession.Role.SERVER,
@@ -168,9 +166,8 @@ public final class Cs104Binding {
       @Nullable ServerQueueConfig queueConfig,
       Runnable closeConnection) {
 
-    // The session is referenced by the Output and the listener below, both of which run only after
-    // construction; hold it in a one-element array so they can close it on a failed write or a
-    // transport loss.
+    // The Output and listener below both reference the session after construction; hold it in a
+    // one-element array so they can close it on a failed write or transport loss.
     ApciSession[] holder = new ApciSession[1];
 
     ApciSession.Output output =
@@ -207,16 +204,14 @@ public final class Cs104Binding {
         new TransportListener() {
           @Override
           public void onFrame(ByteBuf frame) {
-            // Deframe and dispatch inbound bytes. A malformed/undecodable frame makes
-            // ApduFramer.decode throw a decode-time RuntimeException (AsduDecodeException on a bad
-            // START/length/control field, UnsupportedAsduTypeException on an undefined TypeID, or
-            // an
-            // IndexOutOfBoundsException on a short/truncated read). Guard the deframe-and-dispatch
-            // so
-            // that failure does not escape back out the transport's delivery stack: route it to the
-            // SAME sink a real transport loss uses (Session.Events.onConnectionLost) and tear the
-            // underlying connection down, converging every transport on the existing close
-            // handling.
+            // Deframe and dispatch inbound bytes. A malformed or undecodable frame makes
+            // ApduFramer.decode throw a decode-time RuntimeException, such as AsduDecodeException
+            // for a bad START/length/control field, UnsupportedAsduTypeException for an undefined
+            // TypeID, or IndexOutOfBoundsException for a short/truncated read. Guard the
+            // deframe-and-dispatch path so the failure does not escape back out the transport's
+            // delivery stack: route it to the SAME sink a real transport loss uses
+            // (Session.Events.onConnectionLost) and tear the underlying connection down, converging
+            // every transport on the existing close handling.
             //
             // This reproduces, on every transport, the TCP behavior on a decode failure: close the
             // session, publish a single ConnectionClosed carrying the decode cause, and close the
