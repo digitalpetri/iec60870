@@ -24,6 +24,7 @@ import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.UnpooledByteBufAllocator;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.cert.Certificate;
@@ -158,7 +159,74 @@ class Cs104BindingTest {
     assertNull(events.lastCloseCause);
   }
 
+  @Test
+  void clientBindingSendFailureClosesSessionAndRoutesToOnConnectionLost() {
+    FailingFrameTransport transport = new FailingFrameTransport();
+    RecordingEvents events = new RecordingEvents();
+    Cs104Binding binding = new Cs104Binding(ApciSettings.defaults(), PROFILE);
+
+    Session session = binding.bindClient(transport, events, new ManualScheduler());
+    // CLIENT role => data transfer is started on connect, so an outbound I-frame is transmitted
+    // immediately.
+    session.onConnected();
+
+    // The send returns a synchronously-failed future; the binding's whenComplete error branch
+    // closes
+    // the session and routes the cause through Session.Events.onConnectionLost (which defaults to
+    // onClosed).
+    session.sendAsdu(sampleAsdu());
+
+    assertEquals(
+        1, events.closedCount, "a synchronous send failure closes the session exactly once");
+    assertSame(
+        transport.cause, events.lastCloseCause, "the IOException is routed as the close cause");
+    // The single frame the binding allocated was released by the failing transport; ParanoidLeak-
+    // Detection (active via the surefire arg) would otherwise fail the build on a leak.
+    assertEquals(1, transport.sendCount, "exactly one frame was handed to the failing transport");
+  }
+
   // --- fakes ---------------------------------------------------------------
+
+  /**
+   * A {@link ClientTransport} whose {@link #send(ByteBuf)} models a synchronous outbound write
+   * failure: it releases the handed-over frame (as a real transport owns and releases it) and
+   * returns an immediately-failed future so the binding's error branch fires.
+   */
+  private static final class FailingFrameTransport implements ClientTransport {
+
+    private final IOException cause = new IOException("write failed");
+    private int sendCount;
+    private @Nullable TransportListener listener;
+
+    @Override
+    public CompletionStage<Void> connect() {
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletionStage<Void> disconnect() {
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public boolean isConnected() {
+      return true;
+    }
+
+    @Override
+    public CompletionStage<Void> send(ByteBuf frame) {
+      sendCount++;
+      // Own and release the buffer exactly as a real transport would, then report the write failure
+      // through a completed-exceptionally future (NOT by throwing).
+      frame.release();
+      return CompletableFuture.failedFuture(cause);
+    }
+
+    @Override
+    public void setListener(TransportListener listener) {
+      this.listener = listener;
+    }
+  }
 
   private static final class FakeClientTransport implements ClientTransport {
 

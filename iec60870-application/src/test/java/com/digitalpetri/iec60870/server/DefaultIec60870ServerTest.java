@@ -637,6 +637,58 @@ class DefaultIec60870ServerTest {
     server.close();
   }
 
+  @Test
+  void counterInterrogationWithEmptyObjectsIsRejected() {
+    DefaultIec60870Server server = server(new ServerHandler() {});
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // A C_CI_NA_1 carrying no information object cannot select a counter group; the server replies
+    // with a single negative confirmation (UNKNOWN_INFORMATION_OBJECT_ADDRESS) and nothing else.
+    Asdu request =
+        new Asdu(
+            AsduType.C_CI_NA_1,
+            false,
+            Cause.ACTIVATION,
+            false,
+            false,
+            OriginatorAddress.none(),
+            CA,
+            List.of());
+    connection.deliverAsdu(request);
+
+    List<Asdu> sent = connection.sentAsdus();
+    assertEquals(1, sent.size());
+    assertTrue(sent.get(0).negative());
+    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, sent.get(0).cause());
+
+    server.close();
+  }
+
+  @Test
+  void counterInterrogationWithWrongObjectTypeIsRejected() {
+    DefaultIec60870Server server = server(new ServerHandler() {});
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("client");
+    connection.startDataTransfer();
+
+    // A C_CI_NA_1 whose first object is not a CounterInterrogationCommand is malformed; the server
+    // rejects it with a single negative confirmation and emits no monitors or termination.
+    connection.deliverAsdu(
+        control(
+            AsduType.C_CI_NA_1,
+            Cause.ACTIVATION,
+            new InterrogationCommand(ZERO, QualifierOfInterrogation.STATION)));
+
+    List<Asdu> sent = connection.sentAsdus();
+    assertEquals(1, sent.size());
+    assertTrue(sent.get(0).negative());
+    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, sent.get(0).cause());
+
+    server.close();
+  }
+
   private void subscribe(DefaultIec60870Server server, List<ServerEvent> sink) {
     server
         .events()
