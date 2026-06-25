@@ -15,7 +15,6 @@ import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
-import com.digitalpetri.iec60870.apci.ControlField;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
@@ -27,7 +26,10 @@ import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.MeasuredValueScaled;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent.PointUpdated;
+import com.digitalpetri.iec60870.fakes.FakeClientTransport;
+import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointType;
+import com.digitalpetri.iec60870.session.Session;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -40,20 +42,43 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-/** Unit tests for {@link DefaultIec60870Client} driven by a {@link FakeClientTransport}. */
+/** Unit tests for {@link DefaultIec60870Client} driven by a neutral fake {@link Session}. */
 class DefaultIec60870ClientTest {
 
   private static final CommonAddress STATION = CommonAddress.of(1);
 
   private final FakeClientTransport transport = new FakeClientTransport();
+  private final AtomicReference<FakeSession> sessionRef = new AtomicReference<>();
   private final ClientConfig config =
       ClientConfig.builder().callbackExecutor(Runnable::run).build();
-  private final DefaultIec60870Client client = new DefaultIec60870Client(transport, config);
+  private final DefaultIec60870Client client =
+      new DefaultIec60870Client(transport, config, clientSessionFactory(sessionRef));
+
+  private FakeSession session() {
+    FakeSession current = sessionRef.get();
+    if (current == null) {
+      throw new IllegalStateException("session not yet built");
+    }
+    return current;
+  }
+
+  /** A factory that builds a CLIENT-role fake session and records it for the test to drive. */
+  private static BiFunction<Session.Events, ScheduledExecutorService, Session> clientSessionFactory(
+      AtomicReference<FakeSession> ref) {
+    return (events, scheduler) -> {
+      FakeSession session = FakeSession.client(events);
+      ref.set(session);
+      return session;
+    };
+  }
 
   @AfterEach
   void tearDown() {
@@ -64,6 +89,7 @@ class DefaultIec60870ClientTest {
   void connectStartsDataTransfer() {
     client.connect();
     assertTrue(client.isConnected());
+    assertTrue(session().isDataTransferStarted());
   }
 
   @Test
@@ -73,11 +99,11 @@ class DefaultIec60870ClientTest {
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
     // Positive activation confirmation.
-    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
     // One monitor object reported as an interrogation response.
-    transport.deliverAsdu(measured(Cause.INTERROGATED_BY_STATION, (short) 42));
+    session().deliverAsdu(measured(Cause.INTERROGATED_BY_STATION, (short) 42));
     // Activation termination ends the interrogation.
-    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
 
     InterrogationResult result = stage.toCompletableFuture().join();
     assertEquals(STATION, result.station());
@@ -92,7 +118,7 @@ class DefaultIec60870ClientTest {
     client.connect();
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
-    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, true));
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, true));
 
     var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
     assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
@@ -113,11 +139,11 @@ class DefaultIec60870ClientTest {
 
     // The rejection left the first request untouched: still pending, and no extra ASDU was sent.
     assertEquals(1, client.pendingRequestCount());
-    assertEquals(1, transport.sentAsdus().size(), "rejected interrogation must not send an ASDU");
+    assertEquals(1, session().sentAsdus().size(), "rejected interrogation must not send an ASDU");
 
     // The first interrogation still completes normally.
-    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
-    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
     assertTrue(first.toCompletableFuture().join().terminated());
   }
 
@@ -141,7 +167,7 @@ class DefaultIec60870ClientTest {
     assertFalse(first.toCompletableFuture().isDone());
     assertFalse(second.toCompletableFuture().isDone());
     assertEquals(2, client.pendingRequestCount());
-    assertEquals(2, transport.sentAsdus().size());
+    assertEquals(2, session().sentAsdus().size());
   }
 
   @Test
@@ -149,8 +175,8 @@ class DefaultIec60870ClientTest {
     client.connect();
 
     CompletionStage<InterrogationResult> first = client.interrogateAsync(STATION);
-    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
-    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
     assertTrue(first.toCompletableFuture().join().terminated());
     assertEquals(0, client.pendingRequestCount());
 
@@ -171,10 +197,10 @@ class DefaultIec60870ClientTest {
     var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
     assertInstanceOf(RequestInProgressException.class, ex.getCause());
     assertEquals(1, client.pendingRequestCount());
-    assertEquals(1, transport.sentAsdus().size(), "rejected read must not send an ASDU");
+    assertEquals(1, session().sentAsdus().size(), "rejected read must not send an ASDU");
 
     // The first read still completes normally.
-    transport.deliverAsdu(measured(Cause.REQUEST, (short) 42));
+    session().deliverAsdu(measured(Cause.REQUEST, (short) 42));
     assertEquals(1, first.toCompletableFuture().join().size());
   }
 
@@ -191,7 +217,7 @@ class DefaultIec60870ClientTest {
     assertFalse(first.toCompletableFuture().isDone());
     assertFalse(second.toCompletableFuture().isDone());
     assertEquals(2, client.pendingRequestCount());
-    assertEquals(2, transport.sentAsdus().size());
+    assertEquals(2, session().sentAsdus().size());
   }
 
   @Test
@@ -202,18 +228,20 @@ class DefaultIec60870ClientTest {
     CompletionStage<List<InformationObject>> stage = client.readAsync(point);
 
     // A response that happens to carry several objects must yield only the requested point.
-    transport.deliverAsdu(
-        new Asdu(
-            AsduType.M_ME_NB_1,
-            false,
-            Cause.REQUEST,
-            false,
-            false,
-            config.originatorAddress(),
-            STATION,
-            List.of(
-                new MeasuredValueScaled(InformationObjectAddress.of(110), (short) 1, goodQds()),
-                new MeasuredValueScaled(InformationObjectAddress.of(111), (short) 2, goodQds()))));
+    session()
+        .deliverAsdu(
+            new Asdu(
+                AsduType.M_ME_NB_1,
+                false,
+                Cause.REQUEST,
+                false,
+                false,
+                config.originatorAddress(),
+                STATION,
+                List.of(
+                    new MeasuredValueScaled(InformationObjectAddress.of(110), (short) 1, goodQds()),
+                    new MeasuredValueScaled(
+                        InformationObjectAddress.of(111), (short) 2, goodQds()))));
 
     List<InformationObject> objects = stage.toCompletableFuture().join();
     assertEquals(1, objects.size());
@@ -234,7 +262,7 @@ class DefaultIec60870ClientTest {
     assertInstanceOf(RequestInProgressException.class, ex.getCause());
     assertEquals(1, client.pendingRequestCount());
 
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
     assertTrue(first.toCompletableFuture().join().positive());
   }
 
@@ -254,7 +282,7 @@ class DefaultIec60870ClientTest {
             CommandMode.directExecute());
 
     assertEquals(2, client.pendingRequestCount());
-    assertEquals(2, transport.sentAsdus().size());
+    assertEquals(2, session().sentAsdus().size());
   }
 
   @Test
@@ -268,7 +296,7 @@ class DefaultIec60870ClientTest {
     var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
     assertInstanceOf(RequestInProgressException.class, ex.getCause());
     assertEquals(1, client.pendingRequestCount());
-    assertEquals(1, transport.sentAsdus().size(), "rejected clock sync must not send an ASDU");
+    assertEquals(1, session().sentAsdus().size(), "rejected clock sync must not send an ASDU");
   }
 
   @Test
@@ -279,7 +307,7 @@ class DefaultIec60870ClientTest {
     CompletionStage<CommandResult> stage =
         client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
 
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertTrue(result.positive());
@@ -287,7 +315,7 @@ class DefaultIec60870ClientTest {
     assertEquals(Cause.ACTIVATION_CONFIRMATION, result.cause());
 
     // The client sent exactly one execute activation (S/E = 0).
-    List<Asdu> commands = transport.sentAsdus();
+    List<Asdu> commands = session().sentAsdus();
     assertEquals(1, commands.size());
     SingleCommand sent = (SingleCommand) commands.get(0).objects().get(0);
     assertTrue(sent.on());
@@ -302,7 +330,7 @@ class DefaultIec60870ClientTest {
     CompletionStage<CommandResult> stage =
         client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
 
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), true));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), true));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertFalse(result.positive());
@@ -317,14 +345,14 @@ class DefaultIec60870ClientTest {
         client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
 
     // Confirm the select phase; the execute phase is sent only after this confirmation.
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
     // Confirm the execute phase.
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
 
     CommandResult result = stage.toCompletableFuture().join();
     assertTrue(result.positive());
 
-    List<Asdu> commands = transport.sentAsdus();
+    List<Asdu> commands = session().sentAsdus();
     assertEquals(2, commands.size());
     assertTrue(((SingleCommand) commands.get(0).objects().get(0)).qualifier().select());
     assertFalse(((SingleCommand) commands.get(1).objects().get(0)).qualifier().select());
@@ -337,7 +365,7 @@ class DefaultIec60870ClientTest {
     List<ClientEvent> events = new CopyOnWriteArrayList<>();
     subscribe(events);
 
-    transport.deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
+    session().deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
 
     boolean sawAsduReceived = events.stream().anyMatch(e -> e instanceof ClientEvent.AsduReceived);
     PointUpdated update =
@@ -358,7 +386,7 @@ class DefaultIec60870ClientTest {
     client.connect();
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
-    transport.loseConnection();
+    session().fireClosed(null);
 
     var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
     assertSame(ConnectionClosedException.class, ex.getCause().getClass());
@@ -368,9 +396,12 @@ class DefaultIec60870ClientTest {
   void connectFailureIsTranslatedToTypedException() {
     FakeClientTransport failing = new FakeClientTransport();
     failing.failConnect(new IOException("refused"));
+    AtomicReference<FakeSession> failingSession = new AtomicReference<>();
     try (DefaultIec60870Client failingClient =
         new DefaultIec60870Client(
-            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build())) {
+            failing,
+            ClientConfig.builder().callbackExecutor(Runnable::run).build(),
+            clientSessionFactory(failingSession))) {
       var ex =
           assertThrows(
               CompletionException.class,
@@ -383,6 +414,7 @@ class DefaultIec60870ClientTest {
   @Test
   void commandTimeoutCleansUpPendingRequest() {
     FakeClientTransport quietTransport = new FakeClientTransport();
+    AtomicReference<FakeSession> quietSession = new AtomicReference<>();
     try (DefaultIec60870Client timingClient =
         new DefaultIec60870Client(
             quietTransport,
@@ -390,7 +422,8 @@ class DefaultIec60870ClientTest {
                 .callbackExecutor(Runnable::run)
                 .commandTimeout(Duration.ofMillis(50))
                 .requestTimeout(Duration.ofMillis(50))
-                .build())) {
+                .build(),
+            clientSessionFactory(quietSession))) {
       timingClient.connect();
       PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
 
@@ -406,7 +439,7 @@ class DefaultIec60870ClientTest {
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
 
       // A late confirmation for the timed-out command is ignored without error.
-      quietTransport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
+      quietSession.get().deliverAsdu(commandConfirmation(point.objectAddress(), false));
       assertEquals(0, timingClient.pendingRequestCount());
     }
   }
@@ -414,12 +447,13 @@ class DefaultIec60870ClientTest {
   @Test
   void sendFailureFailsTheRequestAndDoesNotLeak() {
     FakeClientTransport failing = new FakeClientTransport();
+    // A session whose sendAsdu throws models an immediate send failure.
     try (DefaultIec60870Client failingClient =
         new DefaultIec60870Client(
-            failing, ClientConfig.builder().callbackExecutor(Runnable::run).build())) {
+            failing,
+            ClientConfig.builder().callbackExecutor(Runnable::run).build(),
+            (events, scheduler) -> new ThrowingSendSession(FakeSession.client(events)))) {
       failingClient.connect();
-      // From now on every send fails; the in-flight interrogation must fail too.
-      failing.failSend(new IOException("write failed"));
 
       CompletionStage<InterrogationResult> stage = failingClient.interrogateAsync(STATION);
 
@@ -438,18 +472,19 @@ class DefaultIec60870ClientTest {
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
     // A confirmation for a different station does not correlate to the pending interrogation.
-    transport.deliverAsdu(
-        new Asdu(
-            AsduType.C_IC_NA_1,
-            false,
-            Cause.ACTIVATION_CONFIRMATION,
-            false,
-            false,
-            config.originatorAddress(),
-            CommonAddress.of(99),
-            List.of(
-                new InterrogationCommand(
-                    InformationObjectAddress.of(0), QualifierOfInterrogation.STATION))));
+    session()
+        .deliverAsdu(
+            new Asdu(
+                AsduType.C_IC_NA_1,
+                false,
+                Cause.ACTIVATION_CONFIRMATION,
+                false,
+                false,
+                config.originatorAddress(),
+                CommonAddress.of(99),
+                List.of(
+                    new InterrogationCommand(
+                        InformationObjectAddress.of(0), QualifierOfInterrogation.STATION))));
 
     // The interrogation is still pending; the unmatched ASDU was surfaced only as AsduReceived.
     assertFalse(stage.toCompletableFuture().isDone());
@@ -458,8 +493,8 @@ class DefaultIec60870ClientTest {
     assertTrue(events.stream().noneMatch(e -> e instanceof ClientEvent.PointUpdated));
 
     // Completing it for the correct station still works, proving no corruption.
-    transport.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
-    transport.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
     assertTrue(stage.toCompletableFuture().join().terminated());
   }
 
@@ -468,9 +503,12 @@ class DefaultIec60870ClientTest {
     // A single-thread executor preserves submission order and never runs two callbacks at once.
     ExecutorService executor = Executors.newSingleThreadExecutor();
     FakeClientTransport serialTransport = new FakeClientTransport();
+    AtomicReference<FakeSession> serialSession = new AtomicReference<>();
     try (DefaultIec60870Client serialClient =
         new DefaultIec60870Client(
-            serialTransport, ClientConfig.builder().callbackExecutor(executor).build())) {
+            serialTransport,
+            ClientConfig.builder().callbackExecutor(executor).build(),
+            clientSessionFactory(serialSession))) {
       serialClient.connect();
 
       int count = 200;
@@ -507,7 +545,7 @@ class DefaultIec60870ClientTest {
               });
 
       for (int i = 0; i < count; i++) {
-        serialTransport.deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
+        serialSession.get().deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
       }
 
       assertTrue(latch.await(5, TimeUnit.SECONDS), "all events delivered");
@@ -523,42 +561,19 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
-  void selectBeforeOperateExecuteCarriesAdvancedReceiveSequenceNumber() {
-    client.connect();
-    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
-
-    CompletionStage<CommandResult> stage =
-        client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
-
-    // The select-confirmation I-frame the client receives carries a known N(S); after the client
-    // accepts it, V(R) advances by one, so the EXECUTE it sends in response must carry that
-    // advanced value as its N(R).
-    int selectConNs = transport.peerSendSequenceForNext();
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
-    // Confirm the execute phase so the command completes cleanly.
-    transport.deliverAsdu(commandConfirmation(point.objectAddress(), false));
-    stage.toCompletableFuture().join();
-
-    List<ControlField.TypeI> controls = transport.sentIFrameControls();
-    assertEquals(2, controls.size(), "a select and an execute I-frame were sent");
-    ControlField.TypeI execute = controls.get(1);
-    assertEquals(
-        selectConNs + 1,
-        execute.receiveSequenceNumber(),
-        "the EXECUTE must acknowledge the select-confirmation (N(R) = select-con N(S) + 1)");
-  }
-
-  @Test
   void errorClosePublishesExactlyOneConnectionClosedWithRealCause() {
     client.connect();
 
     List<ClientEvent> events = new CopyOnWriteArrayList<>();
     subscribe(events);
 
-    // Drive a fatal protocol error close: an I-frame whose N(R) acknowledges more than was sent
-    // self-closes the session with a SequenceNumberException (the real cause).
+    // Drive a fatal protocol-error close carrying the real cause, then a follow-on transport-loss
+    // close: the facade publishes ConnectionClosed exactly once, with the first (real) cause.
     client.interrogateAsync(STATION);
-    transport.deliverBadAcknowledgement(measured(Cause.SPONTANEOUS, (short) 1));
+    SequenceNumberException realCause = new SequenceNumberException("bad acknowledgement");
+    session().fireClosed(realCause);
+    // A second close is a no-op on an already-closed session.
+    session().fireClosed(null);
 
     List<ClientEvent.ConnectionClosed> closes =
         events.stream()
@@ -567,7 +582,7 @@ class DefaultIec60870ClientTest {
             .toList();
     assertEquals(
         1, closes.size(), "ConnectionClosed must be published exactly once on an error close");
-    assertInstanceOf(SequenceNumberException.class, closes.get(0).cause());
+    assertSame(realCause, closes.get(0).cause());
   }
 
   @Test
@@ -577,7 +592,7 @@ class DefaultIec60870ClientTest {
     List<ClientEvent> events = new CopyOnWriteArrayList<>();
     subscribe(events);
 
-    transport.loseConnection();
+    session().fireClosed(null);
 
     long count = events.stream().filter(e -> e instanceof ClientEvent.ConnectionClosed).count();
     assertEquals(1, count, "a plain transport drop publishes ConnectionClosed exactly once");
@@ -592,13 +607,13 @@ class DefaultIec60870ClientTest {
 
     // A spontaneous update on the same CA+IOA must not complete the read (it carries COT
     // SPONTANEOUS, not REQUEST).
-    transport.deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
+    session().deliverAsdu(measured(Cause.SPONTANEOUS, (short) 7));
     assertFalse(
         stage.toCompletableFuture().isDone(), "a SPONTANEOUS update must not complete a read");
     assertEquals(1, client.pendingRequestCount());
 
     // The actual read response (COT REQUEST) completes it.
-    transport.deliverAsdu(measured(Cause.REQUEST, (short) 42));
+    session().deliverAsdu(measured(Cause.REQUEST, (short) 42));
     List<InformationObject> objects = stage.toCompletableFuture().join();
     assertEquals(1, objects.size());
   }
@@ -666,5 +681,55 @@ class DefaultIec60870ClientTest {
 
   private static Qds goodQds() {
     return new Qds(false, false, false, false, false);
+  }
+
+  /** A {@link Session} whose {@link #sendAsdu(Asdu)} always throws, modeling a send failure. */
+  private static final class ThrowingSendSession implements Session {
+
+    private final FakeSession delegate;
+
+    ThrowingSendSession(FakeSession delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void onConnected() {
+      delegate.onConnected();
+    }
+
+    @Override
+    public CompletionStage<Void> startDataTransfer() {
+      return delegate.startDataTransfer();
+    }
+
+    @Override
+    public CompletionStage<Void> stopDataTransfer() {
+      return delegate.stopDataTransfer();
+    }
+
+    @Override
+    public boolean isDataTransferStarted() {
+      return delegate.isDataTransferStarted();
+    }
+
+    @Override
+    public void sendAsdu(Asdu asdu) {
+      throw new IllegalStateException("write failed");
+    }
+
+    @Override
+    public boolean awaitSendCapacity(long timeoutMillis) {
+      return delegate.awaitSendCapacity(timeoutMillis);
+    }
+
+    @Override
+    public int pendingSendCount() {
+      return delegate.pendingSendCount();
+    }
+
+    @Override
+    public void close() {
+      delegate.close();
+    }
   }
 }

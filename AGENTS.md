@@ -17,21 +17,33 @@ IEC 104 is a Maven / Java 17 implementation of IEC 60870-5-104.
 ## Project Layout
 
 - `pom.xml` is the parent Maven project (group `com.digitalpetri.iec60870`, artifact `iec60870-parent`).
-- `iec60870-core/` owns the protocol model and the Netty-runtime-free public API: the raw ASDU layer
-  (every standard TypeID with a co-located `Serde`), the APCI session engine, the transport
-  interfaces, and the high-level `Iec60870Client` / `Iec60870Server` facades plus the point/catalog model.
+- `iec60870-core/` owns the protocol model and the Netty-runtime-free kernel: the raw ASDU layer
+  (every standard TypeID with a co-located `Serde`), the APCI session engine (`apci`, slated to move
+  to `iec60870-cs104` in a later phase), the `Session` and transport SPIs, `ProtocolProfile`,
+  `SessionSettings` / `ApciSettings`, the neutral `OutboundQueuePolicy`, and the exceptions.
+- `iec60870-application/` owns the high-level layer (NO Netty): the `Iec60870Client` /
+  `Iec60870Server` facades (interfaces + `Default*`), the command/station/point/catalog model, and
+  the `ClientConfig` / `ServerConfig`. It depends on `iec60870-core` only and speaks purely in terms
+  of `Asdu` + the `Session` SPI; the protocol-specific session and its wire framing are injected
+  through a session factory. A `NoNettyInApplicationTest` guard fails the build if any `io.netty.*`
+  type (even `ByteBuf`) appears in its main sources.
 - `iec60870-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders.
+  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the transitional 104 assembly
+  point: they construct the `ApciSession` + `Apdu`/`ByteBuf` framing and hand the assembled
+  `Session` (client) / per-connection session factory (server) to the `application` facades (this
+  assembly moves into a `Cs104Binding` in a later phase).
 - `iec60870-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
   images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
   Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
 
-Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-transport-tcp`,
-`iec60870-examples`, `iec60870-tests`, `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; in
-`iec60870-core` the main packages are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `apci`,
-`codec`, `address`, `transport`, `client`, `server`, `point`, and `catalog`.
+Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-application`,
+`iec60870-transport-tcp`, `iec60870-examples`, `iec60870-tests`, `iec60870-interop`. Source lives
+under `com.digitalpetri.iec60870`; the kernel packages in `iec60870-core` are `asdu` (with
+`asdu.object`, `asdu.element`, `asdu.time`), `apci`, `codec`, `address`, `transport`, and `session`,
+while the high-level packages `client`, `server`, `point`, and `catalog` live in
+`iec60870-application`.
 
 Keep new modules under the parent build and centralize dependency/plugin versions in the root POM.
 

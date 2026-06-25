@@ -1,18 +1,13 @@
 package com.digitalpetri.iec60870.client;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.NegativeConfirmationException;
-import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
-import com.digitalpetri.iec60870.apci.ApciSession;
-import com.digitalpetri.iec60870.apci.Apdu;
-import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
@@ -26,10 +21,6 @@ import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
-import com.digitalpetri.iec60870.transport.TransportListener;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -52,21 +43,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiFunction;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The default {@link Iec60870Client} implementation, driving any {@link ClientTransport}.
+ * The default {@link Iec60870Client} implementation, driving an injected {@link Session}.
  *
- * <p>The client owns an {@link ApciSession} in the {@link ApciSession.Role#CLIENT} role for
- * sequence numbers and flow control, a {@link SubmissionPublisher} for {@link ClientEvent} delivery
- * on the configured callback executor, and a request-correlation layer that matches activation
+ * <p>The client speaks to its {@link Session} purely in terms of {@link Asdu}s: it sends
+ * application data with {@link Session#sendAsdu(Asdu)}, drives the data-transfer lifecycle with
+ * {@link Session#startDataTransfer()}/{@link Session#stopDataTransfer()}, and receives inbound
+ * ASDUs and lifecycle transitions through a {@link Session.Events} sink it owns. The
+ * protocol-specific session implementation and its wire framing are assembled outside this class
+ * and supplied through the session factory; the facade itself contains no wire-frame or
+ * transport-framing logic.
+ *
+ * <p>The client also owns a {@link SubmissionPublisher} for {@link ClientEvent} delivery on the
+ * configured callback executor and a request-correlation layer that matches activation
  * confirmations and interrogation responses to the blocking and asynchronous calls that issued
  * them.
  *
- * <p>The instance is thread-safe. Construct it with a transport and a {@link ClientConfig}; the
- * client registers itself as the transport's {@link TransportListener} on construction.
+ * <p>The instance is thread-safe. Construct it with a transport, a {@link ClientConfig}, and a
+ * session factory that builds the {@link Session} wired to the facade's {@link Session.Events}.
  */
 public final class DefaultIec60870Client implements Iec60870Client {
 
@@ -77,15 +76,6 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   private final ClientTransport transport;
   private final ClientConfig config;
-
-  /**
-   * Transitional Apdu&lt;-&gt;ByteBuf framing glue. The facade frames outbound APDUs and deframes
-   * inbound frames here until Phase 7 moves this into {@code Cs104Binding}. {@code Unpooled} is an
-   * acceptable allocator for this phase.
-   */
-  private final ProtocolProfile profile;
-
-  private final ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
 
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
@@ -104,41 +94,55 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final AtomicBoolean connectionClosedPublished = new AtomicBoolean(true);
 
   /**
-   * Creates a client over the given transport and configuration.
+   * Creates a client over the given transport and configuration, building its {@link Session}
+   * through the supplied factory.
    *
-   * <p>The client registers itself as the transport's listener and creates an internal
-   * single-thread scheduler for protocol timers and request timeouts. Call {@link #connect()} to
-   * establish the connection.
+   * <p>The factory receives the facade's {@link Session.Events} sink and returns a session wired to
+   * deliver inbound ASDUs, data-transfer transitions, and self-initiated closes to it, and is given
+   * the facade's owned scheduler so the protocol session and the facade share one timer thread. The
+   * protocol assembly (the protocol-specific session and its wire framing) lives in the factory,
+   * not in this class. The client creates an internal single-thread scheduler for request timeouts.
+   * Call {@link #connect()} to establish the connection.
    *
-   * @param transport the transport that carries APDUs to and from the peer.
+   * @param transport the transport whose connection lifecycle the client drives.
    * @param config the client configuration.
-   * @throws NullPointerException if {@code transport} or {@code config} is null.
-   */
-  public DefaultIec60870Client(ClientTransport transport, ClientConfig config) {
-    this(transport, config, null);
-  }
-
-  /**
-   * Creates a client over the given transport and configuration, using an injected scheduler.
-   *
-   * <p>When {@code scheduler} is {@code null} an internal single-thread scheduler is created and
-   * shut down on {@link #close()}; otherwise the supplied scheduler is used and is never shut down
-   * by the client. A test may inject a deterministic scheduler here.
-   *
-   * @param transport the transport that carries APDUs to and from the peer.
-   * @param config the client configuration.
-   * @param scheduler the scheduler for protocol timers and request timeouts, or {@code null} to
-   *     create an internal one.
-   * @throws NullPointerException if {@code transport} or {@code config} is null.
+   * @param sessionFactory builds the session wired to the facade's {@link Session.Events}, using
+   *     the supplied scheduler.
+   * @throws NullPointerException if any argument is null.
    */
   public DefaultIec60870Client(
       ClientTransport transport,
       ClientConfig config,
+      BiFunction<Session.Events, ScheduledExecutorService, Session> sessionFactory) {
+    this(transport, config, sessionFactory, null);
+  }
+
+  /**
+   * Creates a client over the given transport and configuration, building its {@link Session}
+   * through the supplied factory and using an injected scheduler.
+   *
+   * <p>The factory receives the facade's {@link Session.Events} sink and the scheduler and returns
+   * a session wired to them. When {@code scheduler} is {@code null} an internal single-thread
+   * scheduler is created and shut down on {@link #close()}; otherwise the supplied scheduler is
+   * used and is never shut down by the client. A test may inject a deterministic scheduler here.
+   *
+   * @param transport the transport whose connection lifecycle the client drives.
+   * @param config the client configuration.
+   * @param sessionFactory builds the session wired to the facade's {@link Session.Events}, using
+   *     the supplied scheduler.
+   * @param scheduler the scheduler for request timeouts, or {@code null} to create an internal one.
+   * @throws NullPointerException if {@code transport}, {@code config}, or {@code sessionFactory} is
+   *     null.
+   */
+  public DefaultIec60870Client(
+      ClientTransport transport,
+      ClientConfig config,
+      BiFunction<Session.Events, ScheduledExecutorService, Session> sessionFactory,
       @Nullable ScheduledExecutorService scheduler) {
 
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
-    this.profile = config.protocolProfile();
+    Objects.requireNonNull(sessionFactory, "sessionFactory");
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -150,19 +154,15 @@ public final class DefaultIec60870Client implements Iec60870Client {
     this.callbackExecutor = config.callbackExecutor();
     this.publisher = new SubmissionPublisher<>(callbackExecutor, Flow.defaultBufferSize());
 
+    // The facade owns the Session.Events sink; the factory wires the session to it. The factory is
+    // responsible for routing inbound frames to the session and for routing a transport-level
+    // connection loss to Session.Events.onClosed, so the facade learns of every close through that
+    // single sink.
     this.session =
-        new ApciSession(
-            ApciSession.Role.CLIENT,
-            // Downcast the neutral session settings to the 104-specific ApciSettings; this downcast
-            // relocates to the cs104 binding in Phase 7.
-            (ApciSettings) config.sessionSettings(),
-            this.scheduler,
-            this::onSessionOutput,
-            new SessionEvents());
+        Objects.requireNonNull(
+            sessionFactory.apply(new SessionEvents(), this.scheduler), "session");
 
     this.commandService = new DefaultCommandService();
-
-    transport.setListener(new Listener());
   }
 
   // --- Iec60870Client: lifecycle ----------------------------------------------------------------
@@ -386,31 +386,6 @@ public final class DefaultIec60870Client implements Iec60870Client {
   }
 
   // --- Session output / input -----------------------------------------------------------------
-
-  /**
-   * Sends an APDU produced by the session over the transport.
-   *
-   * <p>Invoked under the session lock; the write is fire-and-forget. A failed write closes the
-   * session, which fails any pending requests.
-   *
-   * @param apdu the APDU to transmit.
-   */
-  private void onSessionOutput(Apdu apdu) {
-    // Transitional Apdu wiring: frame the APDU into a whole-frame ByteBuf and hand it to the octet
-    // transport, which owns and releases the buffer. This framing leaves the facade in Phase 7.
-    ByteBuf frame = ApduFramer.encode(apdu, profile, alloc);
-    transport
-        .send(frame)
-        .whenComplete(
-            (ignored, error) -> {
-              if (error != null) {
-                LOGGER.debug("transport send failed", error);
-                // A synchronous send failure runs this inline under the session lock; defer the
-                // close off the lock so the session does not re-enter and re-arm timers on itself.
-                callbackExecutor.execute(() -> handleConnectionLost(error));
-              }
-            });
-  }
 
   /**
    * Hands an outbound application ASDU to the session and returns a stage for the write.
@@ -657,28 +632,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
   }
 
   /**
-   * Handles loss of the underlying connection: closes the session, fails pending requests, and
-   * publishes a {@link ClientEvent.ConnectionClosed}.
-   *
-   * @param cause the failure that closed the connection, or {@code null} for an orderly close.
-   */
-  private void handleConnectionLost(@Nullable Throwable cause) {
-    session.close();
-    failAllPending(
-        cause != null
-            ? new ConnectionClosedException("connection lost", cause)
-            : new ConnectionClosedException("connection lost"));
-    publishConnectionClosed(cause);
-  }
-
-  /**
    * Publishes a {@link ClientEvent.ConnectionClosed} exactly once per connection.
    *
-   * <p>An error close runs two teardown paths — {@code ApciSession.closeWithError} -&gt; {@link
-   * SessionEvents#onClosed(Throwable)} first (carrying the real cause), then {@code
-   * transport.disconnect()} -&gt; {@code channelInactive} -&gt; {@link
-   * #handleConnectionLost(Throwable)} with a {@code null} cause. Only the first wins, so the real
-   * cause is not masked by a later {@code null}.
+   * <p>Every close — a self-initiated session close (protocol error or timeout) and a transport
+   * connection loss routed by the session assembly — arrives through {@link
+   * SessionEvents#onClosed(Throwable)}. Should both fire (for example a protocol-error close
+   * followed by the transport's own loss notification), only the first wins, so the real cause is
+   * not masked by a later {@code null}.
    *
    * @param cause the failure that closed the connection, or {@code null} for an orderly close.
    */
@@ -1108,7 +1068,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   // --- Session callbacks ----------------------------------------------------------------------
 
-  /** Bridges {@link ApciSession} events to the client. */
+  /**
+   * Bridges {@link Session} events to the client. Every inbound ASDU, data-transfer transition, and
+   * close — including a transport connection loss that the session assembly routes here — arrives
+   * through this single sink.
+   */
   private final class SessionEvents implements Session.Events {
 
     @Override
@@ -1134,25 +1098,6 @@ public final class DefaultIec60870Client implements Iec60870Client {
       } catch (RuntimeException e) {
         LOGGER.debug("transport disconnect failed after session close", e);
       }
-    }
-  }
-
-  /** Bridges transport callbacks to the session and the client. */
-  private final class Listener implements TransportListener {
-
-    @Override
-    public void onFrame(ByteBuf frame) {
-      // Transitional Apdu wiring: deframe the whole-frame ByteBuf the transport owns into an Apdu
-      // and feed it into the session's cs104-private downward seam. The transport owns the buffer,
-      // so we decode synchronously and never retain or release it. This wiring leaves the facade in
-      // Phase 7.
-      Apdu apdu = ApduFramer.decode(profile, frame);
-      ((ApciSession) session).onApdu(apdu);
-    }
-
-    @Override
-    public void onConnectionLost(@Nullable Throwable cause) {
-      handleConnectionLost(cause);
     }
   }
 

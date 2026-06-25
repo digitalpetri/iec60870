@@ -70,6 +70,14 @@ The facade turns the wire model into a domain API. It correlates requests with r
 command procedures, projects monitor objects onto point values, and delivers everything serially on a
 callback executor.
 
+The high-level layer lives in its own module, `iec60870-application`, which depends on
+`iec60870-core` only and carries **no Netty**. The facades speak purely in terms of `Asdu` and the
+neutral `Session` SPI: a `DefaultIec60870Client` is built around an injected `Session`, and a
+`DefaultIec60870Server` around a per-connection session factory. The protocol-specific session (a
+104 `ApciSession`) and its `Apdu`/`ByteBuf` framing are assembled outside the facade — today in the
+`TcpIec104Client`/`TcpIec104Server` builders — so the high-level layer itself never names a wire
+frame. See [modules-and-dependencies.md](modules-and-dependencies.md).
+
 ### Client
 
 `Iec60870Client` (interface; `DefaultIec60870Client` is the implementation) drives one connection:

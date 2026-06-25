@@ -29,6 +29,11 @@
     </dependency>
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
+      <artifactId>iec60870-application</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.digitalpetri.iec60870</groupId>
       <artifactId>iec60870-transport-tcp</artifactId>
       <version>${project.version}</version>
     </dependency>

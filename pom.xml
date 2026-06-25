@@ -38,6 +38,7 @@
 
   <modules>
     <module>iec60870-core</module>
+    <module>iec60870-application</module>
     <module>iec60870-transport-tcp</module>
     <module>iec60870-examples</module>
     <module>iec60870-tests</module>

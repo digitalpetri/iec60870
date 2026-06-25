@@ -1,25 +1,41 @@
 # Modules and Dependencies
 
-The library is a Maven multi-module build under the `iec60870-parent` POM. Two modules matter to a
-caller: `iec60870-core` (the protocol and the high-level API) and `iec60870-transport-tcp` (the Netty
-TCP/TLS transport). A third module, `iec60870-tests`, holds cross-module integration tests.
+The library is a Maven multi-module build under the `iec60870-parent` POM. Three modules matter to a
+caller: `iec60870-core` (the protocol model and SPIs), `iec60870-application` (the high-level
+`Iec60870Client`/`Iec60870Server` API, with no Netty), and `iec60870-transport-tcp` (the Netty
+TCP/TLS transport plus the builders that assemble a 104 stack). A fourth module, `iec60870-tests`,
+holds cross-module integration tests.
 
-## The core-vs-transport split
+## The core / application / transport split
 
-`iec60870-core` owns everything that is independent of how bytes reach the network:
+`iec60870-core` owns everything that is independent of how bytes reach the network and of the
+high-level facade:
 
 - the raw protocol model and codecs (`.asdu`, `.apci`, `.address`, `.asdu.element`, `.asdu.time`);
 - the APCI session engine (`com.digitalpetri.iec60870.apci.ApciSession`) — the symmetric sequence /
-  window / timer state machine used by both client and server;
-- the high-level client and server *interfaces* and their default implementations
-  (`Iec60870Client` / `DefaultIec60870Client`, `Iec60870Server` / `DefaultIec60870Server`);
-- the point and catalog model (`.point`, `.catalog`), the error model (package-root exceptions),
-  and the configuration types (`ProtocolProfile`, `ApciSettings`, `TlsOptions`);
+  window / timer state machine used by both roles — and the **`Session` SPI** (`.session`) it
+  implements;
+- the error model (package-root exceptions) and the configuration types (`ProtocolProfile`,
+  `SessionSettings` / `ApciSettings`, the neutral `OutboundQueuePolicy`, `TlsOptions`);
 - the **octet transport SPI** (`.transport`) — `ClientTransport`, `ServerTransport`,
-  `ServerTransportConnection`, `TransportListener` — which the core implementations drive but do not
+  `ServerTransportConnection`, `TransportListener` — which the implementations drive but do not
   implement. The SPI is shaped in **whole-frame `ByteBuf`s**: `send(ByteBuf)` and `onFrame(ByteBuf)`
   exchange one complete, length-delimited frame each. Turning a frame into an `Apdu` (via
   `ApduFramer`) happens above the SPI, so a future 101-over-TCP can reuse the same transport.
+
+`iec60870-application` owns the high-level layer and carries **no Netty at all** (not even
+`ByteBuf`):
+
+- the high-level client and server *interfaces* and their default implementations
+  (`Iec60870Client` / `DefaultIec60870Client`, `Iec60870Server` / `DefaultIec60870Server`);
+- the point and catalog model (`.point`, `.catalog`), the command/station model, and the
+  configuration records (`ClientConfig`, `ServerConfig`).
+
+It depends on `iec60870-core` only and speaks purely in terms of `Asdu` + the `Session` SPI. The
+facades never construct an `ApciSession` or touch `Apdu`/`ByteBuf` framing; instead they accept an
+**injected `Session`** (client) or a **per-connection session factory** (server), so the
+protocol-specific session and its wire framing are assembled elsewhere. A `NoNettyInApplicationTest`
+guard fails the build if any `io.netty.*` token appears in the application's main sources.
 
 `iec60870-transport-tcp` owns the Netty side:
 
@@ -33,11 +49,14 @@ TCP/TLS transport). A third module, `iec60870-tests`, holds cross-module integra
 - the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server`, whose builders carry the
   transport knobs (`host`, `port`, `localBind`, `TlsOptions`, bootstrap/event-loop customization).
 
-A builder in the transport module constructs the Netty transport plus a `DefaultIec60870Client` /
-`DefaultIec60870Server`, and `build()` returns the **core interface** type:
+A builder in the transport module is the transitional **104 assembly point**: it constructs the
+Netty transport, builds the `ApciSession` whose `Output` runs `ApduFramer.encode → transport.send`
+and whose inbound listener runs `ApduFramer.decode → ApciSession.onApdu`, and hands the assembled
+`Session` (client) / session factory (server) to `new DefaultIec60870Client(...)` /
+`new DefaultIec60870Server(...)`. `build()` then returns the **application interface** type:
 
 ```java
-// Returns com.digitalpetri.iec60870.client.Iec60870Client — a core type.
+// Returns com.digitalpetri.iec60870.client.Iec60870Client — an application type.
 try (Iec60870Client client = TcpIec104Client.builder()
         .host("127.0.0.1").port(2404)
         .startDataTransferOnConnect(true)
@@ -49,13 +68,13 @@ try (Iec60870Client client = TcpIec104Client.builder()
 
 This is a deliberate placement. The protocol methods on the returned object — `connect`,
 `startDataTransfer`, `interrogate`, `read`, `commands`, `events`, `synchronizeClock`, `send`,
-`close`, and the `*Async` variants — are all defined on the core `Iec60870Client` interface. Only the
-*transport wiring* (host, port, TLS) lives on the transport-module builder, because the dependency
-rule below forbids transport wiring from appearing in core.
+`close`, and the `*Async` variants — are all defined on the application `Iec60870Client` interface.
+Only the *transport wiring* (host, port, TLS) and the 104 session assembly live in the
+transport-module builder. (This assembly will move into a `Cs104Binding` in a later phase.)
 
-A caller who already has a transport implementation can bypass the builders entirely and construct
-`new DefaultIec60870Client(clientTransport, clientConfig)` directly; the high-level behavior is
-identical.
+A caller who already has a transport and a `Session` can bypass the builders entirely and construct
+`new DefaultIec60870Client(clientTransport, clientConfig, sessionFactory)` directly; the high-level
+behavior is identical.
 
 ## Dependency rules (the boundary that keeps core transport-agnostic)
 
@@ -96,8 +115,16 @@ back into core.
 
 | Module | Compile dependencies | Notes |
 |---|---|---|
-| `iec60870-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`; no channel/handler |
-| `iec60870-transport-tcp` | `iec60870-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler` |
+| `iec60870-core` | `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | `netty-buffer` confined to `Serde`/transport SPI; no channel/handler |
+| `iec60870-application` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `org.slf4j:slf4j-api` | **zero Netty**; depends on core only. Guarded by `NoNettyInApplicationTest` |
+| `iec60870-transport-tcp` | `iec60870-application`, `iec60870-core`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler`; hosts the transitional 104 session assembly |
+
+The sink modules (`iec60870-examples`, `iec60870-tests`, `iec60870-interop`) name `client`/`server`/
+`point` types directly, so each declares a **direct** `iec60870-application` dependency rather than
+relying on transitive reach through `iec60870-transport-tcp`. The internal dependency graph is
+acyclic with a single source: `application → core`, `transport-tcp → {application, core}`, and the
+sinks → `{application, transport-tcp}` (examples also → `core`). Nothing depends back into the
+application or transport modules.
 
 Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,
 `netty-channel-fsm` `1.0.x`, SLF4J `2.0.x`). The `netty-channel-fsm` dependency excludes

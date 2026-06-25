@@ -1,17 +1,12 @@
 package com.digitalpetri.iec60870.server;
 
-import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
-import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
-import com.digitalpetri.iec60870.apci.ApciSession;
-import com.digitalpetri.iec60870.apci.Apdu;
-import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
@@ -34,10 +29,6 @@ import com.digitalpetri.iec60870.point.TimeTagStyle;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
-import com.digitalpetri.iec60870.transport.TransportListener;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.UnpooledByteBufAllocator;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -67,17 +58,20 @@ import org.slf4j.LoggerFactory;
 /**
  * The default {@link Iec60870Server} implementation, driving any {@link ServerTransport}.
  *
- * <p>For each accepted connection the server creates an {@link ApciSession} in the {@link
- * ApciSession.Role#SERVER} role and dispatches received control-direction ASDUs to the configured
- * {@link ServerHandler}, answering interrogation, read, command, clock-synchronization, test, and
- * reset requests and mirroring unknown ones with the appropriate negative cause. {@link
- * #publish(PointAddress, PointValue, Cause)} updates the station image and pushes monitor ASDUs to
- * every started connection. Server events are delivered through a {@link SubmissionPublisher} on
- * the configured callback executor.
+ * <p>For each accepted connection the server builds a per-connection {@link Session} through the
+ * supplied session factory and dispatches received control-direction ASDUs to the configured {@link
+ * ServerHandler}, answering interrogation, read, command, clock-synchronization, test, and reset
+ * requests and mirroring unknown ones with the appropriate negative cause. The facade speaks to
+ * each {@link Session} purely in terms of {@link Asdu}s and receives inbound ASDUs and lifecycle
+ * transitions through a per-connection {@link Session.Events} sink it owns; the protocol-specific
+ * session and its wire framing are assembled in the factory. {@link #publish(PointAddress,
+ * PointValue, Cause)} updates the station image and pushes monitor ASDUs to every started
+ * connection. Server events are delivered through a {@link SubmissionPublisher} on the configured
+ * callback executor.
  *
- * <p>The instance is thread-safe. Construct it with a transport and a {@link ServerConfig}; the
- * server registers itself as the transport's connection handler on construction. Per-connection
- * handler callbacks are serialized.
+ * <p>The instance is thread-safe. Construct it with a transport, a {@link ServerConfig}, and a
+ * per-connection session factory; the server registers itself as the transport's connection handler
+ * on construction. Per-connection handler callbacks are serialized.
  */
 public final class DefaultIec60870Server implements Iec60870Server {
 
@@ -95,13 +89,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
   private final ServerConfig config;
 
   /**
-   * Transitional Apdu&lt;-&gt;ByteBuf framing glue used by each {@link ServerConnection} to frame
-   * outbound APDUs and deframe inbound frames until Phase 7 moves this into {@code Cs104Binding}.
-   * {@code Unpooled} is an acceptable allocator for this phase.
+   * Builds a {@link Session} for each accepted connection, wired to the connection's {@link
+   * Session.Events} sink and using the facade's shared scheduler. The protocol-specific session and
+   * its wire framing are assembled here, outside the facade.
    */
-  private final ProtocolProfile profile;
-
-  private final ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
+  private final SessionFactory sessionFactory;
 
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
@@ -116,22 +108,28 @@ public final class DefaultIec60870Server implements Iec60870Server {
   private final AtomicInteger connectionCount = new AtomicInteger();
 
   /**
-   * Creates a server over the given transport and configuration.
+   * Creates a server over the given transport and configuration, building each connection's {@link
+   * Session} through the supplied factory.
    *
-   * <p>The server registers itself as the transport's connection handler and creates an internal
-   * single-thread scheduler for the per-connection APCI timers. Call {@link #start()} to begin
-   * accepting connections.
+   * <p>The factory receives the accepted transport connection and the connection's {@link
+   * Session.Events} sink and returns a session wired to it. The protocol assembly (the
+   * protocol-specific session and its wire framing) lives in the factory, not in this class. The
+   * server registers itself as the transport's connection handler and creates an internal
+   * single-thread scheduler. Call {@link #start()} to begin accepting connections.
    *
    * @param transport the transport that accepts controlling-station connections.
    * @param config the server configuration.
-   * @throws NullPointerException if {@code transport} or {@code config} is null.
+   * @param sessionFactory builds each connection's session wired to its {@link Session.Events}.
+   * @throws NullPointerException if any argument is null.
    */
-  public DefaultIec60870Server(ServerTransport transport, ServerConfig config) {
-    this(transport, config, null);
+  public DefaultIec60870Server(
+      ServerTransport transport, ServerConfig config, SessionFactory sessionFactory) {
+    this(transport, config, sessionFactory, null);
   }
 
   /**
-   * Creates a server over the given transport and configuration, using an injected scheduler.
+   * Creates a server over the given transport and configuration, building each connection's {@link
+   * Session} through the supplied factory and using an injected scheduler.
    *
    * <p>When {@code scheduler} is {@code null} an internal single-thread scheduler is created and
    * shut down on {@link #close()}; otherwise the supplied scheduler is used and is never shut down
@@ -139,18 +137,21 @@ public final class DefaultIec60870Server implements Iec60870Server {
    *
    * @param transport the transport that accepts controlling-station connections.
    * @param config the server configuration.
-   * @param scheduler the scheduler for the per-connection APCI timers, or {@code null} to create an
-   *     internal one.
-   * @throws NullPointerException if {@code transport} or {@code config} is null.
+   * @param sessionFactory builds each connection's session wired to its {@link Session.Events}.
+   * @param scheduler the scheduler for per-connection timers, or {@code null} to create an internal
+   *     one.
+   * @throws NullPointerException if {@code transport}, {@code config}, or {@code sessionFactory} is
+   *     null.
    */
   public DefaultIec60870Server(
       ServerTransport transport,
       ServerConfig config,
+      SessionFactory sessionFactory,
       @Nullable ScheduledExecutorService scheduler) {
 
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
-    this.profile = config.protocolProfile();
+    this.sessionFactory = Objects.requireNonNull(sessionFactory, "sessionFactory");
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -164,6 +165,32 @@ public final class DefaultIec60870Server implements Iec60870Server {
     this.registry = new DefaultStationRegistry(config.stations());
 
     transport.setConnectionHandler(this::onAccept);
+  }
+
+  /**
+   * Builds a per-connection {@link Session} wired to the connection's {@link Session.Events} sink,
+   * using the facade's shared scheduler.
+   *
+   * <p>The protocol-specific session and its wire framing are assembled by the factory, outside the
+   * facade. The factory is responsible for routing inbound frames to the session and for routing a
+   * transport-level connection loss to {@link Session.Events#onClosed(Throwable)}, so the facade
+   * learns of every close through that single sink.
+   */
+  @FunctionalInterface
+  public interface SessionFactory {
+
+    /**
+     * Builds the session for an accepted connection.
+     *
+     * @param connection the accepted transport connection.
+     * @param events the connection's event sink, owned by the facade.
+     * @param scheduler the facade's shared scheduler for session timers.
+     * @return the session wired to {@code events}.
+     */
+    Session create(
+        ServerTransportConnection connection,
+        Session.Events events,
+        ScheduledExecutorService scheduler);
   }
 
   // --- Iec60870Server: lifecycle ----------------------------------------------------------------
@@ -247,7 +274,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           MonitorMapping.toMonitorObject(type, point.objectAddress(), value, config.timeTagStyle());
       Asdu asdu =
           new Asdu(
-              monitorTypeId(type),
+              MonitorTypes.of(type, config.timeTagStyle()),
               false,
               cause,
               false,
@@ -268,8 +295,9 @@ public final class DefaultIec60870Server implements Iec60870Server {
   // --- Connection acceptance ------------------------------------------------------------------
 
   /**
-   * Handles a newly accepted transport connection by creating per-connection state and registering
-   * the transport listener.
+   * Handles a newly accepted transport connection by creating per-connection state and building its
+   * session through the factory (which wires inbound frames and connection loss to the connection's
+   * event sink).
    *
    * @param transportConnection the accepted connection.
    */
@@ -288,7 +316,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
     ServerConnection connection = new ServerConnection(transportConnection);
     connections.add(connection);
-    transportConnection.setListener(connection.listener());
     connection.onConnected();
     publish(new ServerEvent.ConnectionAccepted(connection.remoteAddress()));
   }
@@ -343,23 +370,13 @@ public final class DefaultIec60870Server implements Iec60870Server {
         cause != null ? cause : new IllegalStateException("unknown failure"));
   }
 
-  /**
-   * Returns the untimed monitor type identification for a point type, used as the carrier type when
-   * building a published monitor ASDU together with the configured time-tag style.
-   *
-   * @param type the logical point type.
-   * @return the monitor ASDU type matching {@code type} and the configured time-tag style.
-   */
-  private AsduType monitorTypeId(PointType type) {
-    return MonitorTypes.of(type, config.timeTagStyle());
-  }
-
   // --- Per-connection state -------------------------------------------------------------------
 
   /**
-   * The server's state for a single accepted connection: an {@link ApciSession}, a serial dispatch
-   * chain that runs handler callbacks one at a time, and the transport listener that feeds inbound
-   * frames to the session.
+   * The server's state for a single accepted connection: a per-connection {@link Session} built by
+   * the factory and a serial dispatch chain that runs handler callbacks one at a time. The facade
+   * speaks to the session only in terms of {@link Asdu}s; inbound frames and connection loss are
+   * delivered through the connection's {@link Session.Events} sink, which the factory wires.
    */
   private final class ServerConnection {
 
@@ -375,46 +392,20 @@ public final class DefaultIec60870Server implements Iec60870Server {
     ServerConnection(ServerTransportConnection transportConnection) {
       this.transportConnection = transportConnection;
       this.remoteAddress = transportConnection.remoteAddress();
+      // The facade owns the Session.Events sink; the factory builds the protocol session wired to
+      // it, using the facade's shared scheduler.
       this.session =
-          new ApciSession(
-              ApciSession.Role.SERVER,
-              // Downcast the neutral session settings to the 104-specific ApciSettings; this
-              // downcast relocates to the cs104 binding in Phase 7.
-              (ApciSettings) config.sessionSettings(),
-              scheduler,
-              this::onSessionOutput,
-              new SessionEvents(),
-              config.maxOutboundQueue(),
-              config.eventQueuePolicy());
+          Objects.requireNonNull(
+              sessionFactory.create(transportConnection, new SessionEvents(), scheduler),
+              "session");
     }
 
     SocketAddress remoteAddress() {
       return remoteAddress;
     }
 
-    TransportListener listener() {
-      return new Listener();
-    }
-
     void onConnected() {
       session.onConnected();
-    }
-
-    /** Hands an outbound APDU produced by the session to the transport. */
-    private void onSessionOutput(Apdu apdu) {
-      // Transitional Apdu wiring: frame the APDU into a whole-frame ByteBuf and hand it to the
-      // octet transport, which owns and releases the buffer. This framing leaves the facade in
-      // Phase 7.
-      ByteBuf frame = ApduFramer.encode(apdu, profile, alloc);
-      transportConnection
-          .send(frame)
-          .whenComplete(
-              (ignored, error) -> {
-                if (error != null) {
-                  LOGGER.debug("send to {} failed", remoteAddress, error);
-                  close(error);
-                }
-              });
     }
 
     /**
@@ -429,12 +420,10 @@ public final class DefaultIec60870Server implements Iec60870Server {
       }
       // Apply backpressure for the BLOCK policy on the publishing thread, OUTSIDE the session lock,
       // before offering the ASDU. DROP_OLDEST / DROP_NEWEST are enforced inside the session's
-      // bounded send queue together with the k-window.
+      // bounded send queue together with the flow-control window.
       if (config.eventQueuePolicy() == OutboundQueuePolicy.BLOCK && config.maxOutboundQueue() > 0) {
         try {
-          // TODO(Phase 5): replace this cs104 downcast for the BLOCK-await timeout with a neutral
-          // ServerConfig.outboundBlockTimeout; a neutral SessionSettings has no t1.
-          session.awaitSendCapacity(((ApciSettings) config.sessionSettings()).t1().toMillis());
+          session.awaitSendCapacity(config.outboundBlockTimeout().toMillis());
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           return;
@@ -478,7 +467,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
      * Handles one received ASDU, returning a stage that completes when its reply has been queued.
      */
     private CompletionStage<Void> handle(Asdu asdu) {
-      publishEvent(new ServerEvent.AsduReceived(remoteAddress, asdu));
+      publish(new ServerEvent.AsduReceived(remoteAddress, asdu));
 
       ServerContext context = new Context(asdu.commonAddress());
 
@@ -752,7 +741,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     // --- Commands -----------------------------------------------------------------------------
 
     private CompletionStage<Void> handleCommand(ServerContext context, Asdu asdu) {
-      publishEvent(new ServerEvent.CommandReceived(remoteAddress, asdu));
+      publish(new ServerEvent.CommandReceived(remoteAddress, asdu));
 
       if (asdu.objects().isEmpty()) {
         send(mirror(asdu, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
@@ -917,14 +906,18 @@ public final class DefaultIec60870Server implements Iec60870Server {
       } catch (RuntimeException e) {
         LOGGER.debug("transport close failed for {}", remoteAddress, e);
       }
-      publishEvent(new ServerEvent.ConnectionClosed(remoteAddress, cause));
+      publish(new ServerEvent.ConnectionClosed(remoteAddress, cause));
     }
 
     private CompletionStage<Void> done() {
       return CompletableFuture.completedFuture(null);
     }
 
-    /** Bridges {@link ApciSession} events for this connection. */
+    /**
+     * Bridges {@link Session} events for this connection. Every inbound ASDU, data-transfer
+     * transition, and close — including a transport connection loss routed here by the session
+     * assembly — arrives through this single sink.
+     */
     private final class SessionEvents implements Session.Events {
 
       @Override
@@ -935,7 +928,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
       @Override
       public void onDataTransferStateChanged(boolean started) {
-        publishEvent(
+        publish(
             started
                 ? new ServerEvent.DataTransferStarted(remoteAddress)
                 : new ServerEvent.DataTransferStopped(remoteAddress));
@@ -943,25 +936,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
       @Override
       public void onClosed(@Nullable Throwable cause) {
-        close(cause);
-      }
-    }
-
-    /** Bridges transport callbacks for this connection to the session. */
-    private final class Listener implements TransportListener {
-
-      @Override
-      public void onFrame(ByteBuf frame) {
-        // Transitional Apdu wiring: deframe the whole-frame ByteBuf the transport owns into an Apdu
-        // and feed it into the session's cs104-private downward seam. The transport owns the
-        // buffer, so we decode synchronously and never retain or release it. This wiring leaves the
-        // facade in Phase 7.
-        Apdu apdu = ApduFramer.decode(profile, frame);
-        ((ApciSession) session).onApdu(apdu);
-      }
-
-      @Override
-      public void onConnectionLost(@Nullable Throwable cause) {
         close(cause);
       }
     }
@@ -1029,15 +1003,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
         ServerConnection.this.send(asdu);
       }
     }
-  }
-
-  /**
-   * Publishes an event from a per-connection context.
-   *
-   * @param event the event to publish.
-   */
-  private void publishEvent(ServerEvent event) {
-    publish(event);
   }
 
   // --- Static helpers -------------------------------------------------------------------------

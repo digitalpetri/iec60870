@@ -5,9 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.digitalpetri.iec60870.ApciSettings;
-import com.digitalpetri.iec60870.OutboundQueuePolicy;
-import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
@@ -31,14 +28,14 @@ import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.fakes.FakeServerTransport;
+import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
+import com.digitalpetri.iec60870.session.Session;
 import java.net.SocketAddress;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -47,13 +44,13 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
-import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-/** Unit tests for {@link DefaultIec60870Server} dispatch driven by a fake transport. */
+/**
+ * Unit tests for {@link DefaultIec60870Server} dispatch driven by a neutral fake {@link Session}.
+ */
 class DefaultIec60870ServerTest {
 
   private static final CommonAddress CA = CommonAddress.of(1);
@@ -70,9 +67,6 @@ class DefaultIec60870ServerTest {
     transport = new FakeServerTransport();
   }
 
-  @AfterEach
-  void tearDown() {}
-
   private Station singlePointStation() {
     return Station.builder(CA)
         .point(
@@ -87,6 +81,19 @@ class DefaultIec60870ServerTest {
         .build();
   }
 
+  /**
+   * Builds a session factory that creates a SERVER-role fake session honoring the config's outbound
+   * bound and policy, attaches it to the accepted fake connection, and returns it.
+   */
+  private static DefaultIec60870Server.SessionFactory sessionFactory(ServerConfig config) {
+    return (connection, events, scheduler) -> {
+      FakeSession session =
+          FakeSession.server(events, config.maxOutboundQueue(), config.eventQueuePolicy());
+      ((FakeServerTransport.FakeConnection) connection).attachSession(session);
+      return session;
+    };
+  }
+
   private DefaultIec60870Server server(ServerHandler handler) {
     ServerConfig config =
         ServerConfig.builder()
@@ -95,7 +102,7 @@ class DefaultIec60870ServerTest {
             .timeTagStyle(TimeTagStyle.NONE)
             .callbackExecutor(DIRECT)
             .build();
-    return new DefaultIec60870Server(transport, config);
+    return new DefaultIec60870Server(transport, config, sessionFactory(config));
   }
 
   private Asdu control(AsduType type, Cause cause, InformationObject object) {
@@ -441,7 +448,7 @@ class DefaultIec60870ServerTest {
     // Path A: a fatal protocol error self-closes the session -> SessionEvents.onClosed -> close().
     connection.deliverBadAcknowledgement(
         control(AsduType.C_SC_NA_1, Cause.SPONTANEOUS, singleCommand()));
-    // Path B: the transport later reports the loss -> Listener.onConnectionLost -> close() again.
+    // Path B: the transport later reports the loss -> a second onClosed is a no-op on the session.
     connection.loseConnection();
 
     long closedEvents =
@@ -465,11 +472,12 @@ class DefaultIec60870ServerTest {
             .callbackExecutor(DIRECT)
             .maxConnections(1)
             .build();
-    DefaultIec60870Server server = new DefaultIec60870Server(transport, config);
+    DefaultIec60870Server server =
+        new DefaultIec60870Server(transport, config, sessionFactory(config));
     server.start();
 
     FakeServerTransport.FakeConnection first = transport.accept("client-1");
-    // The cap is 1: the second connection is rejected (closed immediately, no listener wired).
+    // The cap is 1: the second connection is rejected (closed immediately, no session attached).
     FakeServerTransport.FakeConnection second = transport.accept("client-2");
     assertTrue(second.isClosed(), "a connection past the cap must be rejected");
 
@@ -526,7 +534,7 @@ class DefaultIec60870ServerTest {
   // --- F19: empty C_TS_TA_1 echo must encode cleanly -------------------------------------------
 
   @Test
-  void emptyTimedTestCommandReplyEncodesCleanly() {
+  void emptyTimedTestCommandReplyEchoesTimedCommand() {
     DefaultIec60870Server server = server(new ServerHandler() {});
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
@@ -551,14 +559,6 @@ class DefaultIec60870ServerTest {
     Asdu reply = sent.get(0);
     assertEquals(AsduType.C_TS_TA_1, reply.type());
     assertTrue(reply.objects().get(0) instanceof TestCommandWithCp56Time);
-
-    // Encoding the reply through the real codec must not throw (the original bug threw here).
-    ByteBuf buffer = Unpooled.buffer();
-    try {
-      Asdu.Serde.encode(reply, ProtocolProfile.iec104Default(), buffer);
-    } finally {
-      buffer.release();
-    }
 
     server.close();
   }
@@ -593,7 +593,8 @@ class DefaultIec60870ServerTest {
             .timeTagStyle(TimeTagStyle.NONE)
             .callbackExecutor(DIRECT)
             .build();
-    DefaultIec60870Server server = new DefaultIec60870Server(transport, config);
+    DefaultIec60870Server server =
+        new DefaultIec60870Server(transport, config, sessionFactory(config));
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
@@ -632,47 +633,6 @@ class DefaultIec60870ServerTest {
             .filter(a -> a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER)
             .count();
     assertEquals(2, generalMonitors, "a general request reports every integrated-totals point");
-
-    server.close();
-  }
-
-  // --- F5: bounded outbound queue honors DROP_NEWEST under server publish ----------------------
-
-  @Test
-  void serverBoundedQueueHonorsDropNewest() {
-    ServerConfig config =
-        ServerConfig.builder()
-            .station(singlePointStation())
-            .handler(new ServerHandler() {})
-            .timeTagStyle(TimeTagStyle.NONE)
-            .callbackExecutor(DIRECT)
-            .eventQueuePolicy(OutboundQueuePolicy.DROP_NEWEST)
-            .maxOutboundQueue(2)
-            // k = 1 so a single in-flight frame fills the window and the rest queue.
-            .sessionSettings(
-                new ApciSettings(
-                    UShort.valueOf(1),
-                    UShort.valueOf(1),
-                    Duration.ofSeconds(30),
-                    Duration.ofSeconds(15),
-                    Duration.ofSeconds(10),
-                    Duration.ofSeconds(20)))
-            .build();
-    DefaultIec60870Server server = new DefaultIec60870Server(transport, config);
-    server.start();
-    FakeServerTransport.FakeConnection connection = transport.accept("client");
-    connection.startDataTransfer();
-
-    // The fake transport never acknowledges, so after the first frame transmits the window stays
-    // shut and further publishes pile into the bounded queue (bound 2, DROP_NEWEST).
-    for (int i = 0; i < 10; i++) {
-      server.publish(POINT, PointValue.single(i % 2 == 0), Cause.SPONTANEOUS);
-    }
-
-    // One frame transmitted (k=1) plus at most the bound (2) queued: never the full 10.
-    assertTrue(
-        connection.sentAsdus().size() <= 1 + 2,
-        "DROP_NEWEST must keep the queue bounded: " + connection.sentAsdus().size());
 
     server.close();
   }

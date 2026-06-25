@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -39,6 +40,8 @@ import java.util.concurrent.ForkJoinPool;
  * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
  * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code 0}
  *     for an unbounded queue.
+ * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
+ *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
  * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
  *     and published updates).
  * @param maxConnections the maximum number of concurrent controlling-station connections.
@@ -51,6 +54,7 @@ public record ServerConfig(
     ServerHandler handler,
     OutboundQueuePolicy eventQueuePolicy,
     int maxOutboundQueue,
+    Duration outboundBlockTimeout,
     TimeTagStyle timeTagStyle,
     int maxConnections,
     Executor callbackExecutor) {
@@ -66,13 +70,15 @@ public record ServerConfig(
    * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
    * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code
    *     0} for an unbounded queue.
+   * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
+   *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
    * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
    *     and published updates).
    * @param maxConnections the maximum number of concurrent controlling-station connections.
    * @param callbackExecutor the executor used to deliver events and run handler callbacks.
    * @throws NullPointerException if any non-primitive component is null.
-   * @throws IllegalArgumentException if {@code maxConnections} is not positive or {@code
-   *     maxOutboundQueue} is negative.
+   * @throws IllegalArgumentException if {@code maxConnections} is not positive, {@code
+   *     maxOutboundQueue} is negative, or {@code outboundBlockTimeout} is not positive.
    */
   public ServerConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -80,6 +86,7 @@ public record ServerConfig(
     Objects.requireNonNull(stations, "stations");
     Objects.requireNonNull(handler, "handler");
     Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
+    Objects.requireNonNull(outboundBlockTimeout, "outboundBlockTimeout");
     Objects.requireNonNull(timeTagStyle, "timeTagStyle");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     if (maxConnections < 1) {
@@ -87,6 +94,10 @@ public record ServerConfig(
     }
     if (maxOutboundQueue < 0) {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
+    }
+    if (outboundBlockTimeout.isZero() || outboundBlockTimeout.isNegative()) {
+      throw new IllegalArgumentException(
+          "outboundBlockTimeout must be positive: " + outboundBlockTimeout);
     }
     stations = List.copyOf(stations);
   }
@@ -114,6 +125,7 @@ public record ServerConfig(
     private ServerHandler handler = new ServerHandler() {};
     private OutboundQueuePolicy eventQueuePolicy = OutboundQueuePolicy.DEFAULT;
     private int maxOutboundQueue = 1000;
+    private Duration outboundBlockTimeout = Duration.ofSeconds(15);
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
     private int maxConnections = 16;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
@@ -209,6 +221,19 @@ public record ServerConfig(
     }
 
     /**
+     * Sets the maximum time a publishing thread waits for outbound-queue capacity under the {@link
+     * OutboundQueuePolicy#BLOCK} policy before giving up on a value. Defaults to {@code 15s}.
+     *
+     * @param outboundBlockTimeout the block-await timeout; must be positive.
+     * @return this builder.
+     */
+    public Builder outboundBlockTimeout(Duration outboundBlockTimeout) {
+      this.outboundBlockTimeout =
+          Objects.requireNonNull(outboundBlockTimeout, "outboundBlockTimeout");
+      return this;
+    }
+
+    /**
      * Sets the time-tag style used when reporting monitor data. Defaults to {@link
      * TimeTagStyle#CP56}.
      *
@@ -263,6 +288,7 @@ public record ServerConfig(
           handler,
           eventQueuePolicy,
           maxOutboundQueue,
+          outboundBlockTimeout,
           timeTagStyle,
           maxConnections,
           callbackExecutor);

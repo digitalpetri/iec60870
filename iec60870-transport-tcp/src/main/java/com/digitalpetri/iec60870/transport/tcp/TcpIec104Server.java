@@ -3,17 +3,27 @@ package com.digitalpetri.iec60870.transport.tcp;
 import com.digitalpetri.iec60870.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.apci.ApciSession;
+import com.digitalpetri.iec60870.apci.Apdu;
+import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
+import com.digitalpetri.iec60870.session.Session;
+import com.digitalpetri.iec60870.transport.ServerTransportConnection;
+import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.EventLoopGroup;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 
@@ -264,8 +274,80 @@ public final class TcpIec104Server {
       if (callbackExecutor != null) {
         serverConfigBuilder.callbackExecutor(callbackExecutor);
       }
+      ServerConfig serverConfig = serverConfigBuilder.build();
 
-      return new DefaultIec60870Server(transport, serverConfigBuilder.build());
+      ProtocolProfile sessionProfile = profile;
+      ApciSettings apciSettings = apci;
+
+      // Transitional 104 assembly hosted in the builder: for each accepted connection build a
+      // SERVER-role ApciSession whose Output frames APDUs and writes them as whole frames to the
+      // connection, register an octet listener that deframes inbound frames into the session and
+      // routes a connection loss to the facade's Session.Events.onClosed, and hand the assembled
+      // Session back to the facade. Phase 7 relocates this assembly into Cs104Binding.
+      return new DefaultIec60870Server(
+          transport,
+          serverConfig,
+          (connection, events, scheduler) ->
+              assembleServerSession(
+                  connection, events, scheduler, apciSettings, sessionProfile, serverConfig));
+    }
+
+    private static Session assembleServerSession(
+        ServerTransportConnection connection,
+        Session.Events events,
+        ScheduledExecutorService scheduler,
+        ApciSettings apciSettings,
+        ProtocolProfile profile,
+        ServerConfig config) {
+
+      ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
+
+      // The session is referenced by the Output and the listener below, both of which run only
+      // after
+      // construction; hold it in a one-element array so they can close it on a failed write.
+      ApciSession[] holder = new ApciSession[1];
+
+      ApciSession session =
+          new ApciSession(
+              ApciSession.Role.SERVER,
+              apciSettings,
+              scheduler,
+              apdu -> {
+                // Frame the APDU into a whole-frame ByteBuf and hand it to the connection, which
+                // owns and releases the buffer. A failed write closes the session and routes the
+                // loss to the facade through Session.Events.onClosed.
+                ByteBuf frame = ApduFramer.encode(apdu, profile, alloc);
+                connection
+                    .send(frame)
+                    .whenComplete(
+                        (ignored, error) -> {
+                          if (error != null) {
+                            holder[0].close();
+                            events.onClosed(error);
+                          }
+                        });
+              },
+              events,
+              config.maxOutboundQueue(),
+              config.eventQueuePolicy());
+      holder[0] = session;
+
+      connection.setListener(
+          new TransportListener() {
+            @Override
+            public void onFrame(ByteBuf frame) {
+              Apdu apdu = ApduFramer.decode(profile, frame);
+              session.onApdu(apdu);
+            }
+
+            @Override
+            public void onConnectionLost(@Nullable Throwable cause) {
+              session.close();
+              events.onClosed(cause);
+            }
+          });
+
+      return session;
     }
   }
 }

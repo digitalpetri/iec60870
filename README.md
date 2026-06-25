@@ -12,12 +12,16 @@ published to Maven Central (see [Dependency](#dependency)).
 
 ## Modules
 
-- `iec60870-core`: core protocol model, serializers/codecs, client/server APIs, and transport
-  interfaces. Contains the raw ASDU layer (every standard TypeID with a co-located `Serde`), the APCI
-  session engine, and the high-level `Iec60870Client`/`Iec60870Server` facades. No Netty runtime types
-  appear in its public API.
+- `iec60870-core`: core protocol model, serializers/codecs, and SPIs. Contains the raw ASDU layer
+  (every standard TypeID with a co-located `Serde`), the APCI session engine, the `Session` and
+  transport interfaces, and `ProtocolProfile`/`SessionSettings`. No Netty runtime types appear in its
+  public API.
+- `iec60870-application`: the high-level layer with **no** Netty. Holds the `Iec60870Client` /
+  `Iec60870Server` facades and the command/station/point/catalog model; depends on `iec60870-core`
+  only and speaks purely in terms of `Asdu` + the `Session` SPI.
 - `iec60870-transport-tcp`: Netty-backed TCP/TLS transport implementation, plus the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders.
+  `TcpIec104Client` / `TcpIec104Server` builders, which assemble the 104 session and framing and
+  return the high-level facade.
 - `iec60870-examples`: runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests`: cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop`: interoperability tests that drive the library against `lib60870-C` peer images
