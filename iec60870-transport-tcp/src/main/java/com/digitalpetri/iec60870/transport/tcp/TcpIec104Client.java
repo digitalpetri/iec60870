@@ -226,7 +226,6 @@ public final class TcpIec104Client {
           NettyClientTransportConfig.builder(host, port)
               .localBind(localBind)
               .connectTimeout(apci.t0())
-              .profile(profile)
               .tlsOptions(tls)
               .sharedEventLoopGroup(eventLoopGroup)
               .bootstrapCustomizer(bootstrapCustomizer)

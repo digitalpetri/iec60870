@@ -29,10 +29,10 @@ import org.slf4j.LoggerFactory;
  * A Netty-backed {@link ServerTransport} that accepts inbound IEC 60870-5-104 connections.
  *
  * <p>A {@link ServerBootstrap} binds the listening endpoint. Each accepted child channel is given
- * the fixed pipeline {@code [SslHandler?] -> frameDecoder -> frameEncoder -> inboundHandler} via
- * {@link Iec104Pipeline}, wrapped in a {@link NettyServerConnection}, and delivered to the
- * registered connection handler. Accepted channels are tracked in a {@link ChannelGroup} so {@link
- * #unbind()} can close the listening channel and every child channel.
+ * the fixed pipeline {@code [SslHandler?] -> frameDecoder -> inboundHandler} via {@link
+ * Iec104Pipeline}, wrapped in a {@link NettyServerConnection}, and delivered to the registered
+ * connection handler. Accepted channels are tracked in a {@link ChannelGroup} so {@link #unbind()}
+ * can close the listening channel and every child channel.
  *
  * <p>The {@code maxConnections} cap is enforced at accept time: when the cap is already reached the
  * newly accepted channel is closed before the connection handler sees it.
@@ -196,11 +196,7 @@ public class NettyServerTransport implements ServerTransport {
     NettyServerConnection connection = new NettyServerConnection(channel);
 
     Iec104Pipeline.configure(
-        channel,
-        config.profile(),
-        config.tlsOptionsOptional().orElse(null),
-        false,
-        connection::listener);
+        channel, config.tlsOptionsOptional().orElse(null), false, connection::listener);
 
     Consumer<ServerTransportConnection> handler = connectionHandler.get();
     if (handler != null) {

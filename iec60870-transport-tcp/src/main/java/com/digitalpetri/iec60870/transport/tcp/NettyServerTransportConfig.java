@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.EventLoopGroup;
@@ -13,16 +12,17 @@ import org.jspecify.annotations.Nullable;
  * Immutable transport-layer configuration for a {@link NettyServerTransport}.
  *
  * <p>This holder carries everything the Netty server transport needs to bind a listening endpoint
- * and frame accepted connections: the bind host and port, the wire profile, optional TLS, optional
- * externally-owned boss and worker {@link EventLoopGroup}s, a connection cap, and an optional
- * {@link ServerBootstrap} customizer. Protocol-layer concerns (stations, handler) belong on the
- * core {@code ServerConfig}, not here.
+ * and frame accepted connections: the bind host and port, optional TLS, optional externally-owned
+ * boss and worker {@link EventLoopGroup}s, a connection cap, and an optional {@link
+ * ServerBootstrap} customizer. The octet transport is profile-agnostic — it frames whole {@code
+ * ByteBuf}s and never parses an APDU — so the wire profile lives with the protocol binding, not
+ * here. Protocol-layer concerns (stations, handler) belong on the core {@code ServerConfig}, not
+ * here.
  *
  * <p>Construct instances through {@link #builder(String, int)}.
  *
  * @param bindHost the local host name or address to bind the listening socket to.
  * @param port the local TCP port to listen on.
- * @param profile the protocol profile that governs ASDU field widths.
  * @param tlsOptions the TLS options, or {@code null} for plaintext connections.
  * @param bossEventLoopGroup an externally-owned acceptor {@link EventLoopGroup}, or {@code null} to
  *     let the transport create and own one.
@@ -36,7 +36,6 @@ import org.jspecify.annotations.Nullable;
 public record NettyServerTransportConfig(
     String bindHost,
     int port,
-    ProtocolProfile profile,
     @Nullable TlsOptions tlsOptions,
     @Nullable EventLoopGroup bossEventLoopGroup,
     @Nullable EventLoopGroup workerEventLoopGroup,
@@ -48,7 +47,6 @@ public record NettyServerTransportConfig(
    *
    * @param bindHost the local host name or address to bind the listening socket to.
    * @param port the local TCP port to listen on.
-   * @param profile the protocol profile that governs ASDU field widths.
    * @param tlsOptions the TLS options, or {@code null} for plaintext connections.
    * @param bossEventLoopGroup an externally-owned acceptor {@link EventLoopGroup}, or {@code null}
    *     to let the transport create and own one.
@@ -58,13 +56,12 @@ public record NettyServerTransportConfig(
    *     connections are closed immediately.
    * @param serverBootstrapCustomizer a hook to mutate the {@link ServerBootstrap} before binding,
    *     or {@code null} for none.
-   * @throws NullPointerException if {@code bindHost} or {@code profile} is null.
+   * @throws NullPointerException if {@code bindHost} is null.
    * @throws IllegalArgumentException if {@code port} is not in {@code 0..65535} or {@code
    *     maxConnections} is not positive.
    */
   public NettyServerTransportConfig {
     Objects.requireNonNull(bindHost, "bindHost");
-    Objects.requireNonNull(profile, "profile");
     if (port < 0 || port > 65535) {
       throw new IllegalArgumentException("port must be in 0..65535: " + port);
     }
@@ -132,7 +129,6 @@ public record NettyServerTransportConfig(
 
     private final String bindHost;
     private final int port;
-    private ProtocolProfile profile = ProtocolProfile.iec104Default();
     private @Nullable TlsOptions tlsOptions;
     private @Nullable EventLoopGroup bossEventLoopGroup;
     private @Nullable EventLoopGroup workerEventLoopGroup;
@@ -142,17 +138,6 @@ public record NettyServerTransportConfig(
     private Builder(String bindHost, int port) {
       this.bindHost = Objects.requireNonNull(bindHost, "bindHost");
       this.port = port;
-    }
-
-    /**
-     * Sets the protocol profile. Defaults to {@link ProtocolProfile#iec104Default()}.
-     *
-     * @param profile the protocol profile.
-     * @return this builder.
-     */
-    public Builder profile(ProtocolProfile profile) {
-      this.profile = Objects.requireNonNull(profile, "profile");
-      return this;
     }
 
     /**
@@ -224,7 +209,6 @@ public record NettyServerTransportConfig(
       return new NettyServerTransportConfig(
           bindHost,
           port,
-          profile,
           tlsOptions,
           bossEventLoopGroup,
           workerEventLoopGroup,

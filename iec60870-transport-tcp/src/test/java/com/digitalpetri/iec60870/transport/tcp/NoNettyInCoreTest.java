@@ -19,8 +19,9 @@ import org.junit.jupiter.api.Test;
  * <p>The library's central rule (CONTRACT.md, D2) is that Netty {@code Channel}, {@code
  * EventLoopGroup}, {@code SslHandler}, and the {@code io.netty.channel.*}/{@code
  * io.netty.handler.*} packages live only in this transport module. The single allowed exception is
- * {@code io.netty.buffer.ByteBuf}, which appears inside the co-located {@code Serde} codecs in
- * core's {@code .asdu}/{@code .apci}/{@code .address} packages (the deliberate {@code netty-buffer}
+ * {@code io.netty.buffer.ByteBuf}, the sanctioned codec-boundary type: it appears inside the
+ * co-located {@code Serde} codecs in core's {@code .asdu}/{@code .apci}/{@code .address} packages
+ * and on the octet transport SPI in {@code .transport} (the deliberate {@code netty-buffer}
  * dependency).
  *
  * <p>This test scans every {@code .java} file under the core module's main source tree and fails if

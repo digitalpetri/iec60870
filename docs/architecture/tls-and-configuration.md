@@ -42,7 +42,8 @@ On the server side, the only TLS context exposed to the application is deliberat
 
 - `SocketAddress remoteAddress()`, and
 - `Optional<java.security.cert.Certificate> peerCertificate()` — the peer's certificate when the
-  connection is secured with TLS and the peer presented one, otherwise empty.
+  connection is secured with TLS and the peer presented one; always empty for a non-TLS or serial
+  transport, which carries no peer certificate.
 
 There is no leak of `SSLSession`, `SslHandler`, or any other engine type into core; the connection
 surfaces just the remote address and the peer certificate, which is all a server needs to authorize a

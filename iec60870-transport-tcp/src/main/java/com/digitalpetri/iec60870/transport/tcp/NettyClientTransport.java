@@ -2,7 +2,6 @@ package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.fsm.FsmContext;
 import com.digitalpetri.iec60870.ConnectionClosedException;
-import com.digitalpetri.iec60870.apci.Apdu;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import com.digitalpetri.netty.fsm.ChannelActions;
@@ -12,6 +11,7 @@ import com.digitalpetri.netty.fsm.ChannelFsmFactory;
 import com.digitalpetri.netty.fsm.Event;
 import com.digitalpetri.netty.fsm.State;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -40,13 +40,13 @@ import org.slf4j.LoggerFactory;
  * com.digitalpetri.netty.fsm.Event.Disconnect} and stops reconnection.
  *
  * <p>Each connect attempt builds the fixed pipeline {@code [SslHandler?] -> frameDecoder ->
- * frameEncoder -> inboundHandler} via {@link Iec104Pipeline}. When TLS is configured, the {@link
+ * inboundHandler} via {@link Iec104Pipeline}. When TLS is configured, the {@link
  * ChannelActions#connect} future — and therefore the {@link #connect()} stage — completes only
  * after the {@link SslHandler#handshakeFuture() TLS handshake} succeeds, satisfying the contract
  * that {@code connect()} resolves only on a fully-ready secure channel.
  *
  * <p>Inbound frames and connection-loss notifications are delivered to the registered {@link
- * TransportListener} by the terminal {@link InboundApduHandler}. The listener is held in an {@link
+ * TransportListener} by the terminal {@link InboundFrameHandler}. The listener is held in an {@link
  * AtomicReference} and resolved lazily, so it may be set before or after {@link #connect()}.
  *
  * <p>This transport is thread-safe: lifecycle calls delegate to the internally-synchronized FSM and
@@ -119,7 +119,7 @@ public class NettyClientTransport implements ClientTransport {
   }
 
   @Override
-  public CompletionStage<Void> send(Apdu apdu) {
+  public CompletionStage<Void> send(ByteBuf frame) {
     CompletableFuture<Void> result = new CompletableFuture<>();
 
     channelFsm
@@ -128,7 +128,7 @@ public class NettyClientTransport implements ClientTransport {
             (channel, ex) -> {
               if (channel != null) {
                 channel
-                    .writeAndFlush(apdu)
+                    .writeAndFlush(frame)
                     .addListener(
                         future -> {
                           if (future.isSuccess()) {
@@ -141,6 +141,9 @@ public class NettyClientTransport implements ClientTransport {
                           }
                         });
               } else {
+                // No channel to write to: writeAndFlush never runs, so release the caller-owned
+                // frame here to honor the send() ownership contract and avoid a leak.
+                frame.release();
                 result.completeExceptionally(new ConnectionClosedException("not connected", ex));
               }
             });
@@ -183,7 +186,6 @@ public class NettyClientTransport implements ClientTransport {
                     protected void initChannel(Channel channel) {
                       Iec104Pipeline.configure(
                           channel,
-                          config.profile(),
                           config.tlsOptionsOptional().orElse(null),
                           true,
                           listener::get,

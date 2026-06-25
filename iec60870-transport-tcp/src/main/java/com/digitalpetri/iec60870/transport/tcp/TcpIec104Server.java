@@ -243,7 +243,6 @@ public final class TcpIec104Server {
     public Iec60870Server build() {
       NettyServerTransportConfig transportConfig =
           NettyServerTransportConfig.builder(bindAddress, port)
-              .profile(profile)
               .tlsOptions(tls)
               .bossEventLoopGroup(bossEventLoopGroup)
               .workerEventLoopGroup(workerEventLoopGroup)

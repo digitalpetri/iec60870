@@ -1,7 +1,7 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.apci.Apdu;
 import com.digitalpetri.iec60870.transport.TransportListener;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import java.util.function.Supplier;
@@ -10,12 +10,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The terminal inbound pipeline handler that forwards decoded {@link Apdu} frames to a {@link
+ * The terminal inbound pipeline handler that forwards each whole-frame {@link ByteBuf} to a {@link
  * TransportListener} and reports connection loss exactly once.
  *
  * <p>This handler sits at the end of the pipeline, downstream of the {@link Iec104FrameDecoder}.
- * For every decoded {@link Apdu} it invokes {@link TransportListener#onApdu(Apdu)}. When the
- * channel goes inactive or an exception reaches the tail of the pipeline it invokes {@link
+ * For every complete frame it invokes {@link TransportListener#onFrame(ByteBuf)}. Because this
+ * handler extends {@link SimpleChannelInboundHandler} with auto-release enabled, the frame is
+ * released once {@code onFrame} returns: the transport owns the buffer and the listener must decode
+ * it synchronously without retaining it, matching the SPI's inbound buffer-ownership contract. When
+ * the channel goes inactive or an exception reaches the tail of the pipeline it invokes {@link
  * TransportListener#onConnectionLost(Throwable)} once, guarding against duplicate notifications so
  * a channel error followed by inactivity does not deliver two callbacks.
  *
@@ -25,12 +28,12 @@ import org.slf4j.LoggerFactory;
  * listener before any traffic is expected.
  *
  * <p>Callbacks run on the Netty event-loop thread. As documented on {@link TransportListener}, the
- * core APCI session is a non-blocking single-writer consumer of these callbacks; user-facing
+ * protocol layer above is a non-blocking single-writer consumer of these callbacks; user-facing
  * blocking work is hopped to a callback executor by the high-level client and server, never here.
  */
-class InboundApduHandler extends SimpleChannelInboundHandler<Apdu> {
+class InboundFrameHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
-  private static final Logger LOGGER = LoggerFactory.getLogger(InboundApduHandler.class);
+  private static final Logger LOGGER = LoggerFactory.getLogger(InboundFrameHandler.class);
 
   private boolean connectionLostSignaled = false;
 
@@ -42,26 +45,28 @@ class InboundApduHandler extends SimpleChannelInboundHandler<Apdu> {
    * @param listenerSupplier supplies the current {@link TransportListener}, or {@code null} if none
    *     is registered yet.
    */
-  InboundApduHandler(Supplier<@Nullable TransportListener> listenerSupplier) {
-    // autoRelease is irrelevant: Apdu is a decoded POJO, not a reference-counted buffer.
-    super(Apdu.class, false);
+  InboundFrameHandler(Supplier<@Nullable TransportListener> listenerSupplier) {
+    // autoRelease is true: the frame ByteBuf is released after channelRead0 returns, which is why
+    // the SPI requires onFrame to decode synchronously and not retain the buffer.
+    super(ByteBuf.class, true);
 
     this.listenerSupplier = listenerSupplier;
   }
 
   /**
-   * Forwards a decoded inbound APDU to the registered listener.
+   * Forwards one inbound whole-frame {@link ByteBuf} to the registered listener.
    *
    * @param ctx the channel handler context.
-   * @param apdu the decoded application protocol data unit.
+   * @param frame the complete length-delimited frame; released by the framework after this returns.
    */
   @Override
-  protected void channelRead0(ChannelHandlerContext ctx, Apdu apdu) {
+  protected void channelRead0(ChannelHandlerContext ctx, ByteBuf frame) {
     TransportListener listener = listenerSupplier.get();
     if (listener != null) {
-      listener.onApdu(apdu);
+      listener.onFrame(frame);
     } else {
-      LOGGER.debug("dropping inbound APDU; no listener registered: {}", apdu);
+      LOGGER.debug(
+          "dropping inbound frame; no listener registered ({} octets)", frame.readableBytes());
     }
   }
 

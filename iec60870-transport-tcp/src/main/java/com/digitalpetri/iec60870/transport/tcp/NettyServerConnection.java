@@ -1,8 +1,8 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.apci.Apdu;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.handler.ssl.SslHandler;
 import java.net.SocketAddress;
@@ -57,11 +57,11 @@ class NettyServerConnection implements ServerTransportConnection {
   }
 
   @Override
-  public CompletionStage<Void> send(Apdu apdu) {
+  public CompletionStage<Void> send(ByteBuf frame) {
     CompletableFuture<Void> result = new CompletableFuture<>();
 
     channel
-        .writeAndFlush(apdu)
+        .writeAndFlush(frame)
         .addListener(
             future -> {
               if (future.isSuccess()) {

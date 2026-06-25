@@ -1,12 +1,17 @@
 package com.digitalpetri.iec60870.server;
 
+import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.apci.Apdu;
+import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.apci.ControlField;
 import com.digitalpetri.iec60870.apci.UFunction;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.cert.Certificate;
@@ -26,6 +31,9 @@ import org.jspecify.annotations.Nullable;
  * lets the test inject inbound APDUs and application ASDUs with valid sequence numbers.
  */
 final class FakeServerTransport implements ServerTransport {
+
+  private static final ProtocolProfile PROFILE = ProtocolProfile.iec104Default();
+  private static final ByteBufAllocator ALLOC = UnpooledByteBufAllocator.DEFAULT;
 
   private @Nullable Consumer<ServerTransportConnection> onAccept;
   private boolean bound;
@@ -87,9 +95,14 @@ final class FakeServerTransport implements ServerTransport {
     }
 
     @Override
-    public CompletionStage<Void> send(Apdu apdu) {
-      sent.add(apdu);
-      return CompletableFuture.completedFuture(null);
+    public CompletionStage<Void> send(ByteBuf frame) {
+      // The caller transfers ownership of frame; decode it and release it here so there is no leak.
+      try {
+        sent.add(ApduFramer.decode(PROFILE, frame));
+        return CompletableFuture.completedFuture(null);
+      } finally {
+        frame.release();
+      }
     }
 
     @Override
@@ -129,12 +142,20 @@ final class FakeServerTransport implements ServerTransport {
     }
 
     /**
-     * Delivers an inbound APDU to the server's listener.
+     * Delivers an inbound APDU to the server's listener as a whole-frame {@link ByteBuf}.
+     *
+     * <p>The frame is encoded, handed to {@code onFrame} (where the listener decodes it
+     * synchronously), and released here — mirroring the transport's inbound buffer ownership.
      *
      * @param apdu the APDU to deliver.
      */
     void deliver(Apdu apdu) {
-      requireListener().onApdu(apdu);
+      ByteBuf frame = ApduFramer.encode(apdu, PROFILE, ALLOC);
+      try {
+        requireListener().onFrame(frame);
+      } finally {
+        frame.release();
+      }
     }
 
     /**

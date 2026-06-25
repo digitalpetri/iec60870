@@ -15,16 +15,19 @@ TCP/TLS transport). A third module, `iec60870-tests`, holds cross-module integra
   (`Iec60870Client` / `DefaultIec60870Client`, `Iec60870Server` / `DefaultIec60870Server`);
 - the point and catalog model (`.point`, `.catalog`), the error model (package-root exceptions),
   and the configuration types (`ProtocolProfile`, `ApciSettings`, `TlsOptions`);
-- the **transport interfaces** (`.transport`) — `ClientTransport`, `ServerTransport`,
+- the **octet transport SPI** (`.transport`) — `ClientTransport`, `ServerTransport`,
   `ServerTransportConnection`, `TransportListener` — which the core implementations drive but do not
-  implement.
+  implement. The SPI is shaped in **whole-frame `ByteBuf`s**: `send(ByteBuf)` and `onFrame(ByteBuf)`
+  exchange one complete, length-delimited frame each. Turning a frame into an `Apdu` (via
+  `ApduFramer`) happens above the SPI, so a future 101-over-TCP can reuse the same transport.
 
 `iec60870-transport-tcp` owns the Netty side:
 
 - `NettyClientTransport` / `NettyServerTransport`, the implementations of the core transport
   interfaces;
-- the framing codec handlers `Iec104FrameDecoder` / `Iec104FrameEncoder`, which sit at the
-  `ByteBuf` boundary and call the core `Apdu.Serde`;
+- the framing handler `Iec104FrameDecoder`, which slices one whole-frame `ByteBuf` per complete
+  frame off the wire, and `InboundFrameHandler`, which forwards each frame to the `TransportListener`
+  (outbound is a raw `ByteBuf` write — there is no encoder handler);
 - TLS via Netty's `SslHandler`, and the client channel lifecycle via
   `com.digitalpetri.netty:netty-channel-fsm`;
 - the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server`, whose builders carry the
@@ -63,26 +66,30 @@ must never appear in any `iec60870-core` package:
 
 - `io.netty.channel.*` — `Channel`, `EventLoopGroup`, `ChannelHandler`, `ServerBootstrap`;
 - `io.netty.handler.*` — including `SslHandler` and the TLS engine wiring;
-- pooled or otherwise transport-owned `ByteBuf` in any high-level public API signature.
+- a `ByteBuf` in any *high-level* public API signature (`Iec60870Client`/`Iec60870Server`, the
+  event/command/point/catalog model).
 
-The single, *deliberate* exception is `netty-buffer`. The raw codec layer encodes and decodes through
-co-located `Serde` classes that operate on `io.netty.buffer.ByteBuf`, and core declares a direct
-`netty-buffer` dependency for exactly that reason. The `iec60870-core` POM documents this in a comment:
+The single, *deliberate* exception is `netty-buffer`. `ByteBuf` is the sanctioned codec-boundary
+type: the raw codec layer encodes and decodes through co-located `Serde` classes that operate on
+`io.netty.buffer.ByteBuf`, **and** the octet transport SPI exchanges whole-frame `ByteBuf`s. Core
+declares a direct `netty-buffer` dependency for exactly that reason. The `iec60870-core` POM
+documents this in a comment:
 
 > Deliberate netty-buffer dependency: the raw codec layer encodes/decodes ASDUs through co-located
 > Serde classes that operate on Netty ByteBuf. ByteBuf is confined to the codec layer; it must not
 > appear in high-level client/server/model public API signatures, and no netty-channel/handler types
 > are permitted in core.
 
-So `ByteBuf` is allowed, but only inside the nested `Serde` classes of `.asdu`, `.apci`, `.address`,
+So `ByteBuf` is allowed inside the nested `Serde` classes of `.asdu`, `.apci`, `.address`,
 `.asdu.element`, and `.asdu.time` (for example `Asdu.Serde`, `Apdu.Serde`, `ControlField.Serde`,
-`CommonAddress.Serde`). It must not reach `Iec60870Client`, `Iec60870Server`, the event/command/point/
-catalog types, `ProtocolProfile`, or `ApciSettings`. Above the `Serde` boundary everything is an
-immutable Java object; the `ApciSession` itself never touches a `ByteBuf`.
+`CommonAddress.Serde`), and on the `.transport` octet SPI (`send(ByteBuf)`, `onFrame(ByteBuf)`). It
+must not reach `Iec60870Client`, `Iec60870Server`, the event/command/point/catalog types,
+`ProtocolProfile`, or `ApciSettings`. Above those boundaries everything is an immutable Java object;
+the `ApciSession` itself never touches a `ByteBuf`.
 
-The transport interfaces in `.transport` are the formal seam. They are expressed entirely in core
-types — they exchange `Apdu` objects, `SocketAddress`, and `java.security.cert.Certificate`, never a
-Netty type — so `iec60870-transport-tcp` can implement them with Netty without that detail leaking
+The octet transport SPI in `.transport` is the formal seam. It is expressed entirely in core types —
+whole-frame `ByteBuf`s, `SocketAddress`, and `java.security.cert.Certificate`, never a Netty channel
+or handler type — so `iec60870-transport-tcp` can implement it with Netty without that detail leaking
 back into core.
 
 ### Dependency table

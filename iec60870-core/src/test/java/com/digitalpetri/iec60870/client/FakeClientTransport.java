@@ -1,11 +1,16 @@
 package com.digitalpetri.iec60870.client;
 
+import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.apci.Apdu;
+import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.apci.ControlField;
 import com.digitalpetri.iec60870.apci.UFunction;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -21,6 +26,9 @@ import org.jspecify.annotations.Nullable;
  * with application ASDUs.
  */
 final class FakeClientTransport implements ClientTransport {
+
+  private static final ProtocolProfile PROFILE = ProtocolProfile.iec104Default();
+  private static final ByteBufAllocator ALLOC = UnpooledByteBufAllocator.DEFAULT;
 
   private final List<Apdu> sent = new ArrayList<>();
   private @Nullable TransportListener listener;
@@ -40,7 +48,7 @@ final class FakeClientTransport implements ClientTransport {
   /** When non-null, {@link #connect()} fails with this cause. */
   private @Nullable Throwable connectFailure;
 
-  /** When non-null, every {@link #send(Apdu)} fails with this cause. */
+  /** When non-null, every {@link #send(ByteBuf)} fails with this cause. */
   private @Nullable Throwable sendFailure;
 
   @Override
@@ -76,18 +84,25 @@ final class FakeClientTransport implements ClientTransport {
   }
 
   @Override
-  public CompletionStage<Void> send(Apdu apdu) {
-    Throwable failure = sendFailure;
-    if (failure != null) {
-      return CompletableFuture.failedFuture(failure);
+  public CompletionStage<Void> send(ByteBuf frame) {
+    // The caller transfers ownership of frame; decode it (mirroring the transport handing whole
+    // frames up the octet SPI) and release it here so there is no leak.
+    try {
+      Throwable failure = sendFailure;
+      if (failure != null) {
+        return CompletableFuture.failedFuture(failure);
+      }
+      Apdu apdu = ApduFramer.decode(PROFILE, frame);
+      sent.add(apdu);
+      if (autoStartDt
+          && apdu.control() instanceof ControlField.TypeU u
+          && u.function() == UFunction.STARTDT_ACT) {
+        deliver(new Apdu(new ControlField.TypeU(UFunction.STARTDT_CON), null));
+      }
+      return CompletableFuture.completedFuture(null);
+    } finally {
+      frame.release();
     }
-    sent.add(apdu);
-    if (autoStartDt
-        && apdu.control() instanceof ControlField.TypeU u
-        && u.function() == UFunction.STARTDT_ACT) {
-      deliver(new Apdu(new ControlField.TypeU(UFunction.STARTDT_CON), null));
-    }
-    return CompletableFuture.completedFuture(null);
   }
 
   @Override
@@ -112,21 +127,29 @@ final class FakeClientTransport implements ClientTransport {
   }
 
   /**
-   * Makes every {@link #send(Apdu)} fail with the given cause until cleared.
+   * Makes every {@link #send(ByteBuf)} fail with the given cause until cleared.
    *
-   * @param cause the failure to report from {@code send(Apdu)}.
+   * @param cause the failure to report from {@code send(ByteBuf)}.
    */
   void failSend(Throwable cause) {
     this.sendFailure = cause;
   }
 
   /**
-   * Delivers an inbound APDU to the registered listener.
+   * Delivers an inbound APDU to the registered listener as a whole-frame {@link ByteBuf}.
+   *
+   * <p>The frame is encoded, handed to {@code onFrame} (where the listener decodes it
+   * synchronously), and released here — mirroring the transport's inbound buffer ownership.
    *
    * @param apdu the APDU to deliver.
    */
   void deliver(Apdu apdu) {
-    requireListener().onApdu(apdu);
+    ByteBuf frame = ApduFramer.encode(apdu, PROFILE, ALLOC);
+    try {
+      requireListener().onFrame(frame);
+    } finally {
+      frame.release();
+    }
   }
 
   /**

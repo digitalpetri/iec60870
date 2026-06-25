@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.channel.Channel;
@@ -20,10 +19,16 @@ import org.jspecify.annotations.Nullable;
  * <ol>
  *   <li>{@link SslHandler} — present only when TLS is configured; TLS terminates first so all
  *       subsequent handlers see plaintext.
- *   <li>{@link Iec104FrameDecoder} — length-delimited APDU framing and decode to {@code Apdu}.
- *   <li>{@link Iec104FrameEncoder} — encode outbound {@code Apdu} back onto the wire.
- *   <li>{@link InboundApduHandler} — terminal handler forwarding to the {@link TransportListener}.
+ *   <li>{@link Iec104FrameDecoder} — length-delimited framing emitting one whole-frame {@code
+ *       ByteBuf}.
+ *   <li>{@link InboundFrameHandler} — terminal handler forwarding each frame to the {@link
+ *       TransportListener}.
  * </ol>
+ *
+ * <p>Outbound is a raw {@code ByteBuf} write: the protocol layer above frames each APDU into a
+ * complete length-delimited buffer and the transport writes-and-flushes it, so no outbound encoder
+ * handler is installed. The pipeline is profile-agnostic; APDU encode/decode happens above this SPI
+ * (via {@code ApduFramer}).
  *
  * <p>This class is a stateless builder of pipeline handlers and is never instantiated.
  */
@@ -35,10 +40,7 @@ final class Iec104Pipeline {
   /** The pipeline name of the {@link Iec104FrameDecoder}. */
   static final String FRAME_DECODER = "iec60870-frame-decoder";
 
-  /** The pipeline name of the {@link Iec104FrameEncoder}. */
-  static final String FRAME_ENCODER = "iec60870-frame-encoder";
-
-  /** The pipeline name of the terminal {@link InboundApduHandler}. */
+  /** The pipeline name of the terminal {@link InboundFrameHandler}. */
   static final String INBOUND_HANDLER = "iec60870-inbound";
 
   private Iec104Pipeline() {}
@@ -51,7 +53,6 @@ final class Iec104Pipeline {
    * and (for servers) whether client authentication is required.
    *
    * @param channel the channel whose pipeline is configured.
-   * @param profile the protocol profile that governs ASDU field widths.
    * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
    * @param clientMode {@code true} to configure the TLS engine in client mode, {@code false} for
    *     server mode.
@@ -65,25 +66,23 @@ final class Iec104Pipeline {
   @SuppressWarnings("UnusedReturnValue")
   static @Nullable SslHandler configure(
       Channel channel,
-      ProtocolProfile profile,
       @Nullable TlsOptions tlsOptions,
       boolean clientMode,
       Supplier<@Nullable TransportListener> listenerSupplier) {
 
-    return configure(channel, profile, tlsOptions, clientMode, listenerSupplier, null, -1);
+    return configure(channel, tlsOptions, clientMode, listenerSupplier, null, -1);
   }
 
   /**
    * Installs the IEC 104 handlers on {@code channel} in the fixed safe order, supplying the peer
    * host and port so a client engine can perform certificate identification.
    *
-   * <p>Behaves exactly like {@link #configure(Channel, ProtocolProfile, TlsOptions, boolean,
-   * Supplier)} except that, in client mode, {@code peerHost} and {@code peerPort} seed the {@link
-   * SSLEngine} with the advisory peer information used for endpoint identification and SNI. They
-   * are ignored in server mode.
+   * <p>Behaves exactly like {@link #configure(Channel, TlsOptions, boolean, Supplier)} except that,
+   * in client mode, {@code peerHost} and {@code peerPort} seed the {@link SSLEngine} with the
+   * advisory peer information used for endpoint identification and SNI. They are ignored in server
+   * mode.
    *
    * @param channel the channel whose pipeline is configured.
-   * @param profile the protocol profile that governs ASDU field widths.
    * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
    * @param clientMode {@code true} to configure the TLS engine in client mode, {@code false} for
    *     server mode.
@@ -96,7 +95,6 @@ final class Iec104Pipeline {
   @SuppressWarnings("UnusedReturnValue")
   static @Nullable SslHandler configure(
       Channel channel,
-      ProtocolProfile profile,
       @Nullable TlsOptions tlsOptions,
       boolean clientMode,
       Supplier<@Nullable TransportListener> listenerSupplier,
@@ -111,9 +109,8 @@ final class Iec104Pipeline {
       pipeline.addLast(SSL_HANDLER, sslHandler);
     }
 
-    pipeline.addLast(FRAME_DECODER, new Iec104FrameDecoder(profile));
-    pipeline.addLast(FRAME_ENCODER, new Iec104FrameEncoder(profile));
-    pipeline.addLast(INBOUND_HANDLER, new InboundApduHandler(listenerSupplier));
+    pipeline.addLast(FRAME_DECODER, new Iec104FrameDecoder());
+    pipeline.addLast(INBOUND_HANDLER, new InboundFrameHandler(listenerSupplier));
 
     return sslHandler;
   }

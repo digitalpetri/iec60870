@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.client;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.NegativeConfirmationException;
+import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -10,6 +11,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.apci.ApciSession;
 import com.digitalpetri.iec60870.apci.Apdu;
+import com.digitalpetri.iec60870.apci.ApduFramer;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
@@ -24,6 +26,9 @@ import com.digitalpetri.iec60870.point.PointValueExtraction;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -71,6 +76,15 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   private final ClientTransport transport;
   private final ClientConfig config;
+
+  /**
+   * Transitional Apdu&lt;-&gt;ByteBuf framing glue. The facade frames outbound APDUs and deframes
+   * inbound frames here until Phase 7 moves this into {@code Cs104Binding}. {@code Unpooled} is an
+   * acceptable allocator for this phase.
+   */
+  private final ProtocolProfile profile;
+
+  private final ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
 
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
@@ -123,6 +137,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
+    this.profile = config.protocolProfile();
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -378,8 +393,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * @param apdu the APDU to transmit.
    */
   private void onSessionOutput(Apdu apdu) {
+    // Transitional Apdu wiring: frame the APDU into a whole-frame ByteBuf and hand it to the octet
+    // transport, which owns and releases the buffer. This framing leaves the facade in Phase 7.
+    ByteBuf frame = ApduFramer.encode(apdu, profile, alloc);
     transport
-        .send(apdu)
+        .send(frame)
         .whenComplete(
             (ignored, error) -> {
               if (error != null) {
@@ -1120,9 +1138,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final class Listener implements TransportListener {
 
     @Override
-    public void onApdu(Apdu apdu) {
-      // Transitional Apdu wiring: the facade constructs the concrete ApciSession and feeds inbound
-      // APDUs into its cs104-private downward seam. This wiring leaves the facade in Phases 3/5.
+    public void onFrame(ByteBuf frame) {
+      // Transitional Apdu wiring: deframe the whole-frame ByteBuf the transport owns into an Apdu
+      // and feed it into the session's cs104-private downward seam. The transport owns the buffer,
+      // so we decode synchronously and never retain or release it. This wiring leaves the facade in
+      // Phase 7.
+      Apdu apdu = ApduFramer.decode(profile, frame);
       ((ApciSession) session).onApdu(apdu);
     }
 

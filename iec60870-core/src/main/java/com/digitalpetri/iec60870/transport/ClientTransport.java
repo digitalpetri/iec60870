@@ -1,15 +1,17 @@
 package com.digitalpetri.iec60870.transport;
 
-import com.digitalpetri.iec60870.apci.Apdu;
+import io.netty.buffer.ByteBuf;
 import java.util.concurrent.CompletionStage;
 
 /**
- * A protocol-frame-shaped client connection to a single IEC 60870-5-104 peer.
+ * An octet-shaped client connection to a single IEC 60870-5 peer.
  *
  * <p>A {@code ClientTransport} owns one outgoing connection. Callers establish it with {@link
- * #connect()}, exchange {@link Apdu} frames with {@link #send(Apdu)} and a registered {@link
- * TransportListener}, and tear it down with {@link #disconnect()}. The transport handles framing,
- * optional TLS, and channel lifecycle; it never exposes networking-framework types.
+ * #connect()}, exchange complete length-delimited frame {@link ByteBuf}s with {@link
+ * #send(ByteBuf)} and a registered {@link TransportListener}, and tear it down with {@link
+ * #disconnect()}. The transport handles length framing, optional TLS, and channel lifecycle; it
+ * never exposes networking-framework types other than the {@link ByteBuf} that carries one whole
+ * frame.
  *
  * <p>Register a {@link TransportListener} with {@link #setListener(TransportListener)} before
  * connecting so no inbound frame is missed. Listener callbacks may be invoked on a transport I/O
@@ -46,17 +48,21 @@ public interface ClientTransport {
   boolean isConnected();
 
   /**
-   * Sends a protocol frame to the peer.
+   * Sends one complete, length-delimited frame to the peer.
    *
-   * <p>The returned stage reflects only the outcome of the send (encode and write); it does not
+   * <p><b>Buffer ownership.</b> The caller allocates {@code frame}; this method writes-and-flushes
+   * it and releases it. The caller must <b>not</b> release {@code frame} after invoking {@code
+   * send}.
+   *
+   * <p>The returned stage reflects only the outcome of the send (the channel write); it does not
    * represent any application-level acknowledgement. Responses arrive asynchronously through the
    * registered {@link TransportListener}.
    *
-   * @param apdu the application protocol data unit to send.
+   * @param frame a complete length-delimited frame; ownership transfers to the transport.
    * @return a stage that completes when the frame has been written, or completes exceptionally if
    *     the send fails (for example because the transport is not connected).
    */
-  CompletionStage<Void> send(Apdu apdu);
+  CompletionStage<Void> send(ByteBuf frame);
 
   /**
    * Registers the listener that receives inbound frames and connection-loss notifications.

@@ -46,6 +46,12 @@ elements; `InformationObjectCodec` implementations only encode/decode the elemen
 because `Asdu.Serde` frames the IOA centrally. The codecs are `ByteBuf`-based and never allocate or
 release the buffer — see [buffers-and-threading.md](buffers-and-threading.md).
 
+Below the raw layer sits the **octet transport SPI** (`.transport`): `ClientTransport.send(ByteBuf)`
+and `TransportListener.onFrame(ByteBuf)` exchange one complete, length-delimited frame each. The
+`Apdu`↔`ByteBuf` translation (`ApduFramer`, built on `Apdu.Serde`) lives *above* this SPI, so the SPI
+itself is protocol-agnostic and reusable. A caller of the high-level facade never sees either an
+`Apdu` or a `ByteBuf` — the facade does the framing and deframing.
+
 A caller rarely calls `Serde` directly. The escape hatch into the raw layer is on the high-level
 client and server:
 
