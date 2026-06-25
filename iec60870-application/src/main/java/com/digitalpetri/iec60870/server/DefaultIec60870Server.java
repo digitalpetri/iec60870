@@ -898,9 +898,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
         return;
       }
       session.close();
-      if (connections.remove(this)) {
-        connectionCount.decrementAndGet();
-      }
+      // Release the slot reserved in onAccept. The CAS above makes this run exactly once, so the
+      // count is balanced even if a loss fires in the window after onAccept reserved the slot (and
+      // wired this connection's transport listener) but before connections.add(this) ran.
+      connectionCount.decrementAndGet();
+      connections.remove(this);
       try {
         transportConnection.close();
       } catch (RuntimeException e) {

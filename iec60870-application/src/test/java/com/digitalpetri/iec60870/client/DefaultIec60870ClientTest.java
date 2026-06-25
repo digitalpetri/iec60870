@@ -592,10 +592,44 @@ class DefaultIec60870ClientTest {
     List<ClientEvent> events = new CopyOnWriteArrayList<>();
     subscribe(events);
 
-    session().fireClosed(null);
+    session().fireConnectionLost(null);
 
     long count = events.stream().filter(e -> e instanceof ClientEvent.ConnectionClosed).count();
     assertEquals(1, count, "a plain transport drop publishes ConnectionClosed exactly once");
+  }
+
+  @Test
+  void transportLossDoesNotDisconnectButProtocolErrorCloseDoes() {
+    // A transport-level connection loss (peer drop, send failure) must NOT call
+    // transport.disconnect:
+    // doing so would fire Event.Disconnect on the persistent ChannelFsm and stop its
+    // auto-reconnect.
+    client.connect();
+    assertEquals(0, transport.disconnectCount());
+
+    session().fireConnectionLost(null);
+    assertEquals(
+        0,
+        transport.disconnectCount(),
+        "a transport-level connection loss must not disconnect the (reconnecting) transport");
+    assertTrue(
+        transport.isConnected(),
+        "the transport is left connected so a persistent transport can auto-reconnect");
+
+    // A self-initiated protocol-error/timeout close, by contrast, must tear the transport down so a
+    // persistent transport stops reconnecting.
+    FakeClientTransport errorTransport = new FakeClientTransport();
+    AtomicReference<FakeSession> errorSession = new AtomicReference<>();
+    try (DefaultIec60870Client errorClient =
+        new DefaultIec60870Client(errorTransport, config, clientSessionFactory(errorSession))) {
+      errorClient.connect();
+      assertEquals(0, errorTransport.disconnectCount());
+      errorSession.get().fireClosed(new SequenceNumberException("protocol error"));
+      assertEquals(
+          1,
+          errorTransport.disconnectCount(),
+          "a protocol-error self-close must disconnect the transport to stop reconnection");
+    }
   }
 
   @Test

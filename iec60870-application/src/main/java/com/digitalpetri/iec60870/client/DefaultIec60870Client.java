@@ -1093,11 +1093,26 @@ public final class DefaultIec60870Client implements Iec60870Client {
               ? new ConnectionClosedException("session closed", cause)
               : new ConnectionClosedException("session closed"));
       publishConnectionClosed(cause);
+      // The session self-closed on a protocol error or timeout: tear the transport down so a
+      // persistent transport stops reconnecting, matching the protocol layer giving up.
       try {
         transport.disconnect();
       } catch (RuntimeException e) {
         LOGGER.debug("transport disconnect failed after session close", e);
       }
+    }
+
+    @Override
+    public void onConnectionLost(@Nullable Throwable cause) {
+      // Transport-level loss (peer drop, send failure, I/O error): fail pending work and publish
+      // the closed event, but do NOT call transport.disconnect(). Disconnecting would fire
+      // Event.Disconnect on the persistent ChannelFsm and stop its automatic reconnection; the old
+      // client deliberately left the transport free to reconnect after an unsolicited drop.
+      failAllPending(
+          cause != null
+              ? new ConnectionClosedException("connection lost", cause)
+              : new ConnectionClosedException("connection lost"));
+      publishConnectionClosed(cause);
     }
   }
 

@@ -18,6 +18,7 @@ import org.jspecify.annotations.Nullable;
 public final class FakeClientTransport implements ClientTransport {
 
   private boolean connected;
+  private int disconnectCount;
   private @Nullable Throwable connectFailure;
 
   @Override
@@ -33,6 +34,7 @@ public final class FakeClientTransport implements ClientTransport {
   @Override
   public CompletionStage<Void> disconnect() {
     connected = false;
+    disconnectCount++;
     return CompletableFuture.completedFuture(null);
   }
 
@@ -60,5 +62,16 @@ public final class FakeClientTransport implements ClientTransport {
    */
   public void failConnect(Throwable cause) {
     this.connectFailure = cause;
+  }
+
+  /**
+   * Returns how many times {@link #disconnect()} has been invoked, letting tests assert that a
+   * transport-level connection loss does not trigger an explicit disconnect (which would stop a
+   * persistent transport's auto-reconnect).
+   *
+   * @return the {@code disconnect()} invocation count.
+   */
+  public int disconnectCount() {
+    return disconnectCount;
   }
 }

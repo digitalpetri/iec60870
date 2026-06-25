@@ -189,6 +189,22 @@ public final class FakeSession implements Session {
   }
 
   /**
+   * Fires a transport-level connection loss to the facade through {@link
+   * Session.Events#onConnectionLost(Throwable)}, mirroring a peer drop or send failure routed
+   * through the session assembly (as distinct from the session's own protocol-error {@link
+   * #fireClosed(Throwable)} self-close).
+   *
+   * @param cause the loss cause, or {@code null} for an orderly close.
+   */
+  public void fireConnectionLost(@Nullable Throwable cause) {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    events.onConnectionLost(cause);
+  }
+
+  /**
    * Returns the application ASDUs transmitted so far, in order.
    *
    * @return the sent ASDUs.

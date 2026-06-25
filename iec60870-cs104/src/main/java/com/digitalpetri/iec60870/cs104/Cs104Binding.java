@@ -33,7 +33,8 @@ import org.jspecify.annotations.Nullable;
  *       with {@link ApduFramer#decode(ProtocolProfile, ByteBuf)} and feeds the {@link Apdu} to
  *       {@link ApciSession#onApdu(Apdu)};
  *   <li>a failed outbound send, or a transport connection loss, closes the session and routes the
- *       cause to {@link Session.Events#onClosed(Throwable)}.
+ *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
+ *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close).
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Apdu}&lt;-&gt;octet wiring that the {@code
@@ -167,7 +168,7 @@ public final class Cs104Binding {
                   (ignored, error) -> {
                     if (error != null) {
                       holder[0].close();
-                      events.onClosed(error);
+                      events.onConnectionLost(error);
                     }
                   });
         };
@@ -196,7 +197,7 @@ public final class Cs104Binding {
           @Override
           public void onConnectionLost(@Nullable Throwable cause) {
             session.close();
-            events.onClosed(cause);
+            events.onConnectionLost(cause);
           }
         });
 

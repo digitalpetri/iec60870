@@ -138,5 +138,22 @@ public interface Session {
      * @param cause the reason for closure, or {@code null} for an orderly close.
      */
     void onClosed(@Nullable Throwable cause);
+
+    /**
+     * Reports that the underlying transport connection was lost (peer drop, send failure, or I/O
+     * error) rather than the session self-closing on a protocol error or timeout.
+     *
+     * <p>Distinguished from {@link #onClosed(Throwable)} so a facade can react differently: a
+     * self-initiated {@code onClosed} means the protocol layer gave up and the transport should be
+     * torn down, whereas a transport-reported {@code onConnectionLost} should leave a
+     * persistent/reconnecting transport free to re-establish the connection rather than being
+     * explicitly disconnected. The default delegates to {@link #onClosed(Throwable)}, preserving
+     * the behavior of consumers that do not draw the distinction.
+     *
+     * @param cause the reason for the loss, or {@code null} for an orderly close.
+     */
+    default void onConnectionLost(@Nullable Throwable cause) {
+      onClosed(cause);
+    }
   }
 }
