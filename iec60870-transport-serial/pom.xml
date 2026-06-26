@@ -27,6 +27,23 @@
       <artifactId>iec60870-core</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!--
+      The SerialIec101Client / SerialIec101Server builders are the sole 101 assembly point: they wire
+      the core-only serial octet transport to the CS101 link layer and the high-level application
+      facades. These two compile dependencies exist for those builders alone (mirroring how
+      transport-tcp depends on cs104 + application); the octet classes still depend on core only, as
+      the dependency guard enforces.
+    -->
+    <dependency>
+      <groupId>com.digitalpetri.iec60870</groupId>
+      <artifactId>iec60870-application</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.digitalpetri.iec60870</groupId>
+      <artifactId>iec60870-cs101</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.jspecify</groupId>
       <artifactId>jspecify</artifactId>

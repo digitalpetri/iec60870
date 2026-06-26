@@ -35,6 +35,12 @@
 
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
+      <artifactId>iec60870-cs101</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.digitalpetri.iec60870</groupId>
       <artifactId>iec60870-test-support</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>

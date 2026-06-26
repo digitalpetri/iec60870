@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,16 @@ import org.junit.jupiter.api.Test;
  * any of the forbidden packages appears. Comment lines (Javadoc and {@code //}) are ignored, so
  * documentation that <em>names</em> the forbidden packages to explain their absence does not trip
  * the guard.
+ *
+ * <p><b>Builder exception.</b> The {@code SerialIec101Client} and {@code SerialIec101Server}
+ * builders are the <em>sole assembly point</em> for the serial 101 stack: they alone wire the
+ * core-only octet transport to the CS101 link layer ({@code Cs101Binding}, {@code LinkSettings})
+ * and the high-level application facades ({@code Iec60870Client} / {@code Iec60870Server} and their
+ * configs). They therefore legitimately import the otherwise-forbidden packages, exactly as {@code
+ * TcpIec104Client} / {@code TcpIec104Server} are the sole 104 assembly point that may reach into
+ * {@code cs104} + {@code application}. This guard excludes those two files from the
+ * forbidden-import scan; every other source file — in particular all octet classes — must still
+ * depend on core only.
  *
  * <p>Note: the {@code com.fazecast} (jSerialComm) driver is <b>not</b> forbidden here — the serial
  * transport legitimately uses it. The "no {@code com.fazecast} type leaks past the transport" rule
@@ -48,6 +59,14 @@ class SerialTransportDependencyGuardTest {
           Pattern.compile("\\bcom\\.digitalpetri\\.iec60870\\.point\\b"),
           Pattern.compile("\\bcom\\.digitalpetri\\.iec60870\\.catalog\\b"));
 
+  /**
+   * The two builder files excluded from the forbidden-import scan: they are the sole assembly point
+   * and legitimately import the CS101 link layer and the application facades. Every other file —
+   * notably all octet classes — is still held to the core-only rule.
+   */
+  private static final Set<String> ASSEMBLY_POINT_FILES =
+      Set.of("SerialIec101Client.java", "SerialIec101Server.java");
+
   @Test
   void serialTransportSourceTreeDependsOnCoreOnly() throws IOException {
     Path serialMain = locateSerialMainSources();
@@ -59,7 +78,10 @@ class SerialTransportDependencyGuardTest {
     List<String> violations = new ArrayList<>();
 
     try (Stream<Path> files = Files.walk(serialMain)) {
-      files.filter(p -> p.toString().endsWith(".java")).forEach(p -> scanFile(p, violations));
+      files
+          .filter(p -> p.toString().endsWith(".java"))
+          .filter(p -> !ASSEMBLY_POINT_FILES.contains(p.getFileName().toString()))
+          .forEach(p -> scanFile(p, violations));
     }
 
     if (!violations.isEmpty()) {
