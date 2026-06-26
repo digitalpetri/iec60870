@@ -20,13 +20,23 @@ published to Maven Central (see [Dependency](#dependency)).
   Session`), the `Apdu`/`ControlField`/`UFunction` model with the `Apdu.Serde` codec, the
   `ApduFramer` `Apdu`↔`ByteBuf` bridge, `ApciSettings`, and `Cs104Binding` — the assembly point that
   wires an `ApciSession` to a core octet transport handle. Depends on `iec60870-core`.
+- `iec60870-cs101`: the IEC 60870-5-101 FT1.2 link layer. Holds `Ft12LinkLayer` (which `implements
+  Session`, a peer of `ApciSession`), the `Ft12Frame`/`Ft12Framer`/`LinkControlField` model, the
+  balanced and unbalanced link engines (`BalancedEngine`, `UnbalancedMasterEngine`,
+  `UnbalancedSlaveEngine`), `LinkSettings`, and `Cs101Binding` — the assembly point that wires an
+  `Ft12LinkLayer` to a core octet transport handle. Depends on `iec60870-core`.
 - `iec60870-application`: the high-level layer with **no** Netty. Holds the `Iec60870Client` /
   `Iec60870Server` facades and the command/station/point/catalog model; depends on `iec60870-core`
   only and speaks purely in terms of `Asdu` + the `Session` SPI.
 - `iec60870-transport-tcp`: Netty-backed TCP/TLS transport implementation, plus the user-facing
   `TcpIec104Client` / `TcpIec104Server` builders. The builders are the sole 104 assembly point: they
   construct the Netty transport, delegate the session/framing wiring to `Cs104Binding` (in `cs104`),
-  and return the high-level facade.
+  and return the high-level facade. It also hosts the optional `TcpIec101Client` / `TcpIec101Server`
+  builders, which carry the FT1.2 link layer (in `cs101`) over the same Netty transport.
+- `iec60870-transport-serial`: jSerialComm-backed serial transport implementation, plus the
+  user-facing `SerialIec101Client` / `SerialIec101Server` builders. The builders are the sole 101
+  assembly point: they construct the serial transport, delegate the link/framing wiring to
+  `Cs101Binding` (in `cs101`), and return the high-level facade.
 - `iec60870-examples`: runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests`: cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop`: interoperability tests that drive the library against `lib60870-C` peer images
@@ -133,6 +143,34 @@ confirmed it. Spontaneous updates and connection lifecycle changes arrive asynch
 Both snippets are runnable end to end in
 [Getting Started](docs/guide/getting-started.md); the full versions live in `ServerExample` and
 `ClientExample` (see [`iec60870-examples/`](iec60870-examples/README.md)).
+
+### Serial (CS101)
+
+The same `Iec60870Client` / `Iec60870Server` facades, station/point model, and commands also drive
+an IEC 60870-5-101 serial link; only the builder and the underlying FT1.2 link layer differ. Build a
+controlling station over a balanced point-to-point serial link with `SerialIec101Client`:
+
+```java
+// Controlling station (master) over a balanced serial link
+try (Iec60870Client client = SerialIec101Client.builder()
+        .serialPort("/dev/ttyUSB0")
+        .baudRate(9600)
+        .linkSettings(LinkSettings.balanced().linkAddress(1).build())
+        .build()) {
+
+    client.connect();
+    InterrogationResult snapshot = client.interrogate(CommonAddress.of(1));
+    CommandResult result = client.commands()
+        .single(PointAddress.of(1, 100), true);
+}
+```
+
+`connect()` opens the serial port and, with `startDataTransferOnConnect` enabled (the default),
+drives the FT1.2 balanced link-reset bring-up before completing. An unbalanced (master / slave)
+multi-drop master uses `LinkSettings.unbalanced()` with a `PollConfig` (its `slaveAddresses` and
+`pollInterval`) and the matching `SerialIec101Server` secondary; the optional `TcpIec101Client` /
+`TcpIec101Server` builders (in `iec60870-transport-tcp`) carry the same FT1.2 link layer over a
+TCP/TLS connection.
 
 ## Documentation
 

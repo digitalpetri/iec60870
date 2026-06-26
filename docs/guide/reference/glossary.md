@@ -55,6 +55,19 @@ and `synchronizeClock(...)`; received on the server through `ServerHandler.onCom
 
 ## Glossary
 
+### ACD / DFC
+
+**Access-demand bit (ACD) / data-flow-control bit (DFC)** — the two status bits a secondary station
+sets in its [FT1.2](#ft12) response control field on an [unbalanced](#balanced--unbalanced-transmission)
+link. ACD tells the master the secondary has class-1 (high-priority) data waiting, prompting it to
+drain that data; DFC tells the master the secondary's buffers are full and it should hold off. They
+occupy the same two control-octet bit positions a primary uses for [FCB / FCV](#fcb--fcv).
+*In this library:* `com.digitalpetri.iec60870.cs101.LinkControlField` — `acd()` and `dfc()` on a
+secondary (PRM `false`) frame, aliasing the `fcbOrAcd` / `fcvOrDfc` bits; consumed by the unbalanced
+master engine.
+*See:* [Link layer](link-layer.md),
+[Connect over serial](../how-to/connect-over-serial.md).
+
 ### APCI
 
 **Application Protocol Control Information** — the fixed frame header (start octet `0x68`,
@@ -83,6 +96,18 @@ and `Cause` enums and the `InformationObject` type (its per-TypeID implementatio
 `asdu.object` are records).
 *See:* [Work with raw ASDUs](../how-to/work-with-raw-asdus.md),
 [Coverage matrix](coverage-matrix.md).
+
+### Balanced / Unbalanced transmission
+
+The two [FT1.2](#ft12) transmission procedures. **Balanced** is a symmetric point-to-point link
+between two combined stations on a full-duplex line where either may initiate a transfer;
+**unbalanced** is an asymmetric master/secondary bus where one primary polls one or more secondaries
+that never initiate. The two procedures are not interoperable with each other.
+*In this library:* enum `com.digitalpetri.iec60870.cs101.LinkMode` (`BALANCED` / `UNBALANCED`),
+chosen by `LinkSettings.balanced()` / `LinkSettings.unbalanced()`; the unbalanced master's poll list
+and cadence live in `LinkSettings.PollConfig`.
+*See:* [Link layer](link-layer.md),
+[Connect over serial](../how-to/connect-over-serial.md).
 
 ### Cause of Transmission (COT)
 
@@ -116,6 +141,30 @@ immediately (the S/E "select/execute" flag is clear). Contrast with
 uses it.
 *See:* [Send commands](../how-to/send-commands.md).
 
+### FCB / FCV
+
+**Frame count bit (FCB) / frame count valid bit (FCV)** — the [FT1.2](#ft12) anti-duplication pair a
+primary station sets in its link control field. When FCV is set the frame is counted and the FCB
+**alternates** `0`/`1` on each such transaction; an unchanged FCB marks a retransmission, so the
+secondary replays its cached response rather than re-delivering the data. This one-bit alternation is
+FT1.2's [stop-and-wait](#stop-and-wait) equivalent of the 104 sequence numbers.
+*In this library:* `com.digitalpetri.iec60870.cs101.LinkControlField` — `fcb()` and `fcv()` on a
+primary (PRM `true`) frame; the alternation is driven by the FT1.2 link engine.
+*See:* [Link layer](link-layer.md), [Stop-and-wait](#stop-and-wait).
+
+### FT1.2
+
+The format class **FT 1.2** of IEC 60870-5-1: the byte-oriented link layer of IEC 60870-5-101. It
+defines three frame shapes — a variable-length frame carrying one [ASDU](#asdu), a fixed-length frame
+carrying link control and the [link address](#link-address) only, and the single character `0xE5` as
+a compact positive acknowledgement — plus a one-octet link control field and an arithmetic checksum.
+It replaces the 104 [APCI](#apci) under the shared ASDU application layer.
+*In this library:* package `com.digitalpetri.iec60870.cs101` — `Ft12LinkLayer` (the link engine, the
+serial peer of `ApciSession`), `Ft12Frame`, `LinkControlField`, `Ft12Framer`; tuned via
+`LinkSettings`.
+*See:* [Link layer](link-layer.md),
+[Connect over serial](../how-to/connect-over-serial.md).
+
 ### Information Object Address (IOA)
 
 The address of a single information object (one point) **within** a common address.
@@ -130,12 +179,27 @@ CA + IOA pair forms a [Point Address](#point-address).
 
 The APCI flow-control window: **k** is the maximum number of I-frames a station may have
 outstanding (unacknowledged) before it must stop sending; **w** is the number of received
-I-frames after which it must send an acknowledgement. `w` must not exceed `k`.
+I-frames after which it must send an acknowledgement. `w` must not exceed `k`. Contrast the serial
+sibling IEC 60870-5-101, whose [FT1.2](#ft12) link layer has **no window**: it is strict
+[stop-and-wait](#stop-and-wait) with a single outstanding frame.
 *In this library:* `com.digitalpetri.iec60870.cs104.ApciSettings` components `k()` and `w()`;
 defaults `k = 12`, `w = 8` (`ApciSettings.defaults()`).
 *See:* [Tune the APCI session](../how-to/tune-apci.md),
 [Timers & window](timers-and-window.md),
+[Stop-and-wait](#stop-and-wait) and [Link layer](link-layer.md) for the 101 contrast,
 architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
+
+### Link Address
+
+The [FT1.2](#ft12) address of a station **on the link**, distinct from the ASDU
+[Common Address](#common-address-ca) that addresses a station/sector inside the application layer.
+Carried in `0`, `1`, or `2` octets; a zero-octet (absent) address is
+[balanced](#balanced--unbalanced-transmission)-only, and unbalanced links always carry one.
+*In this library:* `com.digitalpetri.iec60870.cs101.LinkSettings` components `linkAddress()` and
+`linkAddressLength()` (with `broadcastAddress()` for the unbalanced all-secondaries address); set via
+the `LinkSettings.balanced()` / `unbalanced()` builders.
+*See:* [Link layer](link-layer.md),
+[Connect over serial](../how-to/connect-over-serial.md).
 
 ### Monitor / control direction
 
@@ -231,6 +295,18 @@ are `com.digitalpetri.iec60870.cs104.UFunction.STARTDT_ACT` / `STARTDT_CON` and
 *See:* [Connect & interrogate](../how-to/connect-and-interrogate.md),
 architecture [apci-and-timers.md](../../architecture/apci-and-timers.md).
 
+### Stop-and-wait
+
+The [FT1.2](#ft12) flow-control discipline: a primary may have **exactly one** unacknowledged frame
+outstanding and must receive the secondary's acknowledgement before sending the next — in contrast to
+the 104 [k / w window](#k--w-window)'s up-to-`k` outstanding I-frames. Lost-frame recovery rides on
+the alternating [FCB](#fcb--fcv), and retransmission is bounded by the confirm/repeat timers and the
+retry count.
+*In this library:* implemented by `Ft12LinkLayer`; tuned by `com.digitalpetri.iec60870.cs101.LinkSettings`
+components `confirmTimeout()`, `repeatTimeout()`, `maxRetries()`, and `linkStateTimeout()`.
+*See:* [Link layer](link-layer.md), [FCB / FCV](#fcb--fcv),
+[Connect over serial](../how-to/connect-over-serial.md).
+
 ### t0 / t1 / t2 / t3
 
 The four APCI timeouts:
@@ -277,6 +353,8 @@ function is a `UFunction`.
   TypeID and point-model type.
 - [Timers & window](timers-and-window.md) — deep reference for `t0`–`t3` and the `k`/`w`
   window when aligning two stacks.
+- [Link layer](link-layer.md) — the IEC 60870-5-101 FT1.2 link layer: link mode, link address,
+  FCB stop-and-wait, and the link timers.
 - [Error model](errors.md) — typed exceptions vs. result objects, and what each
   operation throws or returns.
 - [Getting Started](../getting-started.md) — the end-to-end mental model.

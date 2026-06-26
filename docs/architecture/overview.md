@@ -76,8 +76,13 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .cs104   ApciSession implements Session (V(S)/V(R), k/w, t1/t2/t3), Apdu, ControlField,   │
    │            UFunction, ApduFramer, ApciSettings, Cs104Binding                                │
    └──────────────────────────────────────────────────────────────────────────────────────────┘
-        iec60870-application and iec60870-cs104 both depend on core ──┐ (Session SPI + raw model)
-                                                                      ▼
+   ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+   │ iec60870-cs101  (the 101 FT1.2 link layer; ByteBuf only inside the Ft12 Serde)              │
+   │   .cs101   Ft12LinkLayer implements Session (FCB stop-and-wait, balanced/unbalanced),       │
+   │            Ft12Frame, LinkControlField, Ft12Framer, LinkSettings, Cs101Binding              │
+   └──────────────────────────────────────────────────────────────────────────────────────────┘
+        iec60870-application, iec60870-cs104, and iec60870-cs101 all depend on core ──┐ (Session SPI + raw model)
+                                                                                      ▼
    ┌──────────────────────────────────────────────────────────────────────────────────────────┐
    │ iec60870-core  (no Netty channel/handler types; ByteBuf only inside .asdu Serde + SPI)     │
    │                                                                                            │
@@ -101,6 +106,13 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+The diagram shows the 104/TCP stack. The 101 serial profile slots two peer modules in beneath the
+same `iec60870-application` facade: `iec60870-cs101` (the `Ft12LinkLayer` shown above, a `Session`
+peer of `ApciSession`) and `iec60870-transport-serial` (`SerialClientTransport` /
+`SerialServerTransport`, a core-only octet-transport peer of the Netty transport, reached through the
+`SerialIec101Client` / `SerialIec101Server` builders). The optional `TcpIec101Client` /
+`TcpIec101Server` builders run that same FT1.2 link layer over the Netty transport instead.
+
 ### How a message moves through the stack
 
 Outbound (client issuing a command): the facade (`CommandService`) builds a domain `Command`, maps
@@ -115,6 +127,18 @@ inbound glue runs `ApduFramer.decode(...)` to produce an `Apdu` and feeds it to 
 The session validates the sequence number, advances V(R), and delivers the contained `Asdu` to the
 facade through `Session.Events.onAsdu`, which emits one `ClientEvent.AsduReceived` plus one
 `ClientEvent.PointUpdated` per information object — serially, on the callback executor.
+
+The 101 serial profile moves a message the same way, with one substitution: the link layer. IEC
+60870-5-101 is the serial profile of the same standard — 104 is its TCP profile — so the `Asdu` and
+the whole `iec60870-application` facade above it are identical. Only the layer between the `Session`
+SPI and the wire differs: in place of the `ApciSession` + `Apdu` framing, an `Ft12LinkLayer` (in
+`iec60870-cs101`) wraps the `Asdu` in an FT1.2 frame under stop-and-wait FCB flow control, and a
+`SerialClientTransport` / `SerialServerTransport` (in `iec60870-transport-serial`) carries the framed
+`ByteBuf` over a serial port instead of a Netty channel. The `SerialIec101Client` /
+`SerialIec101Server` builders assemble that stack through `Cs101Binding` exactly as the `Tcp*`
+builders assemble the 104 stack through `Cs104Binding`; the optional `TcpIec101Client` /
+`TcpIec101Server` run the same FT1.2 link layer over the Netty transport. See
+[ft12-link-layer.md](ft12-link-layer.md) for the link-layer detail.
 
 The single architectural rule that makes this clean: the `ByteBuf` exists only inside the `Serde`
 classes and the transport pipeline. Above the transport boundary, everything is an immutable Java

@@ -71,6 +71,9 @@ If you are new to the library, read in this order:
   addressing field sizes, as a decision table.
 - [Work with raw ASDUs](how-to/work-with-raw-asdus.md) — drop to the raw protocol layer: build,
   encode, and decode an `Asdu`, and handle unmodeled TypeIDs via the send/receive hooks.
+- [Connect over serial](how-to/connect-over-serial.md) — run the same facade over an IEC 60870-5-101
+  FT1.2 serial link (balanced or unbalanced, RS-485) with `SerialIec101Client` / `SerialIec101Server`,
+  or 101-over-TCP with `TcpIec101Client` / `TcpIec101Server`.
 
 ### Reference
 
@@ -81,6 +84,8 @@ If you are new to the library, read in this order:
   our model record, and the value/quality types.
 - [Timers & window](reference/timers-and-window.md) — t0–t3 defaults and k/w window semantics for
   integrators aligning two stacks.
+- [Link layer](reference/link-layer.md) — the IEC 60870-5-101 FT1.2 link layer: `LinkSettings`
+  defaults, FCB stop-and-wait vs. the k/w window, balanced vs. unbalanced, and the link timers.
 - [Error model](reference/errors.md) — typed exceptions vs. result objects; what each operation
   throws or returns.
 
@@ -98,6 +103,8 @@ If you are new to the library, read in this order:
 | Encrypt the link | [Secure with TLS](how-to/secure-with-tls.md) |
 | Match k/w window and t0–t3 timers to a peer stack | [Tune the APCI session](how-to/tune-apci.md) |
 | Send or receive a TypeID the facade doesn't model | [Work with raw ASDUs](how-to/work-with-raw-asdus.md) |
+| Run over an IEC 60870-5-101 serial link (or 101-over-TCP) | [Connect over serial](how-to/connect-over-serial.md) |
+| Understand FT1.2 link mode, addressing, and FCB stop-and-wait | [Link layer](reference/link-layer.md) |
 
 ## Beyond this guide
 

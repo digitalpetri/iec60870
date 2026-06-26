@@ -16,6 +16,12 @@ reports whether the library provides a typed information object record (a record
 `UnsupportedAsduTypeException` for any value with no defined constant (including the unused value
 `0`).
 
+This matrix is link-layer-agnostic. The same `Asdu` application layer is carried unchanged whether
+the link layer beneath it is the 104 APCI session (`ApciSession`, over TCP) or the 101 FT1.2 link
+layer (`Ft12LinkLayer`, over a serial port or TCP). CS101 changes only the framing below the ASDU; it
+adds no type identifications and removes none, so the coverage table applies identically to both
+profiles. See [ft12-link-layer.md](ft12-link-layer.md) for the FT1.2 link layer itself.
+
 In the direction column: **Mon** = monitor direction (controlled → controlling station), **Ctrl** =
 control direction (controlling → controlled station), **Sys** = system information.
 
@@ -135,6 +141,11 @@ They remain fully reachable through the raw layer. A caller who needs file trans
 receive them as raw `Asdu`s with `Iec60870Client.send(Asdu)` / `events()` (or `ServerContext.send(Asdu)`
 / `ServerHandler.onRawAsdu(...)`), parsing the `F_*` object bodies directly from the raw `Asdu` and
 driving the multi-ASDU procedure from application code.
+
+This deferral is shared by both profiles. Because file transfer rides the same `F_*` ASDUs over
+either link layer, a future file-transfer state machine would live in the shared application layer
+and be inherited by the 101 (FT1.2) profile from the same CS104 file path, with no profile-specific
+code — exactly as the rest of this coverage table is shared today.
 
 ## Private-range TypeIDs
 
