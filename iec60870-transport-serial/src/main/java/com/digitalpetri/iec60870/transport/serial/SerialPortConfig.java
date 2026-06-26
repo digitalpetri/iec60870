@@ -28,8 +28,10 @@ import org.jspecify.annotations.Nullable;
  * @param linkAddressLength the FT1.2 fixed-frame link-address width in octets, in the range 0 to 2,
  *     used only to size fixed-length frames during deframing. It is a plain {@code int} so this
  *     transport stays protocol-agnostic and depends on no link-layer module.
- * @param readTimeout the maximum inactivity before a blocking read returns; must be positive.
- * @param writeTimeout the maximum time a blocking write may take; must be positive.
+ * @param readTimeout the maximum inactivity before a blocking read returns; must be at least 1 ms
+ *     and no more than {@link Integer#MAX_VALUE} ms (the driver takes it as int milliseconds).
+ * @param writeTimeout the maximum time a blocking write may take; must be at least 1 ms and no more
+ *     than {@link Integer#MAX_VALUE} ms (the driver takes it as int milliseconds).
  * @param rs485 the RS-485 half-duplex turnaround parameters, or {@code null} (the default) to leave
  *     the port in ordinary RS-232 / full-duplex mode; when non-null, RS-485 mode is enabled on the
  *     port.
@@ -60,7 +62,8 @@ public record SerialPortConfig(
    *
    * @throws IllegalArgumentException if {@code portName} is blank, {@code baudRate} is not
    *     positive, {@code dataBits} is outside 5 to 8, {@code stopBits} is outside 1 to 2, {@code
-   *     linkAddressLength} is outside 0 to 2, or either timeout is not positive.
+   *     linkAddressLength} is outside 0 to 2, or either timeout is outside 1 ms to {@link
+   *     Integer#MAX_VALUE} ms.
    * @throws NullPointerException if {@code parity}, {@code readTimeout}, or {@code writeTimeout} is
    *     {@code null}.
    */
@@ -81,8 +84,8 @@ public record SerialPortConfig(
     if (linkAddressLength < 0 || linkAddressLength > 2) {
       throw new IllegalArgumentException("linkAddressLength must be in 0..2: " + linkAddressLength);
     }
-    requirePositive(readTimeout, "readTimeout");
-    requirePositive(writeTimeout, "writeTimeout");
+    requireTimeout(readTimeout, "readTimeout");
+    requireTimeout(writeTimeout, "writeTimeout");
   }
 
   /**
@@ -98,10 +101,21 @@ public record SerialPortConfig(
     return new Builder(portName);
   }
 
-  private static void requirePositive(Duration value, String name) {
+  private static void requireTimeout(Duration value, String name) {
     Objects.requireNonNull(value, name);
     if (value.isZero() || value.isNegative()) {
       throw new IllegalArgumentException(name + " must be positive: " + value);
+    }
+    // The serial driver takes the timeout as an int of milliseconds, so a sub-millisecond value
+    // would truncate to 0 (block-indefinitely) and a multi-day value would overflow int to a
+    // negative. Pin the timeout to the representable, non-degenerate millisecond range here.
+    long millis = value.toMillis();
+    if (millis < 1) {
+      throw new IllegalArgumentException(name + " must be at least 1 ms: " + value);
+    }
+    if (millis > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException(
+          name + " must be at most " + Integer.MAX_VALUE + " ms: " + value);
     }
   }
 
@@ -183,7 +197,8 @@ public record SerialPortConfig(
     /**
      * Sets the maximum inactivity tolerated before a blocking read returns.
      *
-     * @param readTimeout the read timeout; must be positive.
+     * @param readTimeout the read timeout; must be at least 1 ms and no more than {@link
+     *     Integer#MAX_VALUE} ms.
      * @return this builder.
      */
     public Builder readTimeout(Duration readTimeout) {
@@ -194,7 +209,8 @@ public record SerialPortConfig(
     /**
      * Sets the maximum time a blocking write may take.
      *
-     * @param writeTimeout the write timeout; must be positive.
+     * @param writeTimeout the write timeout; must be at least 1 ms and no more than {@link
+     *     Integer#MAX_VALUE} ms.
      * @return this builder.
      */
     public Builder writeTimeout(Duration writeTimeout) {

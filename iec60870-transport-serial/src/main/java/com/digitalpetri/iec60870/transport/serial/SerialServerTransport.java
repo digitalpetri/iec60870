@@ -64,6 +64,14 @@ public final class SerialServerTransport implements ServerTransport {
       LOGGER.debug("serial server listening on {}", config.portName());
       return CompletableFuture.completedFuture(null);
     } catch (IOException | RuntimeException e) {
+      // open() failed after the handler already built and registered a session bound to this
+      // connection (e.g. via Cs101Binding.bindServer, which may arm a link-state timer on the
+      // shared scheduler). Tear that session down so nothing leaks: clear the reference first so
+      // this.connection is only ever left set when a live connection exists, then close() the
+      // connection — which signals connection loss to the registered listener, cancelling any
+      // armed timer.
+      this.connection = null;
+      newConnection.close();
       return CompletableFuture.failedFuture(e);
     }
   }

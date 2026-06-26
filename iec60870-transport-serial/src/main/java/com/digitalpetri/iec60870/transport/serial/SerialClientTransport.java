@@ -48,6 +48,16 @@ public final class SerialClientTransport implements ClientTransport {
 
   @Override
   public CompletionStage<Void> connect() {
+    // Defensively tear down any prior channel before replacing it. If the previous connection was
+    // lost on the reader thread it already closed its own port; but an app that calls connect()
+    // again from its loss handler, without an intervening disconnect(), must not leak the old
+    // channel or be blocked by it holding the OS port open.
+    Ft12SerialChannel previous = channel;
+    if (previous != null) {
+      channel = null;
+      previous.close();
+    }
+
     Ft12SerialChannel newChannel = new Ft12SerialChannel(this::dispatchFrame, this::dispatchLoss);
     try {
       newChannel.open(config);
