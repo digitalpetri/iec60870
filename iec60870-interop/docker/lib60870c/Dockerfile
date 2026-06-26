@@ -68,7 +68,8 @@ RUN mkdir -p /out \
 # threaded CS104 slave/connection.
 # ---------------------------------------------------------------------------
 ARG LIB_ROOT=/src/lib60870/lib60870-C
-COPY interop_server.c interop_client.c /interop-src/
+COPY interop_server.c interop_client.c interop_cs101.c /interop-src/
+COPY cs101-entrypoint.sh /out/cs101-entrypoint.sh
 RUN set -eux; \
     LIB_A="$(find ${LIB_ROOT}/build -type f -name 'liblib60870.a' | head -n1)"; \
     test -n "${LIB_A}"; \
@@ -80,7 +81,9 @@ RUN set -eux; \
           -I${LIB_ROOT}/src/hal/inc"; \
     gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_server.c "${LIB_A}" -lpthread -o /out/interop_server; \
     gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_client.c "${LIB_A}" -lpthread -o /out/interop_client; \
-    ls -l /out/interop_server /out/interop_client
+    gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_cs101.c  "${LIB_A}" -lpthread -o /out/interop_cs101; \
+    chmod +x /out/cs101-entrypoint.sh; \
+    ls -l /out/interop_server /out/interop_client /out/interop_cs101 /out/cs101-entrypoint.sh
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -95,17 +98,20 @@ LABEL org.opencontainers.image.title="lib60870-C CS104 interop peer" \
 # The examples are statically linked against the in-tree lib60870 .a, so only
 # the C/C++ runtime (already present in debian-slim via libc/libstdc++) is
 # needed. ca-certificates is kept for completeness / TLS examples if added.
+# socat bridges the CS101 peer's PTY to TCP-LISTEN:2404 (see cs101-entrypoint.sh).
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates \
+    && apt-get install --no-install-recommends -y ca-certificates socat \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/cs104_server   /usr/local/bin/cs104_server
 COPY --from=build /out/simple_client  /usr/local/bin/simple_client
 COPY --from=build /out/interop_server /usr/local/bin/interop_server
 COPY --from=build /out/interop_client /usr/local/bin/interop_client
+COPY --from=build /out/interop_cs101  /usr/local/bin/interop_cs101
+COPY --from=build /out/cs101-entrypoint.sh /usr/local/bin/cs101-entrypoint.sh
 COPY --from=build /out/lib60870.commit /lib60870.commit
 
-# CS104 / IEC 60870-5-104 default TCP port.
+# CS104 / IEC 60870-5-104 default TCP port (also the CS101 PTY<->TCP bridge port).
 EXPOSE 2404
 
 # Default to the server peer; override the command to run the client.

@@ -72,6 +72,26 @@ after recovery), never on a wall-clock duration. Coverage:
 - **Half-open stall** — a frozen link (no FIN) leaves a half-open connection that trips the `t1` timer,
   and the client closes the connection.
 
+### `Cs101BalancedInteropTest` — IEC 60870-5-101 BALANCED scenario
+
+The serial sibling of the CS104 tests: OUR `SerialIec101Client` / `SerialIec101Server` talk to the
+lib60870-C CS101 **balanced** peer (`docker/lib60870c/interop_cs101.c`) over a socat-bridged virtual
+serial line. Because a serial line is point-to-point but Testcontainers exposes TCP ports, `socat`
+bridges both ends: the container entrypoint bridges the C peer's PTY to `TCP-LISTEN:2404`, and a
+**host** `socat` bridges a host PTY to the mapped port (`Java <-> host PTY <-> host socat <-> TCP <->
+container socat <-> /dev/ttyCS101 <-> C peer`). Both directions are covered:
+
+- **Our client (master) vs the C slave** — interrogation + accept/reject command + spontaneous
+  periodic update.
+- **Our server (slave) vs the C master** — the C master runs a scripted interrogation + command +
+  spontaneous sequence and prints `PASS:`/`FAIL:` + an `INTEROP-CS101-MASTER RESULT` line.
+
+Assertions are anchored to [`docker/INTEROP-CONTRACT-CS101.md`](docker/INTEROP-CONTRACT-CS101.md)
+(CS101 sizing `ProtocolProfile(1, 1, 2, 255)`, balanced `LinkSettings`, link address 1). The test
+**requires `socat` on the host**: it `Assumptions.assumeTrue`s on `which socat` and **skips cleanly**
+(not fails) when `socat` is absent. Install it with `brew install socat` (or the platform
+equivalent) to run it fully.
+
 ## Building the lib60870-C image
 
 The interop tests build the image automatically the first time they run, so a manual build is
