@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -40,9 +39,11 @@ import org.junit.jupiter.api.Test;
  * Exercises {@link Cs101Binding} over an in-memory fake octet transport, asserting the binding
  * responsibilities: an outbound {@link Asdu} is framed and handed to the transport, an inbound
  * whole-frame {@link ByteBuf} is deframed and delivered through {@link Session.Events#onAsdu}, and
- * each of the three loss paths — a transport drop, an inbound decode failure, and a failed send —
- * routes to {@link Session.Events#onConnectionLost} (which the {@link RecordingEvents} fixture
- * records as {@link Session.Events#onClosed}).
+ * the two loss paths — a transport drop and a failed send — route to {@link
+ * Session.Events#onConnectionLost} (which the {@link RecordingEvents} fixture records as {@link
+ * Session.Events#onClosed}). An undecodable inbound frame, by contrast, is a recoverable per-frame
+ * error: it is dropped without closing the session or the connection, so FT1.2 retransmission can
+ * recover it.
  *
  * <p>This is the FT1.2 peer of {@code Cs104BindingTest}, mirroring it case-for-case with {@link
  * Ft12Frame}/{@link Ft12Framer}/{@link LinkSettings} in place of the 104 {@code Apdu}/{@code
@@ -147,29 +148,47 @@ class Cs101BindingTest {
   }
 
   @Test
-  void clientBindingDecodeFailureClosesCurrentConnection() {
+  void clientBindingDropsUndecodableInboundFrameWithoutClosing() {
     RecordingClientTransport transport = new RecordingClientTransport();
     RecordingEvents events = new RecordingEvents();
     Cs101Binding binding = new Cs101Binding(LINK, PROFILE);
 
-    binding.bindClient(transport, events, new ManualScheduler());
+    Session session = binding.bindClient(transport, events, new ManualScheduler());
+    session.onConnected();
+    assertNotNull(transport.listener());
 
-    // 0x00 is not a valid FT1.2 start octet, so Ft12Framer.decode throws an AsduDecodeException.
-    ByteBuf frame = ALLOC.buffer(1);
-    frame.writeByte(0x00);
+    // A length-valid inbound user-data frame whose checksum octet is flipped, modeling a single-bit
+    // line error on a noisy serial link; Ft12Framer.decode throws an AsduDecodeException for the
+    // checksum mismatch.
+    Asdu asdu = sampleAsdu();
+    Ft12Frame userData =
+        new Ft12Frame.Variable(
+            LinkControlField.primary(false, true, true, FC_USER_DATA), LINK.linkAddress(), asdu);
+    ByteBuf corrupted = Ft12Framer.encode(userData, PROFILE, LINK_ADDRESS_LENGTH, ALLOC);
+    // The checksum octet sits just before the 0x16 end octet; flipping it invalidates the frame
+    // while leaving its length intact, so decode reaches and fails the checksum verification.
+    int checksumIndex = corrupted.writerIndex() - 2;
+    corrupted.setByte(checksumIndex, corrupted.getUnsignedByte(checksumIndex) ^ 0xFF);
     try {
-      assertNotNull(transport.listener());
-      transport.listener().onFrame(frame);
+      transport.listener().onFrame(corrupted);
     } finally {
-      frame.release();
+      corrupted.release();
     }
 
-    assertEquals(1, events.closedCount());
-    assertInstanceOf(AsduDecodeException.class, events.lastCloseCause());
+    // A frame-level decode failure is recoverable on FT1.2: the garbled frame is dropped, the
+    // session stays open (no onClosed/onConnectionLost), no ASDU is delivered, and the underlying
+    // transport connection is left intact for the primary's retransmission to recover.
+    assertEquals(0, events.closedCount(), "a decode failure must not close the session");
     assertEquals(
-        1,
+        0,
         transport.closeConnectionCount(),
-        "a client-side decode failure must close the current transport connection");
+        "a decode failure must not tear down the transport connection");
+    assertEquals(0, events.asdus().size(), "no ASDU is delivered from a garbled frame");
+
+    // A subsequent valid frame is still processed, proving the link was not torn down.
+    feedFrame(transport.listener(), userData);
+    assertEquals(1, events.asdus().size());
+    assertEquals(asdu, events.asdus().get(0));
   }
 
   @Test

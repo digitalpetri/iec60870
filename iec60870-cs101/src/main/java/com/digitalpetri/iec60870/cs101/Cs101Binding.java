@@ -15,6 +15,8 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Assembles a complete IEC 60870-5-101 (FT1.2) {@link Session} over a core octet transport handle.
@@ -33,10 +35,13 @@ import org.jspecify.annotations.Nullable;
  *   <li>a registered {@link TransportListener} deframes each inbound whole-frame {@link ByteBuf}
  *       with {@link Ft12Framer#decode(ProtocolProfile, int, ByteBuf)} and feeds the {@link
  *       Ft12Frame} to {@link Ft12LinkLayer#onFrame(Ft12Frame)};
- *   <li>a failed outbound send, a transport connection loss, or an inbound decode failure closes
- *       the session and routes the cause to {@link Session.Events#onConnectionLost(Throwable)}
- *       (distinct from the session's own protocol-error {@link Session.Events#onClosed(Throwable)}
- *       self-close).
+ *   <li>a failed outbound send or a transport connection loss closes the session and routes the
+ *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
+ *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close);
+ *   <li>an inbound frame that fails to decode (a bad checksum or end octet, a stray reserved {@code
+ *       0xA2} single character, or a malformed embedded ASDU) is a recoverable, per-frame error:
+ *       the garbled frame is logged and dropped so the FT1.2 stop-and-wait retransmission can
+ *       recover it, leaving the session and the underlying connection intact.
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Ft12Frame}&lt;-&gt;octet wiring that the
@@ -50,6 +55,8 @@ import org.jspecify.annotations.Nullable;
  * it allocates are handed to the transport's {@code send}, which owns and releases them.
  */
 public final class Cs101Binding {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(Cs101Binding.class);
 
   private final LinkSettings settings;
   private final ProtocolProfile profile;
@@ -92,8 +99,8 @@ public final class Cs101Binding {
    * <p>The session's outbound FT1.2 frames are framed and written to {@code transport}; inbound
    * frames from the transport's {@link TransportListener} are deframed into the session. A failed
    * send or a transport connection loss closes the session and notifies {@code events}; a malformed
-   * inbound frame also closes the current transport connection without performing an intentional
-   * disconnect.
+   * inbound frame is dropped without closing the session or the transport connection, so the FT1.2
+   * retransmission can recover it.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -113,8 +120,7 @@ public final class Cs101Binding {
         events,
         transport::send,
         transport::setListener,
-        null,
-        transport::closeConnection);
+        null);
   }
 
   /**
@@ -144,18 +150,13 @@ public final class Cs101Binding {
     Objects.requireNonNull(scheduler, "scheduler");
     Objects.requireNonNull(queuePolicy, "queuePolicy");
 
-    // The server connection SPI exposes close() (a per-connection teardown), exactly matching the
-    // Netty server's decode-failure behavior: tear down just this one accepted connection. Use it
-    // as the per-failure close handle so a malformed inbound frame closes both the session and the
-    // underlying connection on every transport.
     return assemble(
         Ft12LinkLayer.Role.SERVER,
         scheduler,
         events,
         connection::send,
         connection::setListener,
-        new ServerQueueConfig(maxOutboundQueue, queuePolicy),
-        connection::close);
+        new ServerQueueConfig(maxOutboundQueue, queuePolicy));
   }
 
   private Session assemble(
@@ -164,8 +165,7 @@ public final class Cs101Binding {
       Session.Events events,
       FrameSink frameSink,
       Consumer<TransportListener> listenerSink,
-      @Nullable ServerQueueConfig queueConfig,
-      Runnable closeConnection) {
+      @Nullable ServerQueueConfig queueConfig) {
 
     // The Output and listener below both reference the session after construction; hold it in a
     // one-element array so they can close it on a failed write or transport loss.
@@ -207,27 +207,25 @@ public final class Cs101Binding {
           public void onFrame(ByteBuf frame) {
             // Deframe and dispatch inbound bytes. A malformed or undecodable frame makes
             // Ft12Framer.decode throw a decode-time RuntimeException, such as AsduDecodeException
-            // for a bad start/length/checksum/end octet or a malformed embedded ASDU,
-            // UnsupportedAsduTypeException for an undefined TypeID, or IndexOutOfBoundsException
-            // for
-            // a short/truncated read. Guard the deframe-and-dispatch path so the failure does not
-            // escape back out the transport's delivery stack: route it to the SAME sink a real
-            // transport loss uses (Session.Events.onConnectionLost) and tear the underlying
-            // connection down, converging every transport on the existing close handling.
+            // for a bad checksum or end octet, a stray reserved 0xA2 single character, or a
+            // malformed embedded ASDU, or IndexOutOfBoundsException for a short/truncated read.
             //
-            // This reproduces, on every transport, the behavior on a decode failure: close the
-            // session, publish a single ConnectionClosed carrying the decode cause, and close the
-            // underlying connection. On the client side closeConnection() leaves persistent
-            // transports free to reconnect; on the server side close() tears down only the accepted
-            // connection. The buffer is owned and released by the transport after onFrame returns
-            // (the SPI's inbound ownership contract), so it is neither retained nor released here.
+            // Unlike a genuine transport loss, a frame-level decode failure is recoverable on the
+            // FT1.2 link: the primary's stop-and-wait method simply retransmits a garbled response.
+            // Log and DROP the bad frame and keep the session and the underlying connection open,
+            // so
+            // a single line error (a corrupted checksum or a stray octet on a noisy RS-485/serial
+            // line) cannot force a full link re-bring-up. Only a real transport loss — the
+            // connection
+            // itself closing, delivered through onConnectionLost below — closes the session. The
+            // buffer is owned and released by the transport after onFrame returns (the SPI's
+            // inbound
+            // ownership contract), so it is neither retained nor released here.
             Ft12Frame ft12Frame;
             try {
               ft12Frame = Ft12Framer.decode(profile, linkAddressLength, frame);
             } catch (RuntimeException decodeFailure) {
-              session.close();
-              events.onConnectionLost(decodeFailure);
-              closeConnection.run();
+              LOGGER.debug("dropping undecodable inbound FT1.2 frame", decodeFailure);
               return;
             }
             session.onFrame(ft12Frame);

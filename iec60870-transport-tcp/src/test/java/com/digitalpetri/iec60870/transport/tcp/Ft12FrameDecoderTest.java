@@ -5,13 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -24,9 +21,10 @@ import org.junit.jupiter.api.Test;
  * ... CS 0x16}), and the single-character {@code 0xE5} — and assert the <em>bytes</em> of each
  * emitted frame. They also cover a frame split across two {@code writeInbound} calls (partial-read
  * handling, where no frame emerges until the last octet arrives), two frames buffered together, and
- * two framing-level structural errors that raise an {@link AsduDecodeException}: an unrecognized
- * start octet and a variable frame whose doubled length octets disagree. Every emitted buffer is
- * released.
+ * two framing-level structural errors the decoder treats as recoverable line corruption — an
+ * unrecognized start octet and a variable frame whose doubled length octets disagree — discarding
+ * the offending octet and resyncing on the next valid frame rather than failing the channel. Every
+ * emitted buffer is released.
  */
 class Ft12FrameDecoderTest {
 
@@ -181,67 +179,50 @@ class Ft12FrameDecoderTest {
     }
   }
 
-  // --- structural errors ------------------------------------------------------------------------
+  // --- structural errors are resynced, not fatal ------------------------------------------------
 
   @Test
-  void badStartOctetRaisesDecodeException() {
-    // 0x00 is none of 0xE5/0xA2/0x10/0x68, so it cannot start a frame and is unrecoverable.
-    AsduDecodeException failure = assertDecodeFailure(new byte[] {0x00, 0x01, 0x02});
-    assertNotNull(failure.getMessage());
+  void badStartOctetIsResyncedNotFatal() {
+    // 0x00 is none of 0xE5/0xA2/0x10/0x68 and cannot start a frame. Rather than failing the
+    // channel, the decoder discards the stray octet(s) and resyncs on the next valid frame, so a
+    // line glitch costs one dropped frame, not the whole link.
+    byte[] valid = fixedFrame(0x49, 0x01);
+    byte[] stream = concat(new byte[] {0x00, 0x00}, valid);
+
+    EmbeddedChannel channel = new EmbeddedChannel(new Ft12FrameDecoder(1));
+    try {
+      channel.writeInbound(Unpooled.wrappedBuffer(stream));
+
+      assertArrayEquals(
+          valid, readFrameBytes(channel), "the decoder resyncs and emits the next valid frame");
+      assertNull(channel.readInbound());
+    } finally {
+      assertFalse(channel.finish());
+    }
   }
 
   @Test
-  void variableLengthOctetMismatchRaisesDecodeException() {
-    // A variable frame whose two length octets disagree (L1=5, L2=6) is malformed; the 3-octet
-    // header is enough for the decoder to detect it.
-    AsduDecodeException failure =
-        assertDecodeFailure(new byte[] {(byte) START_VARIABLE, 0x05, 0x06, (byte) START_VARIABLE});
-    assertNotNull(failure.getMessage());
+  void variableLengthOctetMismatchIsResyncedNotFatal() {
+    // A variable frame whose two length octets disagree (L1=5, L2=6) is corrupt framing. The
+    // decoder discards the leading start octet and resyncs on the following octets instead of
+    // failing the channel; a valid frame that follows is still emitted.
+    byte[] corrupt = {(byte) START_VARIABLE, 0x05, 0x06, (byte) START_VARIABLE};
+    byte[] valid = fixedFrame(0x49, 0x01);
+    byte[] stream = concat(corrupt, valid);
+
+    EmbeddedChannel channel = new EmbeddedChannel(new Ft12FrameDecoder(1));
+    try {
+      channel.writeInbound(Unpooled.wrappedBuffer(stream));
+
+      assertArrayEquals(
+          valid, readFrameBytes(channel), "the decoder resyncs and emits the next valid frame");
+      assertNull(channel.readInbound());
+    } finally {
+      assertFalse(channel.finish());
+    }
   }
 
   // --- helpers ----------------------------------------------------------------------------------
-
-  /**
-   * Feeds the given bytes to a fresh decoder and asserts decoding fails with an {@link
-   * AsduDecodeException}.
-   *
-   * <p>{@code ByteToMessageDecoder} wraps the decoder's exception in a {@code DecoderException} and
-   * {@link EmbeddedChannel} records it rather than rethrowing from {@code writeInbound}, so this
-   * surfaces it with {@link EmbeddedChannel#checkException()} and unwraps the {@link
-   * AsduDecodeException} cause. No frame may have been emitted.
-   *
-   * @param bytes the raw octets to feed.
-   * @return the unwrapped {@link AsduDecodeException}.
-   */
-  private static AsduDecodeException assertDecodeFailure(byte[] bytes) {
-    EmbeddedChannel channel = new EmbeddedChannel(new Ft12FrameDecoder(1));
-    // The decoder raises on the malformed octets but does not consume them, so finishAndReleaseAll
-    // re-runs the decoder on the still-buffered bytes at close and surfaces the same failure; the
-    // whole exchange is therefore asserted to throw (mirroring
-    // Iec104FrameCodecTest.malformedBadStartOctet).
-    Exception thrown =
-        assertThrows(
-            Exception.class,
-            () -> {
-              channel.writeInbound(Unpooled.wrappedBuffer(bytes));
-              channel.finishAndReleaseAll();
-            });
-    assertNull(channel.readInbound(), "no frame should be emitted for a malformed frame");
-
-    AsduDecodeException cause = rootDecodeException(thrown);
-    assertNotNull(cause, "expected an AsduDecodeException, but was: " + thrown);
-    return cause;
-  }
-
-  /** Walks the cause chain and returns the first {@link AsduDecodeException}, or {@code null}. */
-  private static @Nullable AsduDecodeException rootDecodeException(Throwable thrown) {
-    for (Throwable cursor = thrown; cursor != null; cursor = cursor.getCause()) {
-      if (cursor instanceof AsduDecodeException decode) {
-        return decode;
-      }
-    }
-    return null;
-  }
 
   /**
    * Reads one emitted whole-frame {@link ByteBuf} off the channel, copies its bytes, releases it.

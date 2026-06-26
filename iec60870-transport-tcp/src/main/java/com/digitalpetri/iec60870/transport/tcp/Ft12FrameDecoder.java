@@ -1,10 +1,11 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Frames complete IEC 60870-5-101 FT1.2 frames off a TCP byte stream, emitting one whole-frame
@@ -37,15 +38,18 @@ import java.util.List;
  * for a variable frame, the doubled length field to size each frame, exactly as {@link
  * Iec104FrameDecoder} trusts the single length octet. The link control field, link address,
  * checksum, second start octet, and end octet are validated above this SPI by {@code Ft12Framer}.
- * Two framing-level structural errors are unrecoverable for a byte stream and therefore raise an
- * {@link AsduDecodeException} (which Netty propagates through {@code exceptionCaught}, closing the
- * channel, mirroring the 104 decoder): an unrecognized start octet, and a variable frame whose two
- * length octets disagree.
+ * Two framing-level structural errors — an unrecognized start octet, and a variable frame whose two
+ * length octets disagree — are treated as recoverable line corruption rather than fatal: the
+ * decoder logs the error, discards the offending leading octet, and resyncs on the following octet,
+ * leaving the lost frame to FT1.2 retransmission instead of closing the channel. A single bit error
+ * on a noisy serial line therefore costs one dropped frame, not the whole link.
  *
  * <p>The FT1.2 octet constants are inlined here rather than referenced from the protocol-layer
  * {@code cs101} types, so this decoder stays free of any {@code cs101} import.
  */
 public class Ft12FrameDecoder extends ByteToMessageDecoder {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(Ft12FrameDecoder.class);
 
   /** The single-character positive-acknowledgement octet ({@code 0xE5}); a one-octet frame. */
   private static final int SINGLE_ACK = 0xE5;
@@ -96,13 +100,14 @@ public class Ft12FrameDecoder extends ByteToMessageDecoder {
    *
    * <p>The method consumes the accumulation buffer one full frame at a time. It returns without
    * consuming any octets when a complete frame is not yet available, allowing Netty to accumulate
-   * more inbound data before invoking the decoder again.
+   * more inbound data before invoking the decoder again. When it encounters line corruption it
+   * cannot frame — an unrecognized start octet, or a variable frame whose doubled length octets
+   * disagree — it discards a single octet and returns so the decoder resyncs on the following
+   * octet, recovering the stream without closing the channel.
    *
    * @param ctx the channel handler context.
    * @param in the cumulative inbound buffer positioned at the next start octet.
    * @param out the list to which whole-frame {@link ByteBuf}s are added.
-   * @throws AsduDecodeException if the start octet is not one of {@code 0xE5}, {@code 0xA2}, {@code
-   *     0x10}, or {@code 0x68}, or if a variable frame's two length octets disagree.
    */
   @Override
   protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
@@ -112,8 +117,8 @@ public class Ft12FrameDecoder extends ByteToMessageDecoder {
 
     int startIndex = in.readerIndex();
 
-    // Peek the start octet without consuming it; a bad start cannot be recovered from in a byte
-    // stream.
+    // Peek the start octet without consuming it; an unrecognized start is resynced past below
+    // rather than failing the channel.
     int start = in.getUnsignedByte(startIndex);
 
     int frameLength;
@@ -131,15 +136,25 @@ public class Ft12FrameDecoder extends ByteToMessageDecoder {
       int length1 = in.getUnsignedByte(startIndex + 1);
       int length2 = in.getUnsignedByte(startIndex + 2);
       if (length1 != length2) {
-        throw new AsduDecodeException(
-            String.format(
-                "FT1.2 variable-frame length octets differ: L1=%d L2=%d", length1, length2));
+        // A bit error on the doubled length field corrupts framing for this frame only. On a byte
+        // stream this is recoverable: discard the leading start octet and resync on the following
+        // octet rather than tearing down the channel, leaving recovery to FT1.2 retransmission.
+        LOGGER.debug(
+            "resyncing FT1.2 stream: variable-frame length octets differ (L1={}, L2={})",
+            length1,
+            length2);
+        in.skipBytes(1);
+        return;
       }
       frameLength = VARIABLE_FRAME_OVERHEAD + length1;
     } else {
-      throw new AsduDecodeException(
-          String.format(
-              "invalid FT1.2 start octet: 0x%02X (expected 0xE5, 0xA2, 0x10, or 0x68)", start));
+      // An unrecognized start octet is a stray or corrupted octet on the line. Resync by discarding
+      // it and re-scanning the following octet for the next valid start octet, rather than killing
+      // the channel; FT1.2 retransmission recovers the lost frame.
+      LOGGER.debug(
+          "resyncing FT1.2 stream: invalid start octet 0x{}", String.format("%02X", start));
+      in.skipBytes(1);
+      return;
     }
 
     // Wait for the whole frame before consuming anything (partial-read handling).
