@@ -40,8 +40,10 @@
     <module>iec60870-core</module>
     <module>iec60870-test-support</module>
     <module>iec60870-cs104</module>
+    <module>iec60870-cs101</module>
     <module>iec60870-application</module>
     <module>iec60870-transport-tcp</module>
+    <module>iec60870-transport-serial</module>
     <module>iec60870-examples</module>
     <module>iec60870-tests</module>
     <module>iec60870-interop</module>
@@ -57,6 +59,7 @@
     <netty.version>4.1.135.Final</netty.version>
     <netty-channel-fsm.version>1.0.2</netty-channel-fsm.version>
     <slf4j.version>2.0.18</slf4j.version>
+    <jSerialComm.version>2.11.4</jSerialComm.version>
 
     <!-- Test Dependencies -->
     <bouncycastle.version>1.84</bouncycastle.version>
@@ -106,6 +109,11 @@
         <groupId>org.jooq</groupId>
         <artifactId>joou</artifactId>
         <version>${joou.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fazecast</groupId>
+        <artifactId>jSerialComm</artifactId>
+        <version>${jSerialComm.version}</version>
       </dependency>
       <dependency>
         <groupId>org.junit.jupiter</groupId>
