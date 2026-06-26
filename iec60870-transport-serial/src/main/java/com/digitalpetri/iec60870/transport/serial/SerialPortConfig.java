@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.transport.serial;
 
 import java.time.Duration;
 import java.util.Objects;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Immutable configuration for a serial octet transport: the physical port parameters plus the one
@@ -29,6 +30,9 @@ import java.util.Objects;
  *     transport stays protocol-agnostic and depends on no link-layer module.
  * @param readTimeout the maximum inactivity before a blocking read returns; must be positive.
  * @param writeTimeout the maximum time a blocking write may take; must be positive.
+ * @param rs485 the RS-485 half-duplex turnaround parameters, or {@code null} (the default) to leave
+ *     the port in ordinary RS-232 / full-duplex mode; when non-null, RS-485 mode is enabled on the
+ *     port.
  */
 public record SerialPortConfig(
     String portName,
@@ -38,7 +42,8 @@ public record SerialPortConfig(
     int stopBits,
     int linkAddressLength,
     Duration readTimeout,
-    Duration writeTimeout) {
+    Duration writeTimeout,
+    @Nullable Rs485Options rs485) {
 
   /** The parity scheme applied to each transmitted and received character. */
   public enum Parity {
@@ -114,6 +119,7 @@ public record SerialPortConfig(
     private int linkAddressLength = 1;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
+    private @Nullable Rs485Options rs485;
 
     private Builder(String portName) {
       this.portName = portName;
@@ -197,6 +203,18 @@ public record SerialPortConfig(
     }
 
     /**
+     * Enables RS-485 half-duplex mode and sets its turnaround parameters. Defaults to {@code null},
+     * which leaves the port in ordinary RS-232 / full-duplex mode.
+     *
+     * @param rs485 the RS-485 options, or {@code null} to disable RS-485 mode.
+     * @return this builder.
+     */
+    public Builder rs485(@Nullable Rs485Options rs485) {
+      this.rs485 = rs485;
+      return this;
+    }
+
+    /**
      * Builds the immutable configuration.
      *
      * @return a validated {@link SerialPortConfig}.
@@ -211,7 +229,8 @@ public record SerialPortConfig(
           stopBits,
           linkAddressLength,
           readTimeout,
-          writeTimeout);
+          writeTimeout,
+          rs485);
     }
   }
 }

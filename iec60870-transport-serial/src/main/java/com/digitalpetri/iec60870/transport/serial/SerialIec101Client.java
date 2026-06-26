@@ -81,6 +81,7 @@ public final class SerialIec101Client {
     private @Nullable Executor callbackExecutor;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
+    private @Nullable Rs485Options rs485;
 
     private Builder() {}
 
@@ -231,6 +232,22 @@ public final class SerialIec101Client {
     }
 
     /**
+     * Enables RS-485 half-duplex mode on the serial line and sets its turnaround parameters.
+     * Defaults to unset, leaving the port in ordinary RS-232 / full-duplex mode.
+     *
+     * <p>Use this on a two-wire RS-485 multidrop bus so the driver turns the line around each
+     * transmission. Note that most turnaround parameters are effective only on Linux; see {@link
+     * Rs485Options}.
+     *
+     * @param rs485 the RS-485 options, or {@code null} to keep RS-485 mode disabled.
+     * @return this builder.
+     */
+    public Builder rs485(@Nullable Rs485Options rs485) {
+      this.rs485 = rs485;
+      return this;
+    }
+
+    /**
      * Builds the serial transport and the core client and returns the {@link Iec60870Client}.
      *
      * @return the configured client.
@@ -250,6 +267,7 @@ public final class SerialIec101Client {
               .linkAddressLength(linkSettings.linkAddressLength())
               .readTimeout(readTimeout)
               .writeTimeout(writeTimeout)
+              .rs485(rs485)
               .build();
 
       SerialClientTransport transport = new SerialClientTransport(serialConfig);

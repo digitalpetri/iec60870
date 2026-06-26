@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.ssl.SslHandler;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLEngine;
@@ -19,8 +20,10 @@ import org.jspecify.annotations.Nullable;
  * <ol>
  *   <li>{@link SslHandler} — present only when TLS is configured; TLS terminates first so all
  *       subsequent handlers see plaintext.
- *   <li>{@link Iec104FrameDecoder} — length-delimited framing emitting one whole-frame {@code
- *       ByteBuf}.
+ *   <li>a {@link ByteToMessageDecoder} frame decoder emitting one whole-frame {@code ByteBuf}.
+ *       Defaults to {@link Iec104FrameDecoder} (length-delimited 104 APDUs); callers may supply an
+ *       alternative through a frame-decoder factory (for example a {@link Ft12FrameDecoder} when
+ *       carrying IEC 60870-5-101 over TCP), keeping the rest of the pipeline identical.
  *   <li>{@link InboundFrameHandler} — terminal handler forwarding each frame to the {@link
  *       TransportListener}.
  * </ol>
@@ -70,17 +73,47 @@ final class Iec104Pipeline {
       boolean clientMode,
       Supplier<@Nullable TransportListener> listenerSupplier) {
 
-    return configure(channel, tlsOptions, clientMode, listenerSupplier, null, -1);
+    return configure(channel, tlsOptions, clientMode, listenerSupplier, null);
   }
 
   /**
-   * Installs the IEC 104 handlers on {@code channel} in the fixed safe order, supplying the peer
-   * host and port so a client engine can perform certificate identification.
+   * Installs the handlers on {@code channel} in the fixed safe order, optionally overriding the
+   * frame decoder.
+   *
+   * <p>Behaves exactly like {@link #configure(Channel, TlsOptions, boolean, Supplier)} except that
+   * {@code frameDecoderFactory}, when non-null, supplies the {@link ByteToMessageDecoder} installed
+   * in place of the default {@link Iec104FrameDecoder} (for example a {@link Ft12FrameDecoder} for
+   * 101-over-TCP). A {@code null} factory keeps the unchanged 104 default.
+   *
+   * @param channel the channel whose pipeline is configured.
+   * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
+   * @param clientMode {@code true} to configure the TLS engine in client mode, {@code false} for
+   *     server mode.
+   * @param listenerSupplier supplies the {@link TransportListener} the inbound handler forwards to.
+   * @param frameDecoderFactory supplies the frame decoder to install, or {@code null} to install
+   *     the default {@link Iec104FrameDecoder}.
+   * @return the {@link SslHandler} that was installed, or {@code null} when TLS is not configured.
+   */
+  @SuppressWarnings("UnusedReturnValue")
+  static @Nullable SslHandler configure(
+      Channel channel,
+      @Nullable TlsOptions tlsOptions,
+      boolean clientMode,
+      Supplier<@Nullable TransportListener> listenerSupplier,
+      @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+
+    return configure(
+        channel, tlsOptions, clientMode, listenerSupplier, null, -1, frameDecoderFactory);
+  }
+
+  /**
+   * Installs the handlers on {@code channel} in the fixed safe order, supplying the peer host and
+   * port so a client engine can perform certificate identification.
    *
    * <p>Behaves exactly like {@link #configure(Channel, TlsOptions, boolean, Supplier)} except that,
    * in client mode, {@code peerHost} and {@code peerPort} seed the {@link SSLEngine} with the
    * advisory peer information used for endpoint identification and SNI. They are ignored in server
-   * mode.
+   * mode. The default {@link Iec104FrameDecoder} is installed.
    *
    * @param channel the channel whose pipeline is configured.
    * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
@@ -101,6 +134,42 @@ final class Iec104Pipeline {
       @Nullable String peerHost,
       int peerPort) {
 
+    return configure(channel, tlsOptions, clientMode, listenerSupplier, peerHost, peerPort, null);
+  }
+
+  /**
+   * Installs the handlers on {@code channel} in the fixed safe order, supplying the peer host and
+   * port for client-side certificate identification and optionally overriding the frame decoder.
+   *
+   * <p>This is the full configuration entry point the {@link #configure(Channel, TlsOptions,
+   * boolean, Supplier) other overloads} delegate to. When {@code frameDecoderFactory} is non-null
+   * the supplied {@link ByteToMessageDecoder} is installed in place of the default {@link
+   * Iec104FrameDecoder}; the {@link SslHandler} and {@link InboundFrameHandler} wiring is identical
+   * regardless. This is the single seam that makes the framing profile-pluggable while leaving the
+   * 104 path byte-for-byte unchanged.
+   *
+   * @param channel the channel whose pipeline is configured.
+   * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
+   * @param clientMode {@code true} to configure the TLS engine in client mode, {@code false} for
+   *     server mode.
+   * @param listenerSupplier supplies the {@link TransportListener} the inbound handler forwards to.
+   * @param peerHost the host being dialed, used for client-side identification, or {@code null}
+   *     when unknown.
+   * @param peerPort the port being dialed, or {@code -1} when unknown.
+   * @param frameDecoderFactory supplies the frame decoder to install, or {@code null} to install
+   *     the default {@link Iec104FrameDecoder}.
+   * @return the {@link SslHandler} that was installed, or {@code null} when TLS is not configured.
+   */
+  @SuppressWarnings("UnusedReturnValue")
+  static @Nullable SslHandler configure(
+      Channel channel,
+      @Nullable TlsOptions tlsOptions,
+      boolean clientMode,
+      Supplier<@Nullable TransportListener> listenerSupplier,
+      @Nullable String peerHost,
+      int peerPort,
+      @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+
     ChannelPipeline pipeline = channel.pipeline();
 
     SslHandler sslHandler = null;
@@ -109,7 +178,9 @@ final class Iec104Pipeline {
       pipeline.addLast(SSL_HANDLER, sslHandler);
     }
 
-    pipeline.addLast(FRAME_DECODER, new Iec104FrameDecoder());
+    ByteToMessageDecoder frameDecoder =
+        frameDecoderFactory != null ? frameDecoderFactory.get() : new Iec104FrameDecoder();
+    pipeline.addLast(FRAME_DECODER, frameDecoder);
     pipeline.addLast(INBOUND_HANDLER, new InboundFrameHandler(listenerSupplier));
 
     return sslHandler;

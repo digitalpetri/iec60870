@@ -5,6 +5,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import java.io.IOException;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
@@ -89,9 +90,33 @@ class Ft12SerialChannel {
         (int) config.readTimeout().toMillis(),
         (int) config.writeTimeout().toMillis());
 
+    Rs485Options rs485 = config.rs485();
+    if (rs485 != null) {
+      // Enable RS-485 mode and hand the half-duplex turnaround to the driver. The parameters beyond
+      // the first are effective only on Linux (see Rs485Options); the JVM never times turnaround.
+      // The driver returns false when the platform cannot apply RS-485 mode (e.g. macOS), in which
+      // case the caller must provide auto-direction hardware; surface that rather than failing.
+      boolean applied =
+          serialPort.setRs485ModeParameters(
+              true,
+              rs485.rtsActiveHigh(),
+              rs485.enableTermination(),
+              rs485.rxDuringTx(),
+              rs485.delayBeforeSendMicros(),
+              rs485.delayAfterSendMicros());
+      if (!applied) {
+        LOGGER.warn(
+            "RS-485 mode was requested but the driver could not apply it on this platform for "
+                + "port {}; ensure the adapter provides automatic direction control",
+            config.portName());
+      }
+    }
+
     if (!serialPort.openPort()) {
       throw new IOException("failed to open serial port: " + config.portName());
     }
+
+    warnIfHighLatencyAdapter(serialPort);
 
     this.port = serialPort;
     Ft12Deframer deframer =
@@ -220,6 +245,45 @@ class Ft12SerialChannel {
         LOGGER.warn("connection-loss callback threw", e);
       }
     }
+  }
+
+  /**
+   * Logs a startup warning when the opened port looks like a high-latency USB-serial adapter (an
+   * FTDI / FT232 family device), advising the operator to lower the OS latency timer so FT1.2
+   * frames are not stalled in the driver.
+   *
+   * @param serialPort the freshly opened port to inspect.
+   */
+  private static void warnIfHighLatencyAdapter(SerialPort serialPort) {
+    if (isHighLatencyAdapter(serialPort.getPortDescription())
+        || isHighLatencyAdapter(serialPort.getDescriptivePortName())) {
+      LOGGER.warn(
+          "Detected an FTDI/FT232 USB-serial adapter ('{}'); its driver latency timer defaults to"
+              + " ~16 ms, which delays delivery of short FT1.2 frames and can break link-layer"
+              + " timing. Lower it to ~1 ms (Linux:"
+              + " /sys/bus/usb-serial/devices/<port>/latency_timer; Windows: the FTDI driver's"
+              + " advanced port settings) for timely FT1.2 framing.",
+          serialPort.getDescriptivePortName());
+    }
+  }
+
+  /**
+   * Heuristically detects a known high-latency USB-serial adapter family from a port description or
+   * name. FTDI-based adapters (matched case-insensitively on {@code FTDI} or {@code FT232}) ship
+   * with a ~16 ms read latency timer by default, long enough to stall a short FT1.2 frame in the
+   * driver.
+   *
+   * <p>Package-private and pure so it can be unit-tested without opening a real port.
+   *
+   * @param description the port description or descriptive name; may be {@code null} or blank.
+   * @return {@code true} if {@code description} names a known high-latency adapter family.
+   */
+  static boolean isHighLatencyAdapter(@Nullable String description) {
+    if (description == null || description.isBlank()) {
+      return false;
+    }
+    String upper = description.toUpperCase(Locale.ROOT);
+    return upper.contains("FTDI") || upper.contains("FT232");
   }
 
   private static int mapParity(SerialPortConfig.Parity parity) {

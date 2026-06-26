@@ -3,9 +3,11 @@ package com.digitalpetri.iec60870.transport.tcp;
 import com.digitalpetri.iec60870.TlsOptions;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.ByteToMessageDecoder;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -32,6 +34,9 @@ import org.jspecify.annotations.Nullable;
  *     are closed immediately.
  * @param serverBootstrapCustomizer a hook to mutate the {@link ServerBootstrap} before binding, or
  *     {@code null} for none.
+ * @param frameDecoderFactory supplies the per-connection pipeline frame decoder, or {@code null} to
+ *     use the default IEC 60870-5-104 frame decoder; supply a factory to carry an alternative wire
+ *     framing (such as FT1.2 for 101-over-TCP) over the same Netty transport.
  */
 public record NettyServerTransportConfig(
     String bindHost,
@@ -40,7 +45,8 @@ public record NettyServerTransportConfig(
     @Nullable EventLoopGroup bossEventLoopGroup,
     @Nullable EventLoopGroup workerEventLoopGroup,
     int maxConnections,
-    @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer) {
+    @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer,
+    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
 
   /**
    * Validates the configuration.
@@ -56,6 +62,8 @@ public record NettyServerTransportConfig(
    *     connections are closed immediately.
    * @param serverBootstrapCustomizer a hook to mutate the {@link ServerBootstrap} before binding,
    *     or {@code null} for none.
+   * @param frameDecoderFactory supplies the per-connection pipeline frame decoder, or {@code null}
+   *     to use the default IEC 60870-5-104 frame decoder.
    * @throws NullPointerException if {@code bindHost} is null.
    * @throws IllegalArgumentException if {@code port} is not in {@code 0..65535} or {@code
    *     maxConnections} is not positive.
@@ -109,6 +117,16 @@ public record NettyServerTransportConfig(
   }
 
   /**
+   * Returns the frame-decoder factory, if one was supplied.
+   *
+   * @return the frame-decoder factory, or an empty {@link Optional} to use the default IEC
+   *     60870-5-104 frame decoder.
+   */
+  public Optional<Supplier<ByteToMessageDecoder>> frameDecoderFactoryOptional() {
+    return Optional.ofNullable(frameDecoderFactory);
+  }
+
+  /**
    * Returns a builder for the given bind endpoint.
    *
    * @param bindHost the local host name or address.
@@ -134,6 +152,7 @@ public record NettyServerTransportConfig(
     private @Nullable EventLoopGroup workerEventLoopGroup;
     private int maxConnections = 16;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
+    private @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory;
 
     private Builder(String bindHost, int port) {
       this.bindHost = Objects.requireNonNull(bindHost, "bindHost");
@@ -201,6 +220,24 @@ public record NettyServerTransportConfig(
     }
 
     /**
+     * Sets the factory that supplies the per-connection pipeline frame decoder.
+     *
+     * <p>Defaults to {@code null}, which installs the IEC 60870-5-104 frame decoder. Supply a
+     * factory to carry an alternative wire framing (such as FT1.2 for 101-over-TCP) over the same
+     * Netty transport; the rest of the pipeline is unchanged. The factory is invoked once per
+     * accepted connection.
+     *
+     * @param frameDecoderFactory the frame-decoder factory, or {@code null} for the default 104
+     *     frame decoder.
+     * @return this builder.
+     */
+    public Builder frameDecoderFactory(
+        @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+      this.frameDecoderFactory = frameDecoderFactory;
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link NettyServerTransportConfig}.
      *
      * @return the configuration.
@@ -213,7 +250,8 @@ public record NettyServerTransportConfig(
           bossEventLoopGroup,
           workerEventLoopGroup,
           maxConnections,
-          serverBootstrapCustomizer);
+          serverBootstrapCustomizer,
+          frameDecoderFactory);
     }
   }
 }

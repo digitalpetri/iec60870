@@ -3,11 +3,13 @@ package com.digitalpetri.iec60870.transport.tcp;
 import com.digitalpetri.iec60870.TlsOptions;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.ByteToMessageDecoder;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -35,6 +37,9 @@ import org.jspecify.annotations.Nullable;
  *     {@code null} to let the transport create and own a private group.
  * @param bootstrapCustomizer a hook to mutate the {@link Bootstrap} before connecting (socket
  *     options, allocators, and the like), or {@code null} for none.
+ * @param frameDecoderFactory supplies the pipeline frame decoder, or {@code null} to use the
+ *     default IEC 60870-5-104 frame decoder; supply a factory to carry an alternative wire framing
+ *     (such as FT1.2 for 101-over-TCP) over the same Netty transport.
  */
 public record NettyClientTransportConfig(
     String host,
@@ -43,7 +48,8 @@ public record NettyClientTransportConfig(
     Duration connectTimeout,
     @Nullable TlsOptions tlsOptions,
     @Nullable EventLoopGroup sharedEventLoopGroup,
-    @Nullable Consumer<Bootstrap> bootstrapCustomizer) {
+    @Nullable Consumer<Bootstrap> bootstrapCustomizer,
+    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
 
   /**
    * Validates the configuration.
@@ -58,6 +64,8 @@ public record NettyClientTransportConfig(
    *     or {@code null} to let the transport create and own a private group.
    * @param bootstrapCustomizer a hook to mutate the {@link Bootstrap} before connecting (socket
    *     options, allocators, and the like), or {@code null} for none.
+   * @param frameDecoderFactory supplies the pipeline frame decoder, or {@code null} to use the
+   *     default IEC 60870-5-104 frame decoder.
    * @throws NullPointerException if {@code host} or {@code connectTimeout} is null.
    * @throws IllegalArgumentException if {@code port} is not in the range {@code 1..65535}, or
    *     {@code connectTimeout} is not positive.
@@ -111,6 +119,16 @@ public record NettyClientTransportConfig(
   }
 
   /**
+   * Returns the frame-decoder factory, if one was supplied.
+   *
+   * @return the frame-decoder factory, or an empty {@link Optional} to use the default IEC
+   *     60870-5-104 frame decoder.
+   */
+  public Optional<Supplier<ByteToMessageDecoder>> frameDecoderFactoryOptional() {
+    return Optional.ofNullable(frameDecoderFactory);
+  }
+
+  /**
    * Returns a builder for the given remote endpoint.
    *
    * @param host the remote host name or address.
@@ -136,6 +154,7 @@ public record NettyClientTransportConfig(
     private @Nullable TlsOptions tlsOptions;
     private @Nullable EventLoopGroup sharedEventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
+    private @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory;
 
     private Builder(String host, int port) {
       this.host = Objects.requireNonNull(host, "host");
@@ -202,6 +221,23 @@ public record NettyClientTransportConfig(
     }
 
     /**
+     * Sets the factory that supplies the pipeline frame decoder.
+     *
+     * <p>Defaults to {@code null}, which installs the IEC 60870-5-104 frame decoder. Supply a
+     * factory to carry an alternative wire framing (such as FT1.2 for 101-over-TCP) over the same
+     * Netty transport; the rest of the pipeline is unchanged.
+     *
+     * @param frameDecoderFactory the frame-decoder factory, or {@code null} for the default 104
+     *     frame decoder.
+     * @return this builder.
+     */
+    public Builder frameDecoderFactory(
+        @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+      this.frameDecoderFactory = frameDecoderFactory;
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link NettyClientTransportConfig}.
      *
      * @return the configuration.
@@ -214,7 +250,8 @@ public record NettyClientTransportConfig(
           connectTimeout,
           tlsOptions,
           sharedEventLoopGroup,
-          bootstrapCustomizer);
+          bootstrapCustomizer,
+          frameDecoderFactory);
     }
   }
 }

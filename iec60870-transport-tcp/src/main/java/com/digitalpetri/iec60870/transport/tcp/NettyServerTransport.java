@@ -196,7 +196,11 @@ public class NettyServerTransport implements ServerTransport {
     NettyServerConnection connection = new NettyServerConnection(channel);
 
     Iec104Pipeline.configure(
-        channel, config.tlsOptionsOptional().orElse(null), false, connection::listener);
+        channel,
+        config.tlsOptionsOptional().orElse(null),
+        false,
+        connection::listener,
+        config.frameDecoderFactoryOptional().orElse(null));
 
     Consumer<ServerTransportConnection> handler = connectionHandler.get();
     if (handler != null) {
