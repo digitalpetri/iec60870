@@ -257,23 +257,22 @@ public final class Ft12Framer {
           String.format("invalid second FT1.2 start octet: 0x%02X (expected 0x68)", secondStart));
     }
 
-    int length = length1;
-    if (buffer.readableBytes() < length + 2) {
+    if (buffer.readableBytes() < length1 + 2) {
       throw new AsduDecodeException(
           "truncated variable-length FT1.2 frame: declared user-data length "
-              + length
+              + length1
               + " requires "
-              + (length + 2)
+              + (length1 + 2)
               + " more octets but only "
               + buffer.readableBytes()
               + " readable");
     }
 
-    int asduLength = length - 1 - linkAddressLength;
+    int asduLength = length1 - 1 - linkAddressLength;
     if (asduLength < 0) {
       throw new AsduDecodeException(
           "FT1.2 user-data length "
-              + length
+              + length1
               + " is too small for a 1-octet control field and a "
               + linkAddressLength
               + "-octet link address");

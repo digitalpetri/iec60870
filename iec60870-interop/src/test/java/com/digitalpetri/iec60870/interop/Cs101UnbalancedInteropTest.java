@@ -161,7 +161,6 @@ class Cs101UnbalancedInteropTest {
 
   @Test
   @DisplayName("Our SerialIec101Client (unbalanced master) polls the lib60870-C CS101 slave")
-  @SuppressWarnings("resource") // client is closed in finally
   void clientVsCSlave() throws Exception {
     assumeHostSocat();
 
@@ -217,7 +216,6 @@ class Cs101UnbalancedInteropTest {
 
   @Test
   @DisplayName("The lib60870-C CS101 unbalanced master polls our SerialIec101Server (slave)")
-  @SuppressWarnings("resource") // server is closed in finally
   void serverVsCMaster() throws Exception {
     assumeHostSocat();
 
@@ -451,6 +449,7 @@ class Cs101UnbalancedInteropTest {
                   + hostSocat.isAlive()
                   + ")");
         }
+        //noinspection BusyWait
         Thread.sleep(50);
       }
       log.info("host PTY {} ready", hostPty);
@@ -475,6 +474,7 @@ class Cs101UnbalancedInteropTest {
         if (logs.contains(marker)) {
           return logs;
         }
+        //noinspection BusyWait
         Thread.sleep(250);
       }
       return null;
@@ -482,9 +482,7 @@ class Cs101UnbalancedInteropTest {
 
     @Override
     public void close() {
-      if (hostSocat != null) {
-        hostSocat.destroyForcibly();
-      }
+      hostSocat.destroyForcibly();
       try {
         container.stop();
       } catch (RuntimeException e) {

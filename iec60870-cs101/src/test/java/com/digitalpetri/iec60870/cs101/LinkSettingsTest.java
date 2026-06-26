@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.cs101;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -10,6 +11,7 @@ import com.digitalpetri.iec60870.cs101.LinkSettings.PollConfig;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -57,7 +59,7 @@ class LinkSettingsTest {
       assertEquals(3, settings.maxRetries());
       assertEquals(Duration.ofMillis(5000), settings.linkStateTimeout());
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(), pollConfig.slaveAddresses());
       assertEquals(Duration.ofMillis(1000), pollConfig.pollInterval());
     }
@@ -95,7 +97,7 @@ class LinkSettingsTest {
               .pollInterval(Duration.ofMillis(500))
               .build();
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(1, 2, 3), pollConfig.slaveAddresses());
       assertEquals(Duration.ofMillis(500), pollConfig.pollInterval());
     }
@@ -104,7 +106,7 @@ class LinkSettingsTest {
     void slaveAddressesSetterPreservesDefaultInterval() {
       LinkSettings settings = LinkSettings.unbalanced().slaveAddresses(List.of(7)).build();
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(7), pollConfig.slaveAddresses());
       assertEquals(
           Duration.ofMillis(1000),
@@ -117,7 +119,7 @@ class LinkSettingsTest {
       LinkSettings settings =
           LinkSettings.unbalanced().pollInterval(Duration.ofMillis(250)).build();
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(), pollConfig.slaveAddresses());
       assertEquals(Duration.ofMillis(250), pollConfig.pollInterval());
     }
@@ -265,6 +267,7 @@ class LinkSettingsTest {
 
     @Test
     void nullModeRejected() {
+      //noinspection DataFlowIssue
       assertThrows(
           NullPointerException.class,
           () -> new LinkSettings(null, 1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
@@ -272,6 +275,7 @@ class LinkSettingsTest {
 
     @Test
     void nullDurationRejected() {
+      //noinspection DataFlowIssue
       assertThrows(
           NullPointerException.class,
           () ->
@@ -369,12 +373,14 @@ class LinkSettingsTest {
 
     @Test
     void nullSlaveAddressesRejected() {
+      //noinspection DataFlowIssue
       assertThrows(NullPointerException.class, () -> new PollConfig(null, Duration.ofMillis(1000)));
     }
 
     @Test
     void nullSlaveAddressElementRejected() {
-      List<Integer> withNull = Arrays.asList(1, null, 3);
+      List<@Nullable Integer> withNull = Arrays.asList(1, null, 3);
+      //noinspection NullableProblems
       assertThrows(
           NullPointerException.class, () -> new PollConfig(withNull, Duration.ofMillis(1000)));
     }
@@ -388,6 +394,7 @@ class LinkSettingsTest {
 
     @Test
     void nullPollIntervalRejected() {
+      //noinspection DataFlowIssue
       assertThrows(NullPointerException.class, () -> new PollConfig(List.of(1), null));
     }
 

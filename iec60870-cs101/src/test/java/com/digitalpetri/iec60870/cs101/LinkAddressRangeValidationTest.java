@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.cs101;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -102,7 +103,7 @@ class LinkAddressRangeValidationTest {
     void oneOctetSlaveAddressesWithinRangeAccepted() {
       LinkSettings settings = LinkSettings.unbalanced().slaveAddresses(List.of(1, 254)).build();
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(1, 254), pollConfig.slaveAddresses());
     }
 
@@ -115,7 +116,7 @@ class LinkAddressRangeValidationTest {
               .slaveAddresses(List.of(65534))
               .build();
 
-      PollConfig pollConfig = settings.pollConfig();
+      PollConfig pollConfig = requireNonNull(settings.pollConfig());
       assertEquals(List.of(65534), pollConfig.slaveAddresses());
     }
   }

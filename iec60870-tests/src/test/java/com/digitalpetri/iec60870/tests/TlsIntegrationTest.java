@@ -165,6 +165,7 @@ class TlsIntegrationTest {
           new Thread(
               () -> {
                 try (Socket socket = peer.accept()) {
+                  //noinspection ResultOfMethodCallIgnored
                   socket.getInputStream().read();
                 } catch (IOException ignored) {
                   // The socket is being torn down; nothing to do.

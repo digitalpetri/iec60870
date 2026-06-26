@@ -68,7 +68,7 @@ public record SerialPortConfig(
    *     {@code null}.
    */
   public SerialPortConfig {
-    if (portName == null || portName.isBlank()) {
+    if (portName.isBlank()) {
       throw new IllegalArgumentException("portName must not be blank");
     }
     if (baudRate <= 0) {

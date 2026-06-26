@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.transport.serial;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -40,8 +41,8 @@ class Ft12DeframerTest {
     }
   }
 
-  private Ft12Deframer newDeframer(int linkAddressLength) {
-    Ft12Deframer d =
+  private void configureNewDeframer(int linkAddressLength) {
+    deframer =
         new Ft12Deframer(
             linkAddressLength,
             alloc,
@@ -50,15 +51,13 @@ class Ft12DeframerTest {
               buf.getBytes(buf.readerIndex(), copy);
               frames.add(copy);
             });
-    deframer = d;
-    return d;
   }
 
   private void feed(byte[] bytes) {
     ByteBuf chunk = alloc.buffer(bytes.length);
     try {
       chunk.writeBytes(bytes);
-      deframer.feed(chunk);
+      requireNonNull(deframer).feed(chunk);
     } finally {
       chunk.release();
     }
@@ -66,7 +65,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsVariableFrame() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = variableFrame(0x73, 0x01, 0x01, 0x06, 0x01, 0x05, 0x00, 0x64, 0x01);
 
     feed(frame);
@@ -77,7 +76,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsFixedFrameOneOctetAddress() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = fixedFrame(0x49, 0x01); // total length 4 + 1 = 5
 
     feed(frame);
@@ -89,7 +88,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsFixedFrameTwoOctetAddress() {
-    newDeframer(2);
+    configureNewDeframer(2);
     byte[] frame = fixedFrame(0x49, 0x01, 0x00); // total length 4 + 2 = 6
 
     feed(frame);
@@ -101,7 +100,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsSingleCharAck() {
-    newDeframer(1);
+    configureNewDeframer(1);
 
     feed(new byte[] {(byte) SINGLE_ACK});
 
@@ -111,7 +110,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsReservedSingleCharForUpperLayerToReject() {
-    newDeframer(1);
+    configureNewDeframer(1);
 
     feed(new byte[] {(byte) SINGLE_RESERVED});
 
@@ -121,7 +120,7 @@ class Ft12DeframerTest {
 
   @Test
   void reassemblesFrameDeliveredOneByteAtATime() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = variableFrame(0x73, 0x0a, 0x01, 0x06, 0x01, 0x14, 0x00, 0x65, 0x00);
 
     for (int i = 0; i < frame.length; i++) {
@@ -137,7 +136,7 @@ class Ft12DeframerTest {
 
   @Test
   void reassemblesFrameDeliveredInTwoChunks() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = variableFrame(0x73, 0x01, 0x09, 0x06, 0x01, 0x0a, 0x00, 0x32, 0x01);
 
     int split = 5;
@@ -151,7 +150,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsTwoFramesFromOneFeed() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] first = variableFrame(0x73, 0x01, 0x01, 0x06, 0x01, 0x05, 0x00, 0x64, 0x01);
     byte[] second = fixedFrame(0x49, 0x01);
 
@@ -164,7 +163,7 @@ class Ft12DeframerTest {
 
   @Test
   void emitsVariableThenSingleCharFromOneFeed() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] variable = variableFrame(0x73, 0x01, 0x01, 0x06, 0x01, 0x05, 0x00, 0x64, 0x01);
     byte[] single = {(byte) SINGLE_ACK};
 
@@ -177,7 +176,7 @@ class Ft12DeframerTest {
 
   @Test
   void resyncsPastLeadingGarbageByte() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = fixedFrame(0x49, 0x01);
 
     // A leading byte that is not any FT1.2 start octet must be discarded, then the real frame
@@ -190,7 +189,7 @@ class Ft12DeframerTest {
 
   @Test
   void resyncsPastVariableHeaderWithMismatchedLength() {
-    newDeframer(1);
+    configureNewDeframer(1);
     // 0x68 with L1 != L2 is a malformed variable header; the deframer discards one byte and
     // resyncs.
     byte[] malformedHeader = {(byte) START_VARIABLE, 0x05, 0x06, (byte) START_VARIABLE};
@@ -204,7 +203,7 @@ class Ft12DeframerTest {
 
   @Test
   void leavesPartialVariableFrameBuffered() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = variableFrame(0x73, 0x01, 0x01, 0x06, 0x01, 0x05, 0x00, 0x64, 0x01);
 
     // Feed all but the final two bytes (CS, END): nothing should be emitted yet.
@@ -219,11 +218,11 @@ class Ft12DeframerTest {
 
   @Test
   void leavesPartialVariableHeaderBuffered() {
-    newDeframer(1);
+    configureNewDeframer(1);
     byte[] frame = variableFrame(0x73, 0x01, 0x01, 0x06, 0x01, 0x05, 0x00, 0x64, 0x01);
 
     // Fewer bytes than the 4-octet variable header: the deframer cannot yet size the frame.
-    feed(new byte[] {(byte) START_VARIABLE, (byte) frame[1]});
+    feed(new byte[] {(byte) START_VARIABLE, frame[1]});
     assertEquals(0, frames.size());
 
     feed(slice(frame, 2, frame.length));

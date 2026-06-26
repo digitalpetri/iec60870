@@ -185,6 +185,7 @@ class ClientConnectTimeoutIntegrationTest {
         return;
       }
       try {
+        //noinspection BusyWait
         Thread.sleep(20);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();

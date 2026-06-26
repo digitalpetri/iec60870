@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
  * Regression tests proving the unbalanced master's global command queue does not suffer cross-slave
  * head-of-line blocking: a command at the queue head whose target slave currently cannot accept
  * user data — because it is DFC-back-pressured (or otherwise not ready) — must not starve queued
- * commands addressed to other slaves that <em>are</em> ready. {@link UnbalancedMasterEngine#pump()}
+ * commands addressed to other slaves that <em>are</em> ready. {@code UnbalancedMasterEngine.pump()}
  * scans past the blocked head for the first deliverable command instead of stalling the whole queue
  * on it.
  *

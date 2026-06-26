@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
+import java.io.Serial;
 import java.net.SocketAddress;
 import java.security.cert.Certificate;
 import java.util.Optional;
@@ -107,7 +108,7 @@ public final class SerialServerConnection implements ServerTransportConnection {
   /** A synthetic {@link SocketAddress} that names the serial port a connection runs over. */
   private static final class SerialPortAddress extends SocketAddress {
 
-    private static final long serialVersionUID = 1L;
+    @Serial private static final long serialVersionUID = 1L;
 
     private final String portName;
 
