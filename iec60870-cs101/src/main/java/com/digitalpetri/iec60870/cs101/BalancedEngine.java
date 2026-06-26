@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.session.Session;
 import java.util.ArrayDeque;
 import java.util.Objects;
@@ -622,6 +623,12 @@ final class BalancedEngine implements Ft12Engine {
     expectedFcb = false;
     nextFcb = true;
     lastSecondaryResponse = null;
+    // Abandon any primary transaction the peer's reset stranded in flight before flushing. Leaving
+    // it pending would wedge the send queue behind a confirmation that can no longer come, and the
+    // confirm timer would retransmit its now stale-FCB frame to a freshly reset peer that has
+    // discarded the secondary state needed to recognize the retransmission — delivering the ASDU a
+    // second time. See abortPendingForPeerReset.
+    abortPendingForPeerReset();
     if (!linkAvailable) {
       linkAvailable = true;
       events.onDataTransferStateChanged(true);
@@ -630,8 +637,44 @@ final class BalancedEngine implements Ft12Engine {
     if (closed) {
       return;
     }
-    // The link is now available in both directions: flush any user data this station has queued.
+    // The link is now available in both directions: flush any user data still queued (never
+    // transmitted, so safe to send fresh after the reset).
     flushSendQueue();
+  }
+
+  /**
+   * Abandons any primary transaction left in flight when the peer reset the link.
+   *
+   * <p>A reset-of-remote-link re-initializes the link in both directions, so the peer has discarded
+   * the secondary state — its expected FCB and cached response — that would otherwise recognize a
+   * retransmission. Retransmitting the in-flight frame across that boundary would therefore be
+   * delivered as a fresh frame, a duplicate of an ASDU the peer may already have delivered before
+   * it reset; its outcome is now unknowable. The engine drops it rather than re-sending it
+   * (at-most-once across a reset, consistent with the connection re-initialization in {@link
+   * #onConnected()}): it cancels the confirm/repeat timer, clears the pending slot, and realigns
+   * {@link #pendingFcb} with the freshly reset primary sequence so no stale-FCB frame can be
+   * retransmitted. Never-transmitted ASDUs still queued behind it are untouched and are flushed by
+   * the caller with fresh FCBs. An idle keep-alive probe is likewise abandoned; an in-progress
+   * bring-up handshake — not expected on a well-behaved balanced link, where only a {@code CLIENT}
+   * drives bring-up and its {@code SERVER} peer never resets it — is left to its own confirm timer.
+   */
+  private void abortPendingForPeerReset() {
+    PendingPrimary current = pending;
+    if (current == null) {
+      return;
+    }
+    switch (current) {
+      case USER_DATA, KEEPALIVE -> {
+        cancelConfirmTimer();
+        pending = null;
+        pendingDataAsdu = null;
+        pendingFcb = nextFcb;
+        retryCount = 0;
+      }
+      case BRING_UP_STATUS, BRING_UP_RESET -> {
+        // Leave the bring-up handshake's confirm timer to resolve or time it out.
+      }
+    }
   }
 
   private void handleTestFunction(LinkControlField control) {
@@ -651,61 +694,91 @@ final class BalancedEngine implements Ft12Engine {
       LOGGER.debug("received user data before a link reset; accepting leniently");
     }
     boolean fcb = control.fcb();
-    if (fcb == expectedFcb) {
-      // Unchanged FCB: this is a retransmission. Replay the cached response without re-delivering.
-      Ft12Frame cached = lastSecondaryResponse;
-      if (cached != null) {
-        output.send(cached);
-      } else {
-        Ft12Frame ack = makeAck();
-        lastSecondaryResponse = ack;
-        output.send(ack);
-      }
-    } else {
-      // Changed FCB: a new frame. Deliver, acknowledge, and advance the expected FCB.
-      expectedFcb = fcb;
-      Ft12Frame ack = makeAck();
-      lastSecondaryResponse = ack;
-      if (asdu != null) {
-        events.onAsdu(asdu);
-      }
-      // Delivery may have synchronously closed the session (an application send failure); if so, do
-      // not acknowledge on a closed session.
-      if (closed) {
-        return;
-      }
-      output.send(ack);
+    if (isRetransmission(fcb)) {
+      // Unchanged FCB with a response actually cached: this is a replay of a frame whose
+      // acknowledgement the peer never heard. Replay the cached response without re-delivering.
+      output.send(Objects.requireNonNull(lastSecondaryResponse, "lastSecondaryResponse"));
+      return;
     }
+    // A new frame: a changed FCB, or the very first FCV=1 frame before any response was cached (a
+    // peer that sent user data without a standard link reset, whose first FCB happens to equal the
+    // default expectedFcb). Deliver the ASDU, acknowledge, and advance the expected FCB.
+    expectedFcb = fcb;
+    Ft12Frame ack = makeAck();
+    lastSecondaryResponse = ack;
+    if (asdu != null) {
+      events.onAsdu(asdu);
+    }
+    // Delivery may have synchronously closed the session (an application send failure); if so, do
+    // not acknowledge on a closed session.
+    if (closed) {
+      return;
+    }
+    output.send(ack);
+  }
+
+  /**
+   * Reports whether an inbound {@code FCV=1} primary frame is a retransmission whose
+   * acknowledgement the peer never heard: its FCB is unchanged from the last accepted frame
+   * <em>and</em> a prior response is actually cached to replay. The first {@code FCV=1} frame after
+   * a reset — or before any reset, from a peer that never reset the link — has no cached response,
+   * so it reads as a new frame and its ASDU is delivered rather than silently dropped.
+   *
+   * @param fcb the frame count bit of the inbound primary frame.
+   * @return {@code true} if the frame should be treated as a retransmission and replayed.
+   */
+  private boolean isRetransmission(boolean fcb) {
+    return lastSecondaryResponse != null && fcb == expectedFcb;
   }
 
   // --- Outbound helpers (lock held) -----------------------------------------------------------
 
   private void flushSendQueue() {
     // Window of one: at most a single outstanding primary frame, and only once the link is
-    // available.
-    if (!linkAvailable || pending != null) {
-      return;
+    // available. Loop so an ASDU whose framing fails (see the catch below) does not stall the
+    // queue: its transaction is rolled back and the next queued ASDU is attempted on the same turn.
+    while (linkAvailable && pending == null && !sendQueue.isEmpty()) {
+      Asdu asdu = sendQueue.removeFirst();
+      // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
+      queueDrained.signalAll();
+      pendingDataAsdu = asdu;
+      pendingFcb = nextFcb;
+      pending = PendingPrimary.USER_DATA;
+      retryCount = 0;
+      try {
+        output.send(
+            new Ft12Frame.Variable(
+                LinkControlField.primary(dir, pendingFcb, true, FC_USER_DATA), linkAddress, asdu));
+      } catch (RuntimeException e) {
+        // Framing failed before anything reached the wire: the FT1.2 framer behind output.send
+        // rejects user data longer than 255 octets, so one oversized ASDU makes the send throw.
+        // Roll back the transaction this iteration just opened — leaving it pending with no confirm
+        // timer armed would wedge the stop-and-wait window permanently, stalling every later send.
+        // nextFcb was only read into pendingFcb, not toggled (the FCB is spent only on a confirmed
+        // transaction), so it needs no rollback. Fail the offending ASDU locally with a negative
+        // confirmation so the façade fails the waiting operation promptly instead of by a generic
+        // confirm timeout, then keep draining the queue.
+        pending = null;
+        pendingDataAsdu = null;
+        retryCount = 0;
+        LOGGER.debug("framing user data failed; rejecting the ASDU locally", e);
+        deliverNegativeConfirmation(asdu, Cause.UNKNOWN_CAUSE);
+        if (closed) {
+          // Delivering the rejection may have synchronously closed the session.
+          return;
+        }
+        continue;
+      }
+      // output.send(...) may have synchronously confirmed and cleared the pending frame (and
+      // possibly sent the next queued frame), or closed the session; re-check before arming on a
+      // stale state.
+      if (closed) {
+        return;
+      }
+      armConfirmTimer(confirmTimeoutMillis);
+      armLinkStateTimer();
+      return; // a user-data frame is now outstanding; the window is closed
     }
-    if (sendQueue.isEmpty()) {
-      return;
-    }
-    Asdu asdu = sendQueue.removeFirst();
-    // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
-    queueDrained.signalAll();
-    pendingDataAsdu = asdu;
-    pendingFcb = nextFcb;
-    pending = PendingPrimary.USER_DATA;
-    retryCount = 0;
-    output.send(
-        new Ft12Frame.Variable(
-            LinkControlField.primary(dir, pendingFcb, true, FC_USER_DATA), linkAddress, asdu));
-    // output.send(...) may have synchronously confirmed and cleared the pending frame (and possibly
-    // sent the next queued frame), or closed the session; re-check before arming on a stale state.
-    if (closed) {
-      return;
-    }
-    armConfirmTimer(confirmTimeoutMillis);
-    armLinkStateTimer();
   }
 
   private void sendPrimaryNoData(int functionCode) {
@@ -887,6 +960,34 @@ final class BalancedEngine implements Ft12Engine {
     secondaryReset = false;
     expectedFcb = false;
     lastSecondaryResponse = null;
+  }
+
+  /**
+   * Answers {@code asdu} locally with the negative confirmation a controlled station would return —
+   * the same ASDU echoed back with the positive/negative (P/N) bit set and the supplied {@code
+   * cause} — and delivers it through {@link Session.Events#onAsdu(Asdu)} so the high-level façade
+   * correlates it to the waiting operation and fails that operation promptly rather than waiting
+   * for a generic confirm timeout.
+   *
+   * <p>Used when a user-data ASDU can never reach the wire because its FT1.2 framing fails (an ASDU
+   * too large for a single variable frame), mirroring {@code UnbalancedMasterEngine}'s rejection of
+   * an unframeable command.
+   *
+   * @param asdu the ASDU to echo back as a negative confirmation.
+   * @param cause the cause of transmission to stamp on the rejection.
+   */
+  private void deliverNegativeConfirmation(Asdu asdu, Cause cause) {
+    Asdu rejection =
+        new Asdu(
+            asdu.type(),
+            asdu.sequence(),
+            cause,
+            true, // P/N = 1: a negative confirmation
+            asdu.test(),
+            asdu.originatorAddress(),
+            asdu.commonAddress(),
+            asdu.objects());
+    events.onAsdu(rejection);
   }
 
   private static boolean isLinkServiceFailure(int functionCode) {
