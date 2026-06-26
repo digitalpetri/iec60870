@@ -1,4 +1,4 @@
-# IEC 60870-5-104 Library — Architecture
+# IEC 60870-5 Library — Architecture
 
 This is the architecture reference for the `com.digitalpetri.iec60870` library, a Java 17
 implementation of IEC 60870-5-104 and its serial companion standard IEC 60870-5-101. The library is

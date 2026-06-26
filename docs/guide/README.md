@@ -1,7 +1,8 @@
-# IEC 60870-5-104 — User Guide
+# IEC 60870-5 — User Guide
 
 This is the task-oriented guide for *using* the `com.digitalpetri.iec60870` library, a Java 17
-implementation of IEC 60870-5-104. Throughout the guide a **client** is the
+implementation of IEC 60870-5, covering the CS 104 TCP profile and the CS 101 serial profile (also
+runnable as 101-over-TCP). Throughout the guide a **client** is the
 [controlling station](reference/glossary.md) (the master) and a **server** is the
 [controlled station](reference/glossary.md) (the outstation, or slave). Most users work through the
 high-level facade — `Iec60870Client` and `Iec60870Server`, built with the Netty-backed `TcpIec104Client`

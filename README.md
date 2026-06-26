@@ -1,7 +1,7 @@
 # IEC 60870 for Java
 
-IEC 60870 is a Java implementation of IEC 60870-5-104, the TCP/IP profile for IEC 60870-5 telecontrol
-communication. It is a Java 17, [Netty](https://netty.io/)-backed library with a two-layer API: a
+This project is a Java implementation of IEC 60870-5, covering both the CS 104 (networked, TCP/IP) and
+CS 101 (serial, plus 101-over-TCP) companion standards for telecontrol communication. It is a Java 17, [Netty](https://netty.io/)-backed library with a two-layer API: a
 faithful raw ASDU layer and a high-level
 [controlling-station / controlled-station](docs/guide/reference/glossary.md) (master / slave) client
 and server facade, with an escape hatch between them

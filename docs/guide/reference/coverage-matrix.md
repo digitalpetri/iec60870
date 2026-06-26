@@ -1,6 +1,6 @@
 # Reference: Coverage matrix
 
-This page answers the first question every IEC 104 integrator asks: **do you support type
+This page answers the first question every IEC 60870-5 integrator asks: **do you support type
 identification *X*, and if so, what do I call and what do I get?** The authoritative support flag
 lives in `AsduType.supported()` and is mirrored from the architecture doc
 [Protocol coverage](../../architecture/protocol-coverage.md), the as-built map of which

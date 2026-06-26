@@ -1,6 +1,7 @@
 # IEC 60870
 
-IEC 60870 is a Maven / Java 17 implementation of IEC 60870-5-104.
+This project is a Maven / Java 17 implementation of IEC 60870-5, covering both the CS 104
+(networked, TCP/IP) and CS 101 (serial, plus 101-over-TCP) companion standards.
 
 ## Tech Stack
 
