@@ -2,10 +2,14 @@ package com.digitalpetri.iec60870.cs101;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.digitalpetri.iec60870.cs101.LinkSettings.PollConfig;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +40,7 @@ class LinkSettingsTest {
       assertEquals(Duration.ofMillis(1000), settings.repeatTimeout());
       assertEquals(3, settings.maxRetries());
       assertEquals(Duration.ofMillis(5000), settings.linkStateTimeout());
+      assertNull(settings.pollConfig(), "a balanced link carries no poll configuration");
     }
 
     @Test
@@ -51,6 +56,10 @@ class LinkSettingsTest {
       assertEquals(Duration.ofMillis(1000), settings.repeatTimeout());
       assertEquals(3, settings.maxRetries());
       assertEquals(Duration.ofMillis(5000), settings.linkStateTimeout());
+
+      PollConfig pollConfig = settings.pollConfig();
+      assertEquals(List.of(), pollConfig.slaveAddresses());
+      assertEquals(Duration.ofMillis(1000), pollConfig.pollInterval());
     }
 
     @Test
@@ -77,6 +86,41 @@ class LinkSettingsTest {
       assertEquals(5, settings.maxRetries());
       assertEquals(Duration.ofMillis(7000), settings.linkStateTimeout());
     }
+
+    @Test
+    void unbalancedPollConfigSettersAreApplied() {
+      LinkSettings settings =
+          LinkSettings.unbalanced()
+              .slaveAddresses(List.of(1, 2, 3))
+              .pollInterval(Duration.ofMillis(500))
+              .build();
+
+      PollConfig pollConfig = settings.pollConfig();
+      assertEquals(List.of(1, 2, 3), pollConfig.slaveAddresses());
+      assertEquals(Duration.ofMillis(500), pollConfig.pollInterval());
+    }
+
+    @Test
+    void slaveAddressesSetterPreservesDefaultInterval() {
+      LinkSettings settings = LinkSettings.unbalanced().slaveAddresses(List.of(7)).build();
+
+      PollConfig pollConfig = settings.pollConfig();
+      assertEquals(List.of(7), pollConfig.slaveAddresses());
+      assertEquals(
+          Duration.ofMillis(1000),
+          pollConfig.pollInterval(),
+          "setting only the slave list keeps the default 1000 ms poll interval");
+    }
+
+    @Test
+    void pollIntervalSetterPreservesEmptySlaveList() {
+      LinkSettings settings =
+          LinkSettings.unbalanced().pollInterval(Duration.ofMillis(250)).build();
+
+      PollConfig pollConfig = settings.pollConfig();
+      assertEquals(List.of(), pollConfig.slaveAddresses());
+      assertEquals(Duration.ofMillis(250), pollConfig.pollInterval());
+    }
   }
 
   @Nested
@@ -87,7 +131,8 @@ class LinkSettingsTest {
       assertThrows(
           IllegalArgumentException.class,
           () ->
-              new LinkSettings(LinkMode.BALANCED, 1, 3, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+              new LinkSettings(
+                  LinkMode.BALANCED, 1, 3, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -96,7 +141,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 0, -1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, 0, -1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -105,7 +150,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.UNBALANCED, 0, 0, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.UNBALANCED, 0, 0, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -114,7 +159,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, -1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, -1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -122,7 +167,8 @@ class LinkSettingsTest {
       assertThrows(
           IllegalArgumentException.class,
           () ->
-              new LinkSettings(LinkMode.BALANCED, 5, 0, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+              new LinkSettings(
+                  LinkMode.BALANCED, 5, 0, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -131,7 +177,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 256, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, 256, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -140,7 +186,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 65536, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, 65536, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -150,7 +196,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.UNBALANCED, 1, 1, 65535, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.UNBALANCED, 1, 1, 65535, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -160,7 +206,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.UNBALANCED, 1, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.UNBALANCED, 1, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -169,7 +215,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 1, 1, 70000, true, CONFIRM, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, 1, 1, 70000, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -178,7 +224,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 1, 1, 255, true, CONFIRM, REPEAT, -1, LINK_STATE));
+                  LinkMode.BALANCED, 1, 1, 255, true, CONFIRM, REPEAT, -1, LINK_STATE, null));
     }
 
     @Test
@@ -187,7 +233,7 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 1, 1, 255, true, Duration.ZERO, REPEAT, 3, LINK_STATE));
+                  LinkMode.BALANCED, 1, 1, 255, true, Duration.ZERO, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
@@ -204,7 +250,8 @@ class LinkSettingsTest {
                   CONFIRM,
                   Duration.ofMillis(-1),
                   3,
-                  LINK_STATE));
+                  LINK_STATE,
+                  null));
     }
 
     @Test
@@ -213,21 +260,23 @@ class LinkSettingsTest {
           IllegalArgumentException.class,
           () ->
               new LinkSettings(
-                  LinkMode.BALANCED, 1, 1, 255, true, CONFIRM, REPEAT, 3, Duration.ZERO));
+                  LinkMode.BALANCED, 1, 1, 255, true, CONFIRM, REPEAT, 3, Duration.ZERO, null));
     }
 
     @Test
     void nullModeRejected() {
       assertThrows(
           NullPointerException.class,
-          () -> new LinkSettings(null, 1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE));
+          () -> new LinkSettings(null, 1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null));
     }
 
     @Test
     void nullDurationRejected() {
       assertThrows(
           NullPointerException.class,
-          () -> new LinkSettings(LinkMode.BALANCED, 1, 1, 255, true, null, REPEAT, 3, LINK_STATE));
+          () ->
+              new LinkSettings(
+                  LinkMode.BALANCED, 1, 1, 255, true, null, REPEAT, 3, LINK_STATE, null));
     }
   }
 
@@ -237,7 +286,8 @@ class LinkSettingsTest {
     @Test
     void balancedAbsentAddress() {
       LinkSettings settings =
-          new LinkSettings(LinkMode.BALANCED, 0, 0, 255, true, CONFIRM, REPEAT, 0, LINK_STATE);
+          new LinkSettings(
+              LinkMode.BALANCED, 0, 0, 255, true, CONFIRM, REPEAT, 0, LINK_STATE, null);
 
       assertEquals(0, settings.linkAddressLength());
       assertEquals(0, settings.linkAddress());
@@ -247,7 +297,8 @@ class LinkSettingsTest {
     @Test
     void balancedMaxOneOctetAddress() {
       LinkSettings settings =
-          new LinkSettings(LinkMode.BALANCED, 255, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE);
+          new LinkSettings(
+              LinkMode.BALANCED, 255, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null);
 
       assertEquals(255, settings.linkAddress());
       assertEquals(1, settings.linkAddressLength());
@@ -256,7 +307,8 @@ class LinkSettingsTest {
     @Test
     void balancedMaxTwoOctetAddress() {
       LinkSettings settings =
-          new LinkSettings(LinkMode.BALANCED, 65535, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE);
+          new LinkSettings(
+              LinkMode.BALANCED, 65535, 2, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null);
 
       assertEquals(65535, settings.linkAddress());
       assertEquals(2, settings.linkAddressLength());
@@ -265,7 +317,8 @@ class LinkSettingsTest {
     @Test
     void unbalancedOneOctet() {
       LinkSettings settings =
-          new LinkSettings(LinkMode.UNBALANCED, 200, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE);
+          new LinkSettings(
+              LinkMode.UNBALANCED, 200, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, null);
 
       assertEquals(LinkMode.UNBALANCED, settings.mode());
       assertEquals(200, settings.linkAddress());
@@ -276,11 +329,77 @@ class LinkSettingsTest {
     void unbalancedTwoOctet() {
       LinkSettings settings =
           new LinkSettings(
-              LinkMode.UNBALANCED, 5000, 2, 65535, true, CONFIRM, REPEAT, 3, LINK_STATE);
+              LinkMode.UNBALANCED, 5000, 2, 65535, true, CONFIRM, REPEAT, 3, LINK_STATE, null);
 
       assertEquals(LinkMode.UNBALANCED, settings.mode());
       assertEquals(5000, settings.linkAddress());
       assertEquals(65535, settings.broadcastAddress());
+    }
+
+    @Test
+    void unbalancedWithPollConfig() {
+      PollConfig pollConfig = new PollConfig(List.of(1, 2), Duration.ofMillis(750));
+      LinkSettings settings =
+          new LinkSettings(
+              LinkMode.UNBALANCED, 1, 1, 255, true, CONFIRM, REPEAT, 3, LINK_STATE, pollConfig);
+
+      assertEquals(pollConfig, settings.pollConfig());
+    }
+  }
+
+  @Nested
+  class PollConfigValidation {
+
+    @Test
+    void copiesSlaveAddressesDefensively() {
+      List<Integer> source = Arrays.asList(1, 2, 3);
+      PollConfig pollConfig = new PollConfig(source, Duration.ofMillis(1000));
+
+      source.set(0, 99);
+
+      assertEquals(List.of(1, 2, 3), pollConfig.slaveAddresses());
+    }
+
+    @Test
+    void emptySlaveListIsAllowed() {
+      PollConfig pollConfig = new PollConfig(List.of(), Duration.ofMillis(1000));
+
+      assertEquals(List.of(), pollConfig.slaveAddresses());
+    }
+
+    @Test
+    void nullSlaveAddressesRejected() {
+      assertThrows(NullPointerException.class, () -> new PollConfig(null, Duration.ofMillis(1000)));
+    }
+
+    @Test
+    void nullSlaveAddressElementRejected() {
+      List<Integer> withNull = Arrays.asList(1, null, 3);
+      assertThrows(
+          NullPointerException.class, () -> new PollConfig(withNull, Duration.ofMillis(1000)));
+    }
+
+    @Test
+    void negativeSlaveAddressRejected() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> new PollConfig(List.of(0, -1), Duration.ofMillis(1000)));
+    }
+
+    @Test
+    void nullPollIntervalRejected() {
+      assertThrows(NullPointerException.class, () -> new PollConfig(List.of(1), null));
+    }
+
+    @Test
+    void zeroPollIntervalRejected() {
+      assertThrows(IllegalArgumentException.class, () -> new PollConfig(List.of(1), Duration.ZERO));
+    }
+
+    @Test
+    void negativePollIntervalRejected() {
+      assertThrows(
+          IllegalArgumentException.class, () -> new PollConfig(List.of(1), Duration.ofMillis(-1)));
     }
   }
 }
