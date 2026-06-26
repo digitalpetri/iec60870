@@ -3,9 +3,11 @@ package com.digitalpetri.iec60870.cs101;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.session.Session;
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,7 +37,13 @@ import org.slf4j.LoggerFactory;
  * <p><b>Per-slave bring-up.</b> Each configured slave is brought up independently with a
  * request-status-of-link (FC9) followed, on a status-of-link (FC11) reply, by a
  * reset-of-remote-link (FC0); the positive acknowledgement of the reset transitions that slave to
- * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}.
+ * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}. Bring-up is scheduled
+ * <em>fairly</em>: it is the lowest-priority bus activity (behind commands and polls to slaves that
+ * are already available), it round-robins across the not-yet-reset slaves, and the request-status
+ * retransmissions of an unresponsive slave <em>release the bus</em> between probes whenever other
+ * work could run, so a single dead slave cannot monopolize the shared bus for its whole retransmit
+ * budget while polls and commands to healthy slaves wait. The dead slave is still degraded to
+ * {@link LinkState#ERROR error} once its per-slave probe budget is exhausted.
  *
  * <p><b>Polling.</b> Once available, slaves are polled for class-2 data on the configured
  * {@linkplain LinkSettings.PollConfig#pollInterval() cadence} with request-class-2 (FC11, FCV=1)
@@ -137,6 +145,12 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     private LinkState linkState = LinkState.UNRESET;
     private boolean nextFcb = true; // FCB for this slave's next FCV=1 frame; true after a reset
     private boolean dfc; // the slave's last-reported data-flow-control (receive-buffer-full) bit
+
+    // Unanswered request-status-of-link (FC9) bring-up transmissions accumulated for this slave.
+    // Counted per slave (not on the shared retryCount) so that bring-up can yield the bus between
+    // attempts — interleaving service to other slaves — while still degrading this slave to ERROR
+    // once the count exceeds maxRetries.
+    private int bringUpRetries;
   }
 
   /**
@@ -188,6 +202,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
 
   private boolean pollPending; // a class-2 poll is owed (set on a poll tick, consumed by pump())
   private int pollCursor; // round-robin index into slaveAddresses for the next poll
+  private int bringUpCursor; // round-robin index into slaveAddresses for the next bring-up
 
   // Timer handles and the generation counters that invalidate stale dispatched tasks.
   private @Nullable ScheduledFuture<?> confirmFuture;
@@ -395,8 +410,14 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    *
    * <p>The ASDU is appended to the global command queue (honoring the configured bound and overflow
    * policy) and dispatched when the bus is free and the target slave is available; an ASDU
-   * addressed to the broadcast address is sent as a send/no-reply frame. Queued ASDUs are sent in
-   * submission order.
+   * addressed to the broadcast address is sent as a send/no-reply frame. Queued ASDUs to the same
+   * slave are sent in submission order; an ASDU to a ready slave may be dispatched ahead of an
+   * earlier-queued ASDU whose target is still being brought up or is back-pressured, so a single
+   * blocked slave does not stall commands to the rest of the bus. An ASDU whose common address maps
+   * to no usable secondary — an unconfigured address, or one degraded to {@link LinkState#ERROR} —
+   * is answered locally with a {@link Cause#UNKNOWN_COMMON_ADDRESS} negative confirmation rather
+   * than being silently dropped, so the caller learns of the unreachable station promptly instead
+   * of by timeout.
    *
    * @param asdu the application ASDU to send.
    */
@@ -508,51 +529,54 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * idle.
    *
    * <p>Acts only while data transfer is started and the bus is free ({@code pending == null}). The
-   * priority order is: (1) bring up any not-yet-reset slave; (2) deliver the head command if its
-   * target slave can accept it (dropping commands for unconfigured or failed slaves, sending
-   * broadcasts immediately); (3) on a due poll tick, request class-2 data from the next available
-   * slave.
+   * priority order is: (1) deliver the first command whose target slave can accept it now, scanning
+   * past a leading command for a not-yet-ready slave (still being brought up, or
+   * DFC-back-pressured) so it does not starve commands to other ready slaves (rejecting a command
+   * for an unconfigured or failed slave with a synthesized negative confirmation rather than
+   * silently dropping it, sending broadcasts immediately); (2) on a due poll tick, request class-2
+   * data from the next available slave; (3) bring up the next not-yet-reset slave, round robin
+   * across the configured secondaries.
+   *
+   * <p>Bring-up is the <em>lowest</em> priority on purpose: servicing a slave that is already
+   * available must never be starved by bringing up a not-yet-available one. Together with the
+   * round-robin bring-up cursor and the bus yield in {@link #onRequestStatusTimeout(Pending)}, this
+   * keeps a single unresponsive slave from monopolizing the shared bus for its whole retransmit
+   * budget while polls and commands to healthy slaves wait.
    */
   private void pump() {
     while (!closed && started && pending == null) {
-      // Priority 1: bring up any not-yet-reset slave (one bring-up transaction at a time).
-      Integer unreset = firstUnresetSlave();
-      if (unreset != null) {
-        sendRequestStatus(unreset);
-        return;
-      }
-
-      // Priority 2: deliver the head command if it targets a slave that can accept it.
-      if (!commandQueue.isEmpty()) {
-        Asdu head = commandQueue.peekFirst();
-        int target = commonAddressOf(head);
+      // Priority 1: deliver the first command whose target slave can accept it now. Scanning past a
+      // leading command for a not-yet-ready slave — one still being brought up (UNRESET) or
+      // available but DFC-back-pressured — keeps a single blocked slave from starving commands to
+      // other ready slaves (cross-slave head-of-line blocking). Queue order is otherwise preserved,
+      // so two commands for the same slave keep their submission order (deliverability is constant
+      // within a scan, so the earliest command for any slave is always reached first).
+      Asdu command = removeFirstDeliverableCommand();
+      if (command != null) {
+        int target = commonAddressOf(command);
         if (target == broadcastAddress) {
-          commandQueue.removeFirst();
-          queueDrained.signalAll();
-          sendBroadcast(head);
+          sendBroadcast(command);
           continue; // FC4 expects no reply; the bus is free again.
         }
         SlaveState slave = slaves.get(target);
         if (slave == null || slave.linkState == LinkState.ERROR) {
-          commandQueue.removeFirst();
-          queueDrained.signalAll();
           LOGGER.debug(
-              "dropping command for {} slave (CA={})",
+              "rejecting command for {} slave (CA={}) with a negative confirmation",
               slave == null ? "unconfigured" : "failed",
               target);
-          continue;
+          rejectUndeliverable(command);
+          continue; // the bus is still free; the loop guard re-checks closed/started
         }
-        if (slave.linkState == LinkState.AVAILABLE && !slave.dfc) {
-          commandQueue.removeFirst();
-          queueDrained.signalAll();
-          sendUserData(target, head);
-          return;
+        // The target is available and not back-pressured: send it as send/confirm user data.
+        if (sendUserData(target, command)) {
+          return; // a user-data transaction is now outstanding; the bus is busy
         }
-        // AVAILABLE but back-pressured (DFC): leave the command queued and keep polling so a later
-        // response clears DFC. (UNRESET is impossible here — priority 1 handled every such slave.)
+        // Framing the user data failed (e.g. an oversized ASDU): the command was rejected locally
+        // and the bus is still free, so keep scanning for other work rather than stalling.
+        continue;
       }
 
-      // Priority 3: cadence-driven class-2 poll of the next available slave.
+      // Priority 2: cadence-driven class-2 poll of the next available slave.
       if (pollPending) {
         pollPending = false;
         Integer slave = nextSlaveToPoll();
@@ -560,19 +584,140 @@ final class UnbalancedMasterEngine implements Ft12Engine {
           sendPollClass2(slave);
           return;
         }
+        // No available slave to poll this tick; fall through to bring-up.
       }
+
+      // Priority 3: bring up the next not-yet-reset slave (round robin across the secondaries).
+      Integer unreset = nextSlaveToBringUp();
+      if (unreset != null) {
+        sendRequestStatus(unreset);
+        return;
+      }
+
       return; // nothing to do until the next ack or poll tick
     }
   }
 
-  private @Nullable Integer firstUnresetSlave() {
-    for (int address : slaveAddresses) {
+  /**
+   * Removes and returns the first queued command that can be acted on right now, scanning past any
+   * leading commands whose target slave cannot currently accept user data — one still being brought
+   * up (UNRESET) or DFC-back-pressured — so a single blocked slave does not starve commands to
+   * other ready slaves. Queue order is otherwise preserved: because a target's deliverability does
+   * not change during a single scan, the earliest queued command for any given slave is always
+   * reached before its later commands, so two commands for the same slave keep their submission
+   * order.
+   *
+   * @return the first deliverable command, removed from the queue, or {@code null} if none can be
+   *     acted on now.
+   */
+  private @Nullable Asdu removeFirstDeliverableCommand() {
+    Iterator<Asdu> it = commandQueue.iterator();
+    while (it.hasNext()) {
+      Asdu command = it.next();
+      if (commandDeliverableNow(commonAddressOf(command))) {
+        it.remove();
+        queueDrained.signalAll();
+        return command;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns the next not-yet-reset slave to bring up, advancing the bring-up cursor so consecutive
+   * bring-up turns rotate across the configured secondaries.
+   *
+   * <p>Round-robin (rather than always the lowest-addressed slave) is what lets a healthy slave be
+   * brought up even when an earlier-listed slave is unresponsive: when {@link
+   * #onRequestStatusTimeout(Pending)} yields the bus after a dead slave's probe times out, the next
+   * bring-up turn lands on a different slave instead of immediately re-probing the dead one.
+   *
+   * @return the link address of the next slave awaiting bring-up, or {@code null} if every
+   *     configured slave is already available or has been degraded to error.
+   */
+  private @Nullable Integer nextSlaveToBringUp() {
+    int n = slaveAddresses.size();
+    for (int i = 0; i < n; i++) {
+      int index = (bringUpCursor + i) % n;
+      int address = slaveAddresses.get(index);
       SlaveState slave = slaves.get(address);
       if (slave != null && slave.linkState == LinkState.UNRESET) {
+        bringUpCursor = (index + 1) % n;
         return address;
       }
     }
     return null;
+  }
+
+  /**
+   * Reports whether the bus has work to do other than (re)probing the given not-yet-available
+   * slave: another slave to bring up, a due class-2 poll of an available slave, or a queued command
+   * that can be delivered or locally answered now. Used by {@link #onRequestStatusTimeout(Pending)}
+   * to decide whether releasing the bus would actually let useful work proceed.
+   *
+   * @param excludeSlave the link address of the slave whose bring-up just timed out.
+   * @return {@code true} if some other bus transaction could be serviced now.
+   */
+  private boolean hasServiceableWorkBesidesBringUp(int excludeSlave) {
+    for (int address : slaveAddresses) {
+      if (address == excludeSlave) {
+        continue;
+      }
+      SlaveState slave = slaves.get(address);
+      if (slave != null && slave.linkState == LinkState.UNRESET) {
+        return true;
+      }
+    }
+    if (pollPending && hasAvailableSlave()) {
+      return true;
+    }
+    return hasDeliverableCommand();
+  }
+
+  private boolean hasAvailableSlave() {
+    for (int address : slaveAddresses) {
+      SlaveState slave = slaves.get(address);
+      if (slave != null && slave.linkState == LinkState.AVAILABLE) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Reports whether any queued command could be acted on right now, scanning the whole command
+   * queue rather than only its head so a leading command for a not-yet-ready slave does not mask a
+   * deliverable command behind it — the same cross-slave fairness {@link #pump()} applies.
+   *
+   * @return {@code true} if {@link #pump()} would act on some queued command this turn.
+   */
+  private boolean hasDeliverableCommand() {
+    for (Asdu command : commandQueue) {
+      if (commandDeliverableNow(commonAddressOf(command))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Reports whether a command for the given target common address could be acted on right now —
+   * delivered as user data to an available, non-back-pressured slave, sent as a broadcast, or
+   * answered locally with a negative confirmation for an unconfigured or failed target. A command
+   * for a slave still being brought up (UNRESET) or back-pressured (DFC) is not yet actionable.
+   *
+   * @param target the command's target common address.
+   * @return {@code true} if {@link #pump()} would act on a command for this target this turn.
+   */
+  private boolean commandDeliverableNow(int target) {
+    if (target == broadcastAddress) {
+      return true;
+    }
+    SlaveState slave = slaves.get(target);
+    if (slave == null || slave.linkState == LinkState.ERROR) {
+      return true; // undeliverable: pump answers it with a negative confirmation
+    }
+    return slave.linkState == LinkState.AVAILABLE && !slave.dfc;
   }
 
   private @Nullable Integer nextSlaveToPoll() {
@@ -645,6 +790,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
           cancelConfirmTimer();
           if (slave != null) {
             slave.dfc = dfc;
+            slave.bringUpRetries = 0; // the slave answered: the FC9 retransmission budget resets
           }
           sendReset(p.slaveAddress()); // proceed to the reset-of-remote-link, same slave
         } else {
@@ -814,16 +960,52 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     armConfirmTimer(confirmTimeoutMillis);
   }
 
-  private void sendUserData(int slaveAddress, Asdu asdu) {
+  /**
+   * Sends {@code asdu} to {@code slaveAddress} as a send/confirm user-data frame (FC3, FCV=1),
+   * opening the single-transaction window and arming the confirm timer.
+   *
+   * <p>Framing the user data can fail synchronously, before the frame ever reaches the bus: the
+   * FT1.2 framer behind {@link Ft12LinkLayer.Output#send(Ft12Frame)} rejects user data longer than
+   * {@code 255} octets, so publishing one oversized ASDU makes {@code output.send} throw. This
+   * method is therefore exception-safe. On such a throw it <em>rolls back</em> the pending
+   * transaction it just opened — otherwise this slave's stop-and-wait path would be wedged
+   * permanently, left {@link Pending pending} with no confirm timer ever armed to clear it — and
+   * answers the offending command locally with a negative confirmation so the façade fails the
+   * corresponding operation promptly instead of by a generic timeout. The bus is then reported free
+   * again so the caller can continue servicing other work.
+   *
+   * @param slaveAddress the target secondary's link address.
+   * @param asdu the command ASDU to transmit.
+   * @return {@code true} if a user-data transaction is now outstanding (the bus is busy), {@code
+   *     false} if framing failed and the command was rejected locally (the bus is still free).
+   */
+  private boolean sendUserData(int slaveAddress, Asdu asdu) {
     boolean fcb = fcbFor(slaveAddress);
     setPending(new Pending(slaveAddress, Kind.USER_DATA, asdu, fcb, 0));
-    output.send(
-        new Ft12Frame.Variable(
-            LinkControlField.primary(false, fcb, true, FC_USER_DATA), slaveAddress, asdu));
+    try {
+      output.send(
+          new Ft12Frame.Variable(
+              LinkControlField.primary(false, fcb, true, FC_USER_DATA), slaveAddress, asdu));
+    } catch (RuntimeException e) {
+      // Framing failed before anything reached the bus (e.g. an ASDU too large for a single FT1.2
+      // variable frame). Roll back the just-opened transaction so the bus is not left wedged with a
+      // pending transaction that has no armed confirm timer; the FCB was only read, not toggled, so
+      // it needs no rollback. Then fail the command locally so the façade learns of it promptly.
+      pending = null;
+      retryCount = 0;
+      LOGGER.debug(
+          "framing user data for slave {} failed; rejecting the command locally", slaveAddress, e);
+      // There is no standard IEC cause for an unframeable (over-length) command, so echo it back as
+      // a negative confirmation with the closest generic rejection cause; the precise framing error
+      // is carried by the log above.
+      deliverNegativeConfirmation(asdu, Cause.UNKNOWN_CAUSE);
+      return false;
+    }
     if (closed) {
-      return;
+      return true;
     }
     armConfirmTimer(confirmTimeoutMillis);
+    return true;
   }
 
   private void sendBroadcast(Asdu asdu) {
@@ -919,6 +1101,12 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       if (p == null) {
         return; // confirmed synchronously after this timer was armed; nothing to do
       }
+      if (p.kind() == Kind.RESET_STATUS) {
+        // Bring-up of a not-yet-available slave gets fair, bus-yielding retransmission so one
+        // unresponsive slave does not monopolize the shared bus for its whole retransmit budget.
+        onRequestStatusTimeout(p);
+        return;
+      }
       if (retryCount < maxRetries) {
         retryCount++;
         retransmitPending(p);
@@ -941,6 +1129,50 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       }
     } finally {
       lock.unlock();
+    }
+  }
+
+  /**
+   * Handles a request-status-of-link (FC9) bring-up timeout for a not-yet-available slave, fairly,
+   * so a single unresponsive secondary cannot monopolize the shared bus.
+   *
+   * <p>Bring-up retransmissions are counted <em>per slave</em> (on {@link
+   * SlaveState#bringUpRetries}) rather than on the shared {@link #retryCount}, so the offending
+   * secondary is still degraded to {@link LinkState#ERROR} once it exceeds {@link #maxRetries}
+   * unanswered probes. To keep that slave from holding the single-transaction bus for its entire
+   * retransmit budget — which would stall polls and commands to slaves that are already available —
+   * the bus is <em>released</em> between probes whenever {@linkplain
+   * #hasServiceableWorkBesidesBringUp(int) other work} could run (another slave to bring up, a due
+   * poll, or a deliverable command); that work is serviced first and this slave is re-probed on a
+   * later bus turn. When nothing else needs the bus the frame is retransmitted in place on the
+   * repeat cadence, leaving the lone-slave / idle-bus timing unchanged.
+   *
+   * @param p the outstanding request-status-of-link transaction that just timed out.
+   */
+  private void onRequestStatusTimeout(Pending p) {
+    SlaveState slave = slaves.get(p.slaveAddress());
+    int attempts = (slave == null) ? maxRetries + 1 : ++slave.bringUpRetries;
+    if (attempts > maxRetries) {
+      // Degrade only THIS slave; the bus and the session stay open (one dead slave must not kill
+      // the
+      // bus). The session closes only on a transport loss, via the binding calling close().
+      markSlaveError(p.slaveAddress());
+      pending = null;
+      pump();
+      return;
+    }
+    if (hasServiceableWorkBesidesBringUp(p.slaveAddress())) {
+      // Release the bus: service the other work now and re-probe this slave on a later turn (its
+      // accumulated bringUpRetries still drive it to ERROR). This is the fair, interleaved path.
+      pending = null;
+      pump();
+    } else {
+      // Nothing else needs the bus: retransmit in place on the repeat cadence (unchanged behavior).
+      retransmitPending(p);
+      if (closed) {
+        return;
+      }
+      armConfirmTimer(repeatTimeoutMillis);
     }
   }
 
@@ -982,6 +1214,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     retryCount = 0;
     pollPending = false;
     pollCursor = 0;
+    bringUpCursor = 0;
     commandQueue.clear();
     slaves.clear();
     for (int address : slaveAddresses) {
@@ -991,6 +1224,52 @@ final class UnbalancedMasterEngine implements Ft12Engine {
 
   private static int commonAddressOf(Asdu asdu) {
     return asdu.commonAddress().value().intValue();
+  }
+
+  /**
+   * Locally answers a command that can never reach the bus with the negative confirmation a
+   * controlled station would itself return, so the high-level facade fails the corresponding
+   * operation promptly instead of blocking until a generic timeout.
+   *
+   * <p>The unbalanced master maps each command's common address onto the link address of a
+   * configured secondary (the frozen façade mapping). A command whose common address matches no
+   * secondary the master can put on the bus — the address is unconfigured, or the secondary has
+   * been degraded to {@link LinkState#ERROR} after exhausting its retries — is undeliverable.
+   * Rather than discarding it with only a log line, the master delivers the same ASDU echoed back
+   * with the positive/negative (P/N) bit set and cause {@link Cause#UNKNOWN_COMMON_ADDRESS},
+   * exactly the reply a real secondary gives for a command addressed to a common address it does
+   * not serve. The facade correlates this negative confirmation to the waiting
+   * command/interrogation and surfaces a clear, prompt rejection. The offending slave's {@link
+   * LinkState} is left unchanged.
+   *
+   * @param command the undeliverable command ASDU.
+   */
+  private void rejectUndeliverable(Asdu command) {
+    deliverNegativeConfirmation(command, Cause.UNKNOWN_COMMON_ADDRESS);
+  }
+
+  /**
+   * Answers {@code command} locally with the negative confirmation a controlled station would
+   * return — the same ASDU echoed back with the positive/negative (P/N) bit set and the supplied
+   * {@code cause} — and delivers it through {@link Session.Events#onAsdu(Asdu)} so the high-level
+   * façade correlates it to the waiting operation and fails that operation promptly rather than
+   * waiting for a generic timeout.
+   *
+   * @param command the command ASDU to echo back as a negative confirmation.
+   * @param cause the cause of transmission to stamp on the rejection.
+   */
+  private void deliverNegativeConfirmation(Asdu command, Cause cause) {
+    Asdu rejection =
+        new Asdu(
+            command.type(),
+            command.sequence(),
+            cause,
+            true, // P/N = 1: a negative confirmation
+            command.test(),
+            command.originatorAddress(),
+            command.commonAddress(),
+            command.objects());
+    events.onAsdu(rejection);
   }
 
   private static CompletableFuture<Void> failedFuture(Throwable cause) {
