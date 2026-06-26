@@ -20,11 +20,15 @@
 # `stdbuf -oL -eL` so its printf log markers stream under `docker logs`.
 #
 # Environment:
+#   INTEROP_CS101_MODE     balanced (default) | unbalanced -- FT1.2 link mode
 #   INTEROP_CS101_ROLE     slave (default) | master   -- which peer to run
 #   INTEROP_CS101_DEVICE   serial device path (default /dev/ttyCS101)
 #   INTEROP_CS101_BAUD     baud rate (default 9600)
 #   INTEROP_CS101_TCP_PORT TCP-LISTEN port (default 2404)
 #   plus the per-role env consumed by interop_cs101 (INTEROP_CA, etc.)
+#
+# The mode/role env vars are read directly by interop_cs101 (they are inherited
+# by the exec below); this script only needs to bridge the PTY to TCP.
 set -euo pipefail
 
 DEVICE="${INTEROP_CS101_DEVICE:-/dev/ttyCS101}"
@@ -56,7 +60,7 @@ until [ -e "${DEVICE}" ]; do
   sleep 0.1
 done
 
-echo "INTEROP-CS101-BRIDGE ${DEVICE} ready; launching peer (role=${INTEROP_CS101_ROLE:-slave})"
+echo "INTEROP-CS101-BRIDGE ${DEVICE} ready; launching peer (mode=${INTEROP_CS101_MODE:-balanced} role=${INTEROP_CS101_ROLE:-slave})"
 
 # Line-buffer the C peer's stdout/stderr so log markers stream under docker logs.
 exec stdbuf -oL -eL interop_cs101

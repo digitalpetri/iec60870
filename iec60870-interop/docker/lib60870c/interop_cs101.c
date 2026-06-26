@@ -2,21 +2,45 @@
 /*
  * interop_cs101.c
  *
- * Custom lib60870-C CS101 BALANCED peer (both roles) for the iec60870-interop
- * test bench. One binary, two roles selected by the INTEROP_CS101_ROLE env var:
+ * Custom lib60870-C CS101 peer (both roles, both link modes) for the
+ * iec60870-interop test bench. One binary, selected by two env vars:
  *
- *   INTEROP_CS101_ROLE=slave  (default)
+ *   INTEROP_CS101_MODE   balanced (default) | unbalanced  -- the FT1.2 link mode
+ *   INTEROP_CS101_ROLE   slave (default)    | master      -- the peer's role
+ *
+ * The four MODE x ROLE combinations are:
+ *
+ *   mode=balanced role=slave  (default)
  *       A CS101 balanced SLAVE (controlled station / outstation). OUR Java
  *       SerialIec101Client (master) drives it. Implements the same point image
  *       and confirmation contract as the CS104 interop_server, reusing the
  *       INTEROP-CONTRACT point image (see INTEROP-CONTRACT-CS101.md).
  *
- *   INTEROP_CS101_ROLE=master
+ *   mode=balanced role=master
  *       A CS101 balanced MASTER (controlling station). OUR Java
  *       SerialIec101Server (slave) is driven by it. Runs a scripted
  *       interrogation + command + spontaneous sequence and logs PASS:/FAIL:
  *       markers plus a final INTEROP-CS101-MASTER RESULT pass=<n> fail=<n> line,
  *       mirroring the CS104 interop_client.
+ *
+ *   mode=unbalanced role=slave
+ *       A CS101 UNBALANCED secondary station (IEC60870_LINK_LAYER_UNBALANCED).
+ *       OUR Java SerialIec101Client (unbalanced master) polls it. Identical
+ *       application image and handlers as the balanced slave; only the link
+ *       layer (link address, no DIR) and the spontaneous/periodic class queue
+ *       differ (periodic data is enqueued as class-2 so the master's class-2
+ *       poll drains it; command/interrogation responses go to class-1 and are
+ *       drained via the access-demand (ACD) escalation).
+ *
+ *   mode=unbalanced role=master
+ *       A CS101 UNBALANCED primary station (IEC60870_LINK_LAYER_UNBALANCED) that
+ *       brings up + polls a single secondary (CS101_Master_addSlave +
+ *       CS101_Master_pollSingleSlave). OUR Java SerialIec101Server (unbalanced
+ *       slave) is driven by it. Runs the same scripted interrogation + command +
+ *       spontaneous sequence and PASS:/FAIL:/RESULT markers as the balanced
+ *       master, but on a single-threaded poll loop (the unbalanced primary link
+ *       layer is not internally locked, so it must be driven from one thread,
+ *       exactly as the lib60870-C cs101_master_unbalanced example does).
  *
  * Wiring: this peer opens the serial device created for it by the container
  * entrypoint (cs101-entrypoint.sh, /dev/ttyCS101 by default), which socat
@@ -32,6 +56,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -517,12 +542,20 @@ slaveLinkLayerStateChanged(void* parameter, int address, LinkLayerState state)
 }
 
 static int
-runSlave(SerialPort port)
+runSlave(SerialPort port, IEC60870_LinkLayerMode mode)
 {
-    slave = CS101_Slave_create(port, NULL, NULL, IEC60870_LINK_LAYER_BALANCED);
+    bool unbalanced = (mode == IEC60870_LINK_LAYER_UNBALANCED);
+    const char* modeName = unbalanced ? "unbalanced" : "balanced";
 
-    /* Controlled station: DIR=0 on outgoing frames. */
-    CS101_Slave_setDIR(slave, false);
+    slave = CS101_Slave_create(port, NULL, NULL, mode);
+
+    /* DIR is a balanced-mode concept (controlled station -> DIR=0); the
+     * unbalanced secondary uses RES instead, so CS101_Slave_setDIR is a no-op
+     * there and is skipped. The link-layer address is the secondary station
+     * address the unbalanced master polls (and the balanced peer address). */
+    if (!unbalanced) {
+        CS101_Slave_setDIR(slave, false);
+    }
     CS101_Slave_setLinkLayerAddress(slave, DEFAULT_LINKADDR);
     CS101_Slave_setLinkLayerAddressOtherStation(slave, DEFAULT_LINKADDR);
 
@@ -551,10 +584,13 @@ runSlave(SerialPort port)
         return 1;
     }
 
-    /* Background thread pumps the FT1.2 + application state machine. */
+    /* Background thread pumps the FT1.2 + application state machine. For the
+     * unbalanced secondary this drives the purely reactive poll responses; for
+     * the balanced peer it also drives the link bring-up reaction. */
     CS101_Slave_start(slave);
 
-    printf("INTEROP-CS101-PEER READY role=slave ca=%i linkAddr=%i\n", g_ca, DEFAULT_LINKADDR);
+    printf("INTEROP-CS101-PEER READY role=slave mode=%s ca=%i linkAddr=%i\n",
+            modeName, g_ca, DEFAULT_LINKADDR);
 
     /* End-of-initialization at startup (queued; delivered once the link is up). */
     sendEndOfInit();
@@ -564,12 +600,19 @@ runSlave(SerialPort port)
     while (running) {
         Thread_sleep(2000);
 
-        /* Periodic scaled measured value at IOA 1050 (COT PERIODIC). */
+        /* Periodic scaled measured value at IOA 1050 (COT PERIODIC). In
+         * unbalanced mode it is enqueued as class-2 so the master's regular
+         * class-2 poll delivers it (cyclic data is class 2); in balanced mode
+         * the slave sends spontaneously, so class 1 is used as before. */
         CS101_ASDU asdu = CS101_ASDU_create(slaveAlParams, false, CS101_COT_PERIODIC, 0, g_ca, false, false);
         InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, IOA_ME_NB, periodicValue, IEC60870_QUALITY_GOOD);
         CS101_ASDU_addInformationObject(asdu, io);
         InformationObject_destroy(io);
-        CS101_Slave_enqueueUserDataClass1(slave, asdu);
+        if (unbalanced) {
+            CS101_Slave_enqueueUserDataClass2(slave, asdu);
+        } else {
+            CS101_Slave_enqueueUserDataClass1(slave, asdu);
+        }
         CS101_ASDU_destroy(asdu);
         printf("PERIODIC ioa=%i value=%i\n", IOA_ME_NB, periodicValue);
         periodicValue++;
@@ -723,7 +766,7 @@ runMaster(SerialPort port)
      * Java slave) responds, so the script tolerates startup ordering. */
     CS101_Master_start(master);
 
-    printf("INTEROP-CS101-PEER READY role=master ca=%i linkAddr=%i acceptIoa=%i rejectIoa=%i\n",
+    printf("INTEROP-CS101-PEER READY role=master mode=balanced ca=%i linkAddr=%i acceptIoa=%i rejectIoa=%i\n",
             g_ca, DEFAULT_LINKADDR, acceptIoa, rejectIoa);
 
     /* 1. Wait for the balanced link to come up (peer must be reading the PTY). */
@@ -791,6 +834,212 @@ runMaster(SerialPort port)
 }
 
 /* ================================================================= */
+/* UNBALANCED MASTER role -- drives OUR Java unbalanced server/slave. */
+/*                                                                    */
+/* Same scripted interrogation + command + spontaneous sequence and   */
+/* the same PASS:/FAIL:/RESULT markers as runMaster(), but driven on a */
+/* single thread: the unbalanced primary link layer in lib60870-C is  */
+/* NOT internally locked, so CS101_Master_run (RX + per-slave state    */
+/* machine) and CS101_Master_pollSingleSlave (keep a class-2 poll      */
+/* pending) must be called from one loop -- exactly as the lib60870-C  */
+/* cs101_master_unbalanced example does. The single registered slave   */
+/* is brought up automatically by CS101_Master_run; its access-demand  */
+/* (ACD) bit auto-escalates the master to a class-1 poll, so the Java   */
+/* slave's class-1 (interrogation/command response) data is drained.   */
+/* ================================================================= */
+
+/* Script phases for the unbalanced master loop. */
+enum UnbalancedPhase {
+    UM_WAIT_LINK,
+    UM_INTERROGATE,
+    UM_ACCEPT,
+    UM_REJECT,
+    UM_SPONT,
+    UM_DONE
+};
+
+static int
+runUnbalancedMaster(SerialPort port)
+{
+    int acceptIoa = ACCEPT_IOA_LO;
+    int rejectIoa = REJECT_IOA;
+    const char* aEnv = getenv("INTEROP_ACCEPT_IOA");
+    if (aEnv) acceptIoa = atoi(aEnv);
+    const char* rEnv = getenv("INTEROP_REJECT_IOA");
+    if (rEnv) rejectIoa = atoi(rEnv);
+
+    int slaveAddr = DEFAULT_LINKADDR; /* the secondary station the master polls */
+
+    /* Unbalanced primary: no message queue (that is balanced-only), so the
+     * plain CS101_Master_create is used rather than CS101_Master_createEx. */
+    CS101_Master master = CS101_Master_create(port, NULL, NULL, IEC60870_LINK_LAYER_UNBALANCED);
+
+    CS101_AppLayerParameters alParams = CS101_Master_getAppLayerParameters(master);
+    alParams->sizeOfCOT = SIZE_OF_COT;
+    alParams->sizeOfCA = SIZE_OF_CA;
+    alParams->sizeOfIOA = SIZE_OF_IOA;
+    alParams->originatorAddress = 0;
+
+    LinkLayerParameters llParams = CS101_Master_getLinkLayerParameters(master);
+    llParams->addressLength = 1;
+    llParams->useSingleCharACK = true;
+    llParams->timeoutForAck = 1000;
+    llParams->timeoutRepeat = 2000;
+
+    CS101_Master_setASDUReceivedHandler(master, masterAsduReceivedHandler, NULL);
+    CS101_Master_setLinkLayerStateChanged(master, masterLinkLayerStateChanged, NULL);
+
+    /* Register the single secondary and direct all command-direction sends at it. */
+    CS101_Master_addSlave(master, slaveAddr);
+    CS101_Master_useSlaveAddress(master, slaveAddr);
+
+    if (!SerialPort_open(port)) {
+        printf("INTEROP-CS101-PEER FAILED to open serial port\n");
+        CS101_Master_destroy(master);
+        return 1;
+    }
+
+    printf("INTEROP-CS101-PEER READY role=master mode=unbalanced ca=%i slaveAddr=%i acceptIoa=%i rejectIoa=%i\n",
+            g_ca, slaveAddr, acceptIoa, rejectIoa);
+
+    enum UnbalancedPhase phase = UM_WAIT_LINK;
+    bool entered = false;            /* false until the current phase's one-time action has run */
+    uint64_t phaseDeadline = 0;
+    uint64_t nextPoll = 0;
+    uint64_t overallDeadline = Hal_getTimeInMs() + 90000;
+
+    /* Steady class-2 poll cadence. The poll is issued AFTER the script step (so
+     * the freshly cleared requestClass2 flag does not block command sends), and
+     * a queued user-data command (FC3) takes priority over the poll in the
+     * link-layer state machine, so commands are never starved. */
+    const uint64_t pollPeriodMs = 250;
+
+    while (running && phase != UM_DONE) {
+        /* Pump RX + the per-slave state machine. This also brings the single
+         * registered secondary up automatically (request-status -> reset ->
+         * available) and reports the AVAILABLE transition that sets
+         * linkAvailable via masterLinkLayerStateChanged. */
+        CS101_Master_run(master);
+
+        uint64_t now = Hal_getTimeInMs();
+        if (now > overallDeadline) {
+            fail("overall unbalanced master script timeout");
+            phase = UM_DONE;
+            break;
+        }
+
+        switch (phase) {
+            case UM_WAIT_LINK:
+                if (!entered) { entered = true; phaseDeadline = now + 30000; }
+                if (linkAvailable) {
+                    pass("link available");
+                    phase = UM_INTERROGATE; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("link did not become available");
+                    phase = UM_INTERROGATE; entered = false;
+                }
+                break;
+
+            case UM_INTERROGATE:
+                /* Send once on entry; the response (ACT_CON + per-point data +
+                 * ACT_TERM) is buffered by the slave and drained by the class-2
+                 * poll below (with class-1 ACD escalation handled by the lib). */
+                if (!entered) {
+                    entered = true;
+                    sawData = false;
+                    resetActConWatch();
+                    CS101_Master_useSlaveAddress(master, slaveAddr);
+                    CS101_Master_sendInterrogationCommand(master, CS101_COT_ACTIVATION, g_ca, IEC60870_QOI_STATION);
+                    phaseDeadline = now + 20000;
+                }
+                if (lastActConSeen && sawData) {
+                    pass("station interrogation (ACT_CON + data)");
+                    phase = UM_ACCEPT; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("station interrogation incomplete");
+                    phase = UM_ACCEPT; entered = false;
+                }
+                break;
+
+            case UM_ACCEPT:
+                if (!entered) {
+                    entered = true;
+                    resetActConWatch();
+                    InformationObject sc = (InformationObject)
+                            SingleCommand_create(NULL, acceptIoa, true /*ON*/, false /*direct*/, 0);
+                    CS101_Master_useSlaveAddress(master, slaveAddr);
+                    CS101_Master_sendProcessCommand(master, CS101_COT_ACTIVATION, g_ca, sc);
+                    InformationObject_destroy(sc);
+                    phaseDeadline = now + 15000;
+                }
+                if (lastActConSeen) {
+                    if (!lastActConNegative)
+                        pass("accept command confirmed (P/N=0)");
+                    else
+                        fail("accept command was negatively confirmed (P/N=1)");
+                    phase = UM_REJECT; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("accept command: no ACT_CON received");
+                    phase = UM_REJECT; entered = false;
+                }
+                break;
+
+            case UM_REJECT:
+                if (!entered) {
+                    entered = true;
+                    resetActConWatch();
+                    InformationObject sc = (InformationObject)
+                            SingleCommand_create(NULL, rejectIoa, true /*ON*/, false /*direct*/, 0);
+                    CS101_Master_useSlaveAddress(master, slaveAddr);
+                    CS101_Master_sendProcessCommand(master, CS101_COT_ACTIVATION, g_ca, sc);
+                    InformationObject_destroy(sc);
+                    phaseDeadline = now + 15000;
+                }
+                if (lastActConSeen) {
+                    if (lastActConNegative)
+                        pass("reject command negatively confirmed (P/N=1)");
+                    else
+                        fail("reject command was positively confirmed (P/N=0)");
+                    phase = UM_SPONT; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("reject command: no ACT_CON received");
+                    phase = UM_SPONT; entered = false;
+                }
+                break;
+
+            case UM_SPONT:
+                if (!entered) { entered = true; phaseDeadline = now + 20000; }
+                if (sawSpontaneous) {
+                    pass("spontaneous data observed");
+                    phase = UM_DONE; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("no spontaneous data observed");
+                    phase = UM_DONE; entered = false;
+                }
+                break;
+
+            case UM_DONE:
+                break;
+        }
+
+        /* Re-arm a class-2 poll on the cadence (after the script step). */
+        now = Hal_getTimeInMs();
+        if (now >= nextPoll) {
+            CS101_Master_pollSingleSlave(master, slaveAddr);
+            nextPoll = now + pollPeriodMs;
+        }
+
+        Thread_sleep(5);
+    }
+
+    Thread_sleep(200);
+    CS101_Master_destroy(master);
+
+    printf("INTEROP-CS101-MASTER RESULT pass=%i fail=%i\n", passCount, failCount);
+    return (failCount == 0) ? 0 : 1;
+}
+
+/* ================================================================= */
 
 int
 main(int argc, char** argv)
@@ -811,16 +1060,31 @@ main(int argc, char** argv)
     const char* role = getenv("INTEROP_CS101_ROLE");
     if (!role) role = "slave";
 
-    printf("INTEROP-CS101-PEER START role=%s device=%s baud=%i ca=%i\n", role, device, baud, g_ca);
+    const char* mode = getenv("INTEROP_CS101_MODE");
+    if (!mode) mode = "balanced";
+    IEC60870_LinkLayerMode llMode =
+            (strcmp(mode, "unbalanced") == 0) ? IEC60870_LINK_LAYER_UNBALANCED
+                                              : IEC60870_LINK_LAYER_BALANCED;
+
+    printf("INTEROP-CS101-PEER START role=%s mode=%s device=%s baud=%i ca=%i\n",
+            role, mode, device, baud, g_ca);
 
     /* 8E1 serial framing as required by FT1.2. */
     SerialPort port = SerialPort_create(device, baud, 8, 'E', 1);
 
     int rc;
-    if (strcmp(role, "master") == 0) {
-        rc = runMaster(port);
+    if (llMode == IEC60870_LINK_LAYER_UNBALANCED) {
+        if (strcmp(role, "master") == 0) {
+            rc = runUnbalancedMaster(port);
+        } else {
+            rc = runSlave(port, IEC60870_LINK_LAYER_UNBALANCED);
+        }
     } else {
-        rc = runSlave(port);
+        if (strcmp(role, "master") == 0) {
+            rc = runMaster(port);
+        } else {
+            rc = runSlave(port, IEC60870_LINK_LAYER_BALANCED);
+        }
     }
 
     SerialPort_close(port);

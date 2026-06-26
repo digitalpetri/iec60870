@@ -1,14 +1,19 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# IEC 60870-5-101 BALANCED Interop Contract
+# IEC 60870-5-101 Interop Contract (BALANCED + UNBALANCED)
 
-This file is the **source of truth** for the lib60870-C CS101 **balanced** interop peer used by the
-`iec60870-interop` Testcontainers test `Cs101BalancedInteropTest`. It is the serial sibling of
-[`INTEROP-CONTRACT.md`](INTEROP-CONTRACT.md) (CS104): the application-layer point image,
-interrogation groups, command partitioning, and spontaneous traffic are **reused verbatim** from
-that contract. This document pins only the things that differ for a balanced serial link: the link
-mode and addressing, the serial parameters, the PTY/TCP bridge topology, the FT1.2 behaviors, and
-the log markers / run env vars.
+This file is the **source of truth** for the lib60870-C CS101 interop peer used by the
+`iec60870-interop` Testcontainers tests `Cs101BalancedInteropTest` and `Cs101UnbalancedInteropTest`.
+It is the serial sibling of [`INTEROP-CONTRACT.md`](INTEROP-CONTRACT.md) (CS104): the
+application-layer point image, interrogation groups, command partitioning, and spontaneous traffic
+are **reused verbatim** from that contract. This document pins only the things that differ for a
+serial link: the link mode and addressing, the serial parameters, the PTY/TCP bridge topology, the
+FT1.2 behaviors, and the log markers / run env vars.
+
+Sections 1–5 describe the **balanced** link (the default). [Section 6](#6-unbalanced-mode) describes
+the **unbalanced** link, selected with `INTEROP_CS101_MODE=unbalanced`; it reuses everything in
+sections 2–4 unchanged and pins only the unbalanced link addressing, class-1/class-2 assignment, and
+ACD behavior.
 
 The custom C driver `lib60870c/interop_cs101.c` implements exactly this contract. lib60870-C is
 GPLv3; the driver `#include`s its headers and statically links `liblib60870.a`, so it forms a
@@ -143,6 +148,7 @@ Env vars consumed by the peer / entrypoint:
 
 | Env | Default | Meaning |
 |-----|---------|---------|
+| `INTEROP_CS101_MODE`   | `balanced` | FT1.2 link mode (`balanced` or `unbalanced`); see [section 6](#6-unbalanced-mode) |
 | `INTEROP_CS101_ROLE`   | `slave` | role to run (`slave` or `master`) |
 | `INTEROP_CS101_DEVICE` | `/dev/ttyCS101` | serial device the peer opens (created by socat) |
 | `INTEROP_CS101_BAUD`   | `9600`  | baud rate |
@@ -150,6 +156,10 @@ Env vars consumed by the peer / entrypoint:
 | `INTEROP_CA`           | `1`     | common address |
 | `INTEROP_ACCEPT_IOA`   | `2000`  | IOA expected to be ACCEPTED (master role) |
 | `INTEROP_REJECT_IOA`   | `3000`  | IOA expected to be REJECTED (master role) |
+
+The `INTEROP_CS101_PEER START` / `READY` markers carry `mode=<balanced|unbalanced>` and
+`role=<slave|master>`, giving a distinct readiness marker per mode/role (for example
+`INTEROP-CS101-PEER READY role=slave mode=unbalanced ca=1 linkAddr=1`).
 
 Stable, greppable log markers (anchor `Wait.forLogMessage(...)` on these substrings):
 
@@ -177,7 +187,85 @@ It then prints `INTEROP-CS101-MASTER RESULT pass=<n> fail=<n>` and exits non-zer
 
 ---
 
-## 6. Exact run commands
+## 6. UNBALANCED mode
+
+Selected with `INTEROP_CS101_MODE=unbalanced`, this runs the same `interop_cs101` binary against
+lib60870-C's **unbalanced** (master/secondary) FT1.2 link layer
+(`IEC60870_LINK_LAYER_UNBALANCED`) instead of the balanced machine. It is the peer for
+`Cs101UnbalancedInteropTest`. The serial parameters (9600 8E1), the PTY/TCP bridge topology (section
+3), the application-layer point image, interrogation groups, command accept/reject partitioning, and
+the periodic update (sections 2 and 4) are **unchanged**. Only the link layer differs, as pinned
+below.
+
+### 6.1 Link mode and addressing
+
+| Parameter | Value |
+|-----------|-------|
+| Link mode | **UNBALANCED** (`IEC60870_LINK_LAYER_UNBALANCED`) |
+| Link (FT1.2) address length | **1 octet** (`LinkLayerParameters.addressLength = 1`) |
+| Secondary (slave) link address | **1** |
+| Common address (CA) | **1** |
+| Broadcast (all-secondaries) address | **255** (one-octet) |
+
+A **single secondary station** at link address `1` (single-drop). There is no DIR bit in unbalanced
+transmission — primary frames carry RES (bit 7 = 0) — so `CS101_Master_setDIR` /
+`CS101_Slave_setDIR` are not used. The master polls and addresses commands by the secondary's link
+address, which by contract equals the common address `1`.
+
+- **C master:** `CS101_Master_create(port, NULL, NULL, IEC60870_LINK_LAYER_UNBALANCED)`,
+  `CS101_Master_addSlave(m, 1)`, `CS101_Master_useSlaveAddress(m, 1)`, then a single-threaded loop of
+  `CS101_Master_run(m)` + `CS101_Master_pollSingleSlave(m, 1)` (the unbalanced primary link layer is
+  not internally locked, so it is driven from one thread, as in lib60870-C's
+  `cs101_master_unbalanced` example). The single registered secondary is brought up automatically by
+  `CS101_Master_run` (request-status-of-link → reset-of-remote-link → available).
+- **C slave:** `CS101_Slave_create(port, NULL, NULL, IEC60870_LINK_LAYER_UNBALANCED)`,
+  `CS101_Slave_setLinkLayerAddress(s, 1)`, then `CS101_Slave_start(s)` (a purely reactive secondary
+  driven by the same background thread the balanced slave uses).
+
+On the Java side:
+
+- **Our master** (`Cs101UnbalancedInteropTest#clientVsCSlave`):
+  `LinkSettings.unbalanced().slaveAddresses(List.of(1)).pollInterval(Duration.ofMillis(500))` — polls
+  secondary `1`; commands to common address `1` are routed to it.
+- **Our slave** (`Cs101UnbalancedInteropTest#serverVsCMaster`):
+  `LinkSettings.unbalanced().linkAddress(1)` — answers on link address `1`, the address the C master
+  polls.
+
+### 6.2 Class-1 / class-2 assignment and ACD behavior
+
+In unbalanced transmission the secondary **never initiates**: it buffers data and the master pulls
+it with class-2 polls (request-class-2, FC11) and, when escalated, class-1 polls (request-class-1,
+FC10). Each secondary response advertises an **access-demand (ACD)** bit when class-1 (event) data
+is still pending, which the master uses to escalate to a class-1 poll.
+
+- **C slave (our master polls it):** the **periodic** M_ME_NB_1 at IOA 1050 is enqueued as
+  **class-2** (`CS101_Slave_enqueueUserDataClass2`), so our master's regular class-2 poll delivers it
+  as COT `PERIODIC`. All command-direction responses — interrogation `ACT_CON` + the per-point data
+  + `ACT_TERM`, command confirmations, return-information, end-of-initialization — go to **class-1**
+  (lib60870-C's `IMasterConnection_sendASDU` enqueues class-1), so the slave asserts ACD and our
+  master drains them via class-1 escalation off its class-2 poll.
+- **Our slave (C master polls it):** the engine routes `Cause.SPONTANEOUS` ASDUs to **class-1** and
+  every other cause to **class-2**. The contract's periodic publish uses `Cause.PERIODIC`, so it is
+  **class-2** and the C master receives it on its regular class-2 poll. Interrogation and command
+  `ACT_CON` (activation-confirmation cause) are likewise class-2. The C master also auto-requests
+  class-1 data whenever a response carries ACD, so any class-1 data is drained too.
+
+### 6.3 Roles, markers, and the scripted sequence
+
+The role table, log markers, and the master's scripted `PASS:`/`FAIL:` steps + final
+`INTEROP-CS101-MASTER RESULT pass=<n> fail=<n>` line (section 5) are **identical** to the balanced
+master, with `mode=unbalanced` in the `START` / `READY` markers. The unbalanced master role drives
+the same five scripted steps (link available, station interrogation, accept command, reject command,
+spontaneous data) on its single-threaded poll loop.
+
+| Role (mode=unbalanced) | C peer is | Java side under test | Driven by |
+|------|-----------|----------------------|-----------|
+| `slave`  | unbalanced secondary | `SerialIec101Client` (unbalanced master) | the Java master's polls + requests |
+| `master` | unbalanced primary   | `SerialIec101Server` (unbalanced slave)  | the C master's scripted poll loop |
+
+---
+
+## 7. Exact run commands
 
 Image (built by `lib60870c/build.sh`): `lib60870c-interop:v2.3.5`. The CS101 peer and its entrypoint
 live in `/usr/local/bin` alongside the CS104 binaries.
@@ -201,6 +289,20 @@ docker run --rm -p 2404:2404 \
   -e INTEROP_CS101_ROLE=master \
   lib60870c-interop:v2.3.5 \
   cs101-entrypoint.sh
+```
+
+**Unbalanced peers** add `-e INTEROP_CS101_MODE=unbalanced`:
+
+```bash
+# C unbalanced slave (our Java unbalanced CLIENT tests against this):
+docker run --rm -p 2404:2404 \
+  -e INTEROP_CS101_MODE=unbalanced -e INTEROP_CS101_ROLE=slave \
+  lib60870c-interop:v2.3.5 cs101-entrypoint.sh
+
+# C unbalanced master (drives our Java unbalanced SERVER):
+docker run --rm -p 2404:2404 \
+  -e INTEROP_CS101_MODE=unbalanced -e INTEROP_CS101_ROLE=master \
+  lib60870c-interop:v2.3.5 cs101-entrypoint.sh
 ```
 
 The CS104 binaries (`interop_server`, `interop_client`, stock `cs104_server` / `simple_client`) and
