@@ -28,8 +28,10 @@ import org.junit.jupiter.api.Test;
  * Unit tests for {@link UnbalancedSlaveEngine}, the unbalanced FT1.2 outstation (secondary) state
  * machine: the buffering of application ASDUs into class-1/class-2 queues, the reset-driven link
  * bring-up, the class-1/class-2 poll responses with access-demand (ACD) escalation, the
- * data-flow-control (DFC) back-pressure signal, FCB-keyed retransmission replay, and the
- * single-character versus full-frame acknowledgement selection.
+ * data-flow-control (DFC) bit being pinned to {@code 0} (the outstation delivers inbound ASDUs
+ * synchronously with no receive buffer, so it has no receive-side back-pressure to report per IEC
+ * 60870-5-2), FCB-keyed retransmission replay, and the single-character versus full-frame
+ * acknowledgement selection.
  *
  * <p>The slave is purely reactive — it never initiates a transfer and arms no timers — so every
  * assertion is driven by feeding inbound primary frames through {@link
@@ -211,10 +213,10 @@ class UnbalancedSlaveEngineTest {
     assertEquals(0, slave.pendingSendCount());
   }
 
-  // --- DFC back-pressure -----------------------------------------------------------------------
+  // --- DFC is never asserted from the transmit queues ------------------------------------------
 
   @Test
-  void dfcIsSetWhenAQueueIsFullAndClearedWhenDrained() {
+  void fullClass2QueueDoesNotAdvertiseDfc() {
     UnbalancedSlaveEngine slave = newSlave(SETTINGS, 1, OutboundQueuePolicy.DROP_OLDEST);
     slave.onConnected();
 
@@ -223,18 +225,46 @@ class UnbalancedSlaveEngineTest {
     slave.sendAsdu(class2Asdu(61));
     assertEquals(1, slave.pendingSendCount(), "the bounded queue stays at its limit");
 
-    // A request-status-of-link (FC9) reports the saturated state through the DFC bit.
+    // Per IEC 60870-5-2 a secondary asserts DFC to report a full RECEIVE buffer; a saturated
+    // outbound
+    // (transmit) queue is not receive-side back-pressure, so the status-of-link (FC9 -> FC11)
+    // response must NOT advertise DFC.
     slave.onFrame(primaryFixed(FC_REQUEST_STATUS_OF_LINK, false, false));
     Ft12Frame.FixedLength status =
         assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
     assertEquals(FC_STATUS_OF_LINK, status.control().functionCode());
-    assertTrue(status.control().dfc(), "a full queue advertises DFC back-pressure");
+    assertFalse(status.control().dfc(), "a saturated transmit queue must not advertise DFC");
 
-    // Draining the queue via a class-2 poll clears DFC on the following response.
+    // The poll response that drains the queue likewise leaves DFC clear.
     slave.onFrame(primaryFixed(FC_REQUEST_USER_DATA_CLASS_2, true, true));
     Ft12Frame.Variable fc8 = assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(1));
     assertEquals(FC_RESPOND_USER_DATA, fc8.control().functionCode());
-    assertFalse(fc8.control().dfc(), "DFC is cleared once the queue has capacity");
+    assertFalse(fc8.control().dfc(), "DFC stays 0 on the poll response as well");
+  }
+
+  @Test
+  void fullClass1EventQueueAdvertisesAcdButNotDfc() {
+    // The exact failure scenario from the finding: a slave that has buffered many spontaneous
+    // events
+    // (its class-1 / event queue is full) must advertise the pending data through ACD so the master
+    // escalates to a class-1 poll, but it must NOT raise DFC. Driving DFC from a full transmit
+    // queue
+    // would wrongly tell a healthy master to withhold commands from a slave that merely has a lot
+    // to
+    // report.
+    UnbalancedSlaveEngine slave = newSlave(SETTINGS, 1, OutboundQueuePolicy.DROP_OLDEST);
+    slave.onConnected();
+
+    slave.sendAsdu(class1Asdu(70));
+    slave.sendAsdu(class1Asdu(71)); // saturates the single-slot class-1 queue
+    assertEquals(1, slave.pendingSendCount(), "the bounded class-1 queue stays at its limit");
+
+    slave.onFrame(primaryFixed(FC_REQUEST_STATUS_OF_LINK, false, false));
+    Ft12Frame.FixedLength status =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
+    assertEquals(FC_STATUS_OF_LINK, status.control().functionCode());
+    assertTrue(status.control().acd(), "pending class-1 data is advertised through ACD");
+    assertFalse(status.control().dfc(), "a saturated transmit queue must not advertise DFC");
   }
 
   // --- FCB-keyed retransmission replay ---------------------------------------------------------
@@ -327,13 +357,15 @@ class UnbalancedSlaveEngineTest {
   }
 
   @Test
-  void sendConfirmAckIsAFullFrameWhenDfcIsSet() {
+  void sendConfirmAckStaysSingleCharWhenTheOutboundQueueIsFull() {
     UnbalancedSlaveEngine slave = newSlave(SETTINGS, 1, OutboundQueuePolicy.DROP_OLDEST);
     slave.onConnected();
     slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, false, false));
     output.clear();
 
-    // Saturating the bounded class-2 queue raises DFC, which forces a full FC0 ack.
+    // Saturate the bounded class-2 (transmit) queue. A full transmit queue is not receive-side
+    // back-pressure, so it must NOT raise DFC and therefore must NOT force a full FC0 ack: with ACD
+    // clear and DFC pinned to 0, the send/confirm is still acknowledged with the 0xE5 single char.
     slave.sendAsdu(class2Asdu(100));
 
     Asdu command = commandAsdu(101);
@@ -341,13 +373,10 @@ class UnbalancedSlaveEngineTest {
 
     assertEquals(List.of(command), events.asdus());
     assertEquals(1, output.frames().size());
-    Ft12Frame.FixedLength ack =
-        assertInstanceOf(
-            Ft12Frame.FixedLength.class,
-            output.frames().get(0),
-            "DFC==1 forces a full FC0 ack rather than the 0xE5 single character");
-    assertEquals(FC_ACK, ack.control().functionCode());
-    assertTrue(ack.control().dfc(), "the saturated queue is advertised through DFC");
+    assertInstanceOf(
+        Ft12Frame.SingleChar.class,
+        output.frames().get(0),
+        "a full outbound queue keeps DFC==0, so the ack remains the 0xE5 single character");
   }
 
   // --- SERVER-role lifecycle contract ----------------------------------------------------------

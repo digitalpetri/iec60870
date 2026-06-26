@@ -32,9 +32,11 @@ import org.slf4j.LoggerFactory;
  * event/spontaneous ASDUs and a class-2 queue for cyclic/periodic ASDUs — and hands one queued ASDU
  * to the master only when the master polls for that data class. The {@linkplain
  * LinkControlField#acd() access-demand (ACD)} bit of each response advertises whether class-1 data
- * is still pending so the master can escalate to a class-1 poll, and the {@linkplain
- * LinkControlField#dfc() data-flow-control (DFC)} bit signals back-pressure when a queue is
- * saturated.
+ * is still pending so the master can escalate to a class-1 poll. The {@linkplain
+ * LinkControlField#dfc() data-flow-control (DFC)} bit is always {@code 0}: per IEC 60870-5-2 a
+ * secondary asserts DFC to report that its <em>receive</em> buffer is full, and this outstation
+ * delivers every inbound ASDU synchronously with no receive buffer, so it has no receive-side
+ * back-pressure to signal (see {@link #DFC}).
  *
  * <p>The engine is transport-agnostic: outbound frames are handed to the supplied {@link
  * Ft12LinkLayer.Output}, inbound frames are fed in via {@link #onFrame(Ft12Frame)}, and delivered
@@ -72,6 +74,21 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
   private static final int FC_RESPOND_DATA_NOT_AVAILABLE = 9;
   private static final int FC_STATUS_OF_LINK = 11;
 
+  /**
+   * The data-flow-control (DFC) bit this secondary advertises in every response, pinned to {@code
+   * 0} (never back-pressured).
+   *
+   * <p>Per IEC 60870-5-2 a secondary sets DFC=1 to tell the primary that its own <em>receive</em>
+   * buffer is full and that the primary must stop sending it user data. This outstation delivers
+   * every inbound ASDU synchronously through {@link Session.Events#onAsdu(Asdu)} and holds no
+   * receive buffer, so it has no genuine receive-side back-pressure to report and never asserts
+   * DFC. The bounded class-1 / class-2 queues are <em>transmit</em>-side buffers; their saturation
+   * is a send-side concern surfaced to publishers through {@link #awaitSendCapacity(long)} and the
+   * {@link OutboundQueuePolicy}. Driving DFC from a full transmit queue would wrongly tell a
+   * healthy master to withhold commands from a slave that merely has a lot to report.
+   */
+  private static final boolean DFC = false;
+
   private final ReentrantLock lock = new ReentrantLock();
 
   /**
@@ -85,6 +102,12 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
   private final boolean useSingleCharAck;
   private final int linkAddress;
+
+  /**
+   * The all-secondaries broadcast address ({@code 255} for a one-octet, {@code 65535} for a
+   * two-octet link address). A frame addressed here is processed but never answered.
+   */
+  private final int broadcastAddress;
 
   // Outbound queue bound and overflow policy (0 == unbounded), applied to each class queue.
   private final int maxOutboundQueue;
@@ -104,9 +127,6 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * link reset, so the master's first post-reset FCV=1 frame (FCB=1) is always treated as new.
    */
   private boolean expectedFcb;
-
-  /** Data-flow-control bit advertised to the master; set while a class queue is saturated. */
-  private boolean dfc;
 
   /**
    * The last secondary frame sent in answer to an FCV=1 primary frame, replayed on an unchanged
@@ -159,6 +179,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
     this.useSingleCharAck = settings.useSingleCharAck();
     this.linkAddress = settings.linkAddress();
+    this.broadcastAddress = settings.broadcastAddress();
 
     // Leave the engine in a valid reset state so it is usable even before onConnected().
     resetState();
@@ -246,7 +267,6 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       // Frozen class-assignment heuristic: spontaneous events are class 1, everything else class 2.
       ArrayDeque<Asdu> queue = asdu.cause() == Cause.SPONTANEOUS ? class1Queue : class2Queue;
       enqueueBounded(queue, asdu);
-      recomputeDfc();
     } finally {
       lock.unlock();
     }
@@ -332,6 +352,15 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * frame that carries a secondary control field, is not part of the unbalanced secondary process
    * and is ignored.
    *
+   * <p><b>Link-address filtering.</b> On a real multi-drop RS-485 bus every secondary's UART
+   * receives every master frame, so the slave must match the frame's link address against its own
+   * before acting: a frame addressed to a <em>different</em> specific secondary is ignored entirely
+   * (no response, no delivery, no state change), so this station never answers a poll, reset, or
+   * command meant for a peer. A frame addressed to the all-secondaries {@linkplain
+   * LinkSettings#broadcastAddress() broadcast address} is processed but never answered, because a
+   * broadcast service is unconfirmed and a reply would collide with every other secondary on the
+   * bus.
+   *
    * @param frame the inbound frame.
    */
   @Override
@@ -343,9 +372,9 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
         return;
       }
       if (frame instanceof Ft12Frame.FixedLength fixed) {
-        handlePrimary(fixed.control(), null);
+        dispatchByAddress(fixed.linkAddress(), fixed.control(), null);
       } else if (frame instanceof Ft12Frame.Variable variable) {
-        handlePrimary(variable.control(), variable.asdu());
+        dispatchByAddress(variable.linkAddress(), variable.control(), variable.asdu());
       } else {
         LOGGER.debug("ignoring unexpected single-character frame on an unbalanced slave link");
       }
@@ -355,6 +384,56 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
   }
 
   // --- Inbound dispatch (lock held) -----------------------------------------------------------
+
+  /**
+   * Routes an inbound primary frame by its link address: own-addressed frames run the full
+   * secondary process, broadcast-addressed frames are delivered without a reply, and frames for any
+   * other secondary are dropped. The own-address check is made first so a station whose own address
+   * happens to equal the broadcast address still answers its own polls.
+   *
+   * @param frameAddress the inbound frame's link address.
+   * @param control the inbound primary control field.
+   * @param asdu the carried ASDU, or {@code null} if absent.
+   */
+  private void dispatchByAddress(int frameAddress, LinkControlField control, @Nullable Asdu asdu) {
+    if (frameAddress == linkAddress) {
+      handlePrimary(control, asdu);
+    } else if (frameAddress == broadcastAddress) {
+      handleBroadcast(control, asdu);
+    } else {
+      LOGGER.debug(
+          "ignoring frame addressed to link address {} on unbalanced slave {}",
+          frameAddress,
+          linkAddress);
+    }
+  }
+
+  /**
+   * Handles a frame addressed to the all-secondaries broadcast address. A broadcast service is
+   * unconfirmed, so the carried user data is delivered but no response is ever sent (a reply would
+   * collide with every other secondary on the bus). Only send/no-reply user data (FC4) is a valid
+   * broadcast service; any confirmed or control function code addressed to the broadcast address is
+   * meaningless and is ignored.
+   *
+   * @param control the inbound primary control field.
+   * @param asdu the carried ASDU, or {@code null} if absent.
+   */
+  private void handleBroadcast(LinkControlField control, @Nullable Asdu asdu) {
+    if (!control.prm()) {
+      LOGGER.debug(
+          "ignoring unexpected secondary frame addressed to the broadcast address: FC{}",
+          control.functionCode());
+      return;
+    }
+    int fc = control.functionCode();
+    if (fc == FC_SEND_NO_REPLY_USER_DATA) {
+      handleSendNoReply(asdu);
+    } else {
+      LOGGER.debug(
+          "ignoring non-broadcast-service function code on an unbalanced slave broadcast: FC{}",
+          fc);
+    }
+  }
 
   private void handlePrimary(LinkControlField control, @Nullable Asdu asdu) {
     if (!control.prm()) {
@@ -452,23 +531,21 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * Builds, caches, and sends the response to a class-1/class-2 data request after the requested
    * ASDU (if any) has been dequeued: respond-user-data (FC8) carrying the ASDU, or
    * data-not-available (FC9 / E5) when there was nothing to send. The access-demand bit reflects
-   * the class-1 queue <em>after</em> the dequeue and the data-flow-control bit is refreshed for the
-   * new queue depths.
+   * the class-1 queue <em>after</em> the dequeue; the data-flow-control bit is always {@code 0}
+   * (see {@link #DFC}).
    *
    * @param data the dequeued ASDU, or {@code null} when no data was available.
    */
   private void respondToDataRequest(@Nullable Asdu data) {
     Ft12Frame response;
     if (data != null) {
-      // A buffered ASDU was removed; wake any publisher parked on capacity and refresh DFC.
+      // A buffered ASDU was removed; wake any publisher parked on capacity.
       queueDrained.signalAll();
-      recomputeDfc();
       boolean acd = !class1Queue.isEmpty();
       response =
           new Ft12Frame.Variable(
-              LinkControlField.secondary(false, acd, dfc, FC_RESPOND_USER_DATA), linkAddress, data);
+              LinkControlField.secondary(false, acd, DFC, FC_RESPOND_USER_DATA), linkAddress, data);
     } else {
-      recomputeDfc();
       boolean acd = !class1Queue.isEmpty();
       response = e5OrFixed(FC_RESPOND_DATA_NOT_AVAILABLE, acd);
     }
@@ -527,15 +604,16 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
   /**
    * Returns the cached single-character {@code 0xE5} acknowledgement when single-character
-   * acknowledgements are enabled and neither the access-demand nor the data-flow-control bit is
-   * set, otherwise a full fixed-length secondary frame so those bits are carried.
+   * acknowledgements are enabled and the access-demand bit is clear, otherwise a full fixed-length
+   * secondary frame so the access-demand bit can be carried. The data-flow-control bit is always
+   * {@code 0} (see {@link #DFC}), so it never forces the full-frame form.
    *
    * @param functionCode the secondary function code of the full-frame form.
    * @param acd the access-demand bit to carry on the full-frame form.
    * @return the acknowledgement frame.
    */
   private Ft12Frame e5OrFixed(int functionCode, boolean acd) {
-    if (useSingleCharAck && !acd && !dfc) {
+    if (useSingleCharAck && !acd) {
       return new Ft12Frame.SingleChar();
     }
     return secondaryFixed(functionCode, acd);
@@ -543,7 +621,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
   private Ft12Frame secondaryFixed(int functionCode, boolean acd) {
     return new Ft12Frame.FixedLength(
-        LinkControlField.secondary(false, acd, dfc, functionCode), linkAddress);
+        LinkControlField.secondary(false, acd, DFC, functionCode), linkAddress);
   }
 
   private boolean isRetransmission(boolean fcb) {
@@ -576,21 +654,10 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     }
   }
 
-  /**
-   * Sets DFC while either bounded class queue is saturated, as a back-pressure signal to the
-   * master.
-   */
-  private void recomputeDfc() {
-    dfc =
-        maxOutboundQueue > 0
-            && (class1Queue.size() >= maxOutboundQueue || class2Queue.size() >= maxOutboundQueue);
-  }
-
   private void resetState() {
     linkReset = false;
     linkAvailable = false;
     expectedFcb = false;
-    dfc = false;
     lastResponse = null;
     class1Queue.clear();
     class2Queue.clear();
