@@ -425,6 +425,9 @@ You can now do real work on the high-level layer. Open the page that matches you
 - [Tune the APCI session](how-to/tune-apci.md) — the k/w window and the t0–t3 timers, as a decision
   table.
 - [Work with raw ASDUs](how-to/work-with-raw-asdus.md) — drop to the raw layer for unmodeled TypeIDs.
+- [Connect over serial](how-to/connect-over-serial.md) — run this same facade over an IEC 60870-5-101
+  FT1.2 serial link (or 101-over-TCP) instead of 104 over TCP; only the builder and link settings
+  differ.
 
 Reference pages you will return to: the [coverage matrix](reference/coverage-matrix.md), the
 [glossary](reference/glossary.md), [choosing a point type](reference/choosing-a-point-type.md), the

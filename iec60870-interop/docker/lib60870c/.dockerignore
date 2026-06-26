@@ -5,3 +5,5 @@
 *
 !interop_server.c
 !interop_client.c
+!interop_cs101.c
+!cs101-entrypoint.sh

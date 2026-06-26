@@ -205,7 +205,8 @@ public class NettyClientTransport implements ClientTransport {
                           true,
                           listener::get,
                           config.host(),
-                          config.port());
+                          config.port(),
+                          config.frameDecoderFactoryOptional().orElse(null));
                     }
                   });
 

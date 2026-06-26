@@ -66,8 +66,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>NON-FLAKY discipline: assertions are on the future failing with a specific exception type and
  * on event COUNTS, never on durations. The PARANOID Netty leak detector ({@link
- * ParanoidLeakDetection}, auto-registered) surfaces any orphaned {@code ByteBuf} as a {@code LEAK:}
- * log line during the build.
+ * com.digitalpetri.iec60870.testsupport.ParanoidLeakDetection}, auto-registered) surfaces any
+ * orphaned {@code ByteBuf} as a {@code LEAK:} log line during the build.
  */
 class AbruptClosePendingRequestIntegrationTest {
 
@@ -258,6 +258,7 @@ class AbruptClosePendingRequestIntegrationTest {
         return;
       }
       try {
+        //noinspection BusyWait
         Thread.sleep(20);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();

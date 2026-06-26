@@ -221,6 +221,7 @@ class TlsHandshakeTest {
               () -> {
                 try (Socket socket = peer.accept()) {
                   // Drop the connection during the handshake by closing right after accept.
+                  //noinspection ResultOfMethodCallIgnored
                   socket.getInputStream().read();
                 } catch (IOException ignored) {
                   // The socket is being torn down; nothing to do.

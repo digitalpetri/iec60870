@@ -160,6 +160,7 @@ class SelfCloseNoReconnectIntegrationTest {
                 + opensBefore);
       }
       try {
+        //noinspection BusyWait
         Thread.sleep(20);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -254,6 +255,7 @@ class SelfCloseNoReconnectIntegrationTest {
         return;
       }
       try {
+        //noinspection BusyWait
         Thread.sleep(20);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
