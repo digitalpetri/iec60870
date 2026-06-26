@@ -74,7 +74,7 @@ public final class SerialIec101Client {
     private int dataBits = 8;
     private SerialPortConfig.Parity parity = SerialPortConfig.Parity.EVEN;
     private int stopBits = 1;
-    private ProtocolProfile profile = ProtocolProfile.iec104Default();
+    private ProtocolProfile profile = ProtocolProfile.iec101Default();
     private LinkSettings linkSettings = LinkSettings.balanced().build();
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private boolean startDataTransferOnConnect = true;
@@ -143,11 +143,12 @@ public final class SerialIec101Client {
     }
 
     /**
-     * Sets the wire field widths. Defaults to {@link ProtocolProfile#iec104Default()}.
+     * Sets the wire field widths. Defaults to {@link ProtocolProfile#iec101Default()}, the IEC
+     * 60870-5-101 profile {@code (1, 1, 2, 255)}.
      *
-     * <p>IEC 60870-5-101 links commonly use narrower fields than 104 (for example a 1-octet cause
-     * of transmission, a 1-octet common address, and a 2-octet information-object address); set a
-     * matching {@link ProtocolProfile} when the peer expects them.
+     * <p>IEC 60870-5-101 links commonly use narrower fields than 104 (a 1-octet cause of
+     * transmission, a 1-octet common address, and a 2-octet information-object address); set a
+     * matching {@link ProtocolProfile} when the peer expects different widths.
      *
      * @param profile the protocol profile.
      * @return this builder.

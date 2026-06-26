@@ -9,7 +9,8 @@ package com.digitalpetri.iec60870;
  * 1} omits it, while a length of {@code 2} includes it. The common address and information object
  * address lengths set how many little-endian octets carry those addresses.
  *
- * <p>Use {@link #iec104Default()} for the standard IEC 60870-5-104 profile {@code (2, 2, 3, 249)}.
+ * <p>Use {@link #iec104Default()} for the standard IEC 60870-5-104 profile {@code (2, 2, 3, 249)},
+ * or {@link #iec101Default()} for the typical IEC 60870-5-101 profile {@code (1, 1, 2, 255)}.
  *
  * @param cotLength the number of cause-of-transmission octets, either {@code 1} (no originator
  *     address) or {@code 2} (with originator address).
@@ -59,5 +60,19 @@ public record ProtocolProfile(
    */
   public static ProtocolProfile iec104Default() {
     return new ProtocolProfile(2, 2, 3, 249);
+  }
+
+  /**
+   * Returns the typical IEC 60870-5-101 profile.
+   *
+   * <p>The returned profile uses a 1-octet cause of transmission (no originator address), a 1-octet
+   * common address, a 2-octet information object address, and a maximum ASDU length of {@code 255}
+   * octets. IEC 60870-5-101 links are commonly provisioned with these narrower fields; configure a
+   * matching {@link ProtocolProfile} explicitly when the peer expects different widths.
+   *
+   * @return the default IEC 60870-5-101 profile {@code (1, 1, 2, 255)}.
+   */
+  public static ProtocolProfile iec101Default() {
+    return new ProtocolProfile(1, 1, 2, 255);
   }
 }

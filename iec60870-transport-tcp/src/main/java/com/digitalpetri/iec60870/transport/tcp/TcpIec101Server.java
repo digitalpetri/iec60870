@@ -60,12 +60,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class TcpIec101Server {
 
-  /**
-   * The default IEC 60870-5-101 wire profile: a 1-octet cause of transmission, a 1-octet common
-   * address, a 2-octet information-object address, and a 255-octet maximum ASDU length.
-   */
-  private static final ProtocolProfile IEC101_DEFAULT_PROFILE = new ProtocolProfile(1, 1, 2, 255);
-
   private TcpIec101Server() {}
 
   /**
@@ -90,7 +84,7 @@ public final class TcpIec101Server {
 
     private String bindAddress = "0.0.0.0";
     private int port = 2404;
-    private ProtocolProfile profile = IEC101_DEFAULT_PROFILE;
+    private ProtocolProfile profile = ProtocolProfile.iec101Default();
     private LinkSettings linkSettings = LinkSettings.balanced().build();
     private @Nullable TlsOptions tls;
     private final List<Station> stations = new ArrayList<>();
@@ -127,7 +121,8 @@ public final class TcpIec101Server {
     }
 
     /**
-     * Sets the wire field widths. Defaults to the IEC 60870-5-101 profile {@code (1, 1, 2, 255)}.
+     * Sets the wire field widths. Defaults to {@link ProtocolProfile#iec101Default()}, the IEC
+     * 60870-5-101 profile {@code (1, 1, 2, 255)}.
      *
      * <p>IEC 60870-5-101 links commonly use narrower fields than 104 (a 1-octet cause of
      * transmission, a 1-octet common address, and a 2-octet information-object address); set a
