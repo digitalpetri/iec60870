@@ -67,8 +67,9 @@ public final class Ft12Framer {
    * @param alloc the allocator used to obtain the destination buffer.
    * @return a newly allocated buffer holding the complete FT1.2 frame.
    * @throws IllegalArgumentException if {@code linkAddressLength} is outside {@code 0..2}, the link
-   *     address is non-zero while {@code linkAddressLength} is {@code 0}, or a variable frame's
-   *     user-data length exceeds {@code 255}.
+   *     address is non-zero while {@code linkAddressLength} is {@code 0}, the link address does not
+   *     fit in {@code linkAddressLength} octets, or a variable frame's user-data length exceeds
+   *     {@code 255}.
    */
   public static ByteBuf encode(
       Ft12Frame frame, ProtocolProfile profile, int linkAddressLength, ByteBufAllocator alloc) {
@@ -296,12 +297,18 @@ public final class Ft12Framer {
   /**
    * Writes a link address as {@code linkAddressLength} little-endian octets (low octet first).
    *
+   * <p>This is a backstop against silently truncating an out-of-range address: a value that does
+   * not fit in {@code linkAddressLength} octets is rejected rather than written as its low octets
+   * only, which would mis-address the frame. Configuration-time validation in {@link LinkSettings}
+   * should already prevent this.
+   *
    * @param buffer the destination buffer.
    * @param linkAddress the link address; must be {@code 0} when {@code linkAddressLength} is {@code
-   *     0}.
+   *     0}, and otherwise must fit in {@code linkAddressLength} octets.
    * @param linkAddressLength the number of octets to write, in the range {@code 0..2}.
    * @throws IllegalArgumentException if {@code linkAddressLength} is {@code 0} but {@code
-   *     linkAddress} is non-zero.
+   *     linkAddress} is non-zero, or if {@code linkAddress} does not fit in {@code
+   *     linkAddressLength} octets.
    */
   private static void writeLinkAddress(ByteBuf buffer, int linkAddress, int linkAddressLength) {
     if (linkAddressLength == 0) {
@@ -310,6 +317,17 @@ public final class Ft12Framer {
             "linkAddress must be 0 when linkAddressLength is 0: " + linkAddress);
       }
       return;
+    }
+    int maxAddress = (1 << (8 * linkAddressLength)) - 1;
+    if (linkAddress < 0 || linkAddress > maxAddress) {
+      throw new IllegalArgumentException(
+          "linkAddress "
+              + linkAddress
+              + " does not fit in "
+              + linkAddressLength
+              + " octet(s) (0.."
+              + maxAddress
+              + ")");
     }
     for (int i = 0; i < linkAddressLength; i++) {
       buffer.writeByte((linkAddress >> (8 * i)) & 0xFF);

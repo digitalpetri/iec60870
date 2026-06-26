@@ -132,8 +132,10 @@ public record LinkSettings(
    * @throws IllegalArgumentException if {@code linkAddressLength} is not in {@code 0..2}, if {@code
    *     mode} is {@link LinkMode#UNBALANCED} with a zero address length, if {@code linkAddress} is
    *     out of range for its length, if {@code broadcastAddress} is not in {@code 0..65535} or does
-   *     not match the address length under {@link LinkMode#UNBALANCED}, if {@code maxRetries} is
-   *     negative, or if any duration is zero or negative.
+   *     not match the address length under {@link LinkMode#UNBALANCED}, if a {@code pollConfig}
+   *     slave address is out of range for the address length or (under {@link LinkMode#UNBALANCED})
+   *     equals the broadcast address, if {@code maxRetries} is negative, or if any duration is zero
+   *     or negative.
    */
   public LinkSettings {
     Objects.requireNonNull(mode, "mode");
@@ -178,7 +180,7 @@ public record LinkSettings(
           "broadcastAddress must be in 0..65535: " + broadcastAddress);
     }
     if (mode == LinkMode.UNBALANCED) {
-      int expected = linkAddressLength == 2 ? 65535 : 255;
+      int expected = maxLinkAddress(linkAddressLength);
       if (broadcastAddress != expected) {
         throw new IllegalArgumentException(
             "broadcastAddress must be "
@@ -187,6 +189,29 @@ public record LinkSettings(
                 + linkAddressLength
                 + ": "
                 + broadcastAddress);
+      }
+    }
+
+    if (pollConfig != null) {
+      int maxAddress = maxLinkAddress(linkAddressLength);
+      for (int address : pollConfig.slaveAddresses()) {
+        if (address > maxAddress) {
+          throw new IllegalArgumentException(
+              "slave address "
+                  + address
+                  + " is out of range for linkAddressLength "
+                  + linkAddressLength
+                  + " (0.."
+                  + maxAddress
+                  + ")");
+        }
+        if (mode == LinkMode.UNBALANCED && address == broadcastAddress) {
+          throw new IllegalArgumentException(
+              "slave address must not be the broadcast address "
+                  + broadcastAddress
+                  + ": "
+                  + address);
+        }
       }
     }
 
@@ -202,6 +227,18 @@ public record LinkSettings(
     if (duration.isZero() || duration.isNegative()) {
       throw new IllegalArgumentException(name + " must be positive: " + duration);
     }
+  }
+
+  /**
+   * Returns the maximum link address representable in {@code linkAddressLength} little-endian
+   * octets.
+   *
+   * @param linkAddressLength the address width in octets, in the range {@code 0..2}.
+   * @return the inclusive maximum address ({@code 0} for length {@code 0}, {@code 255} for length
+   *     {@code 1}, {@code 65535} for length {@code 2}).
+   */
+  private static int maxLinkAddress(int linkAddressLength) {
+    return (1 << (8 * linkAddressLength)) - 1;
   }
 
   /**
@@ -367,7 +404,9 @@ public record LinkSettings(
      * balanced link.
      *
      * @param slaveAddresses the secondary station link addresses to poll; copied defensively, may
-     *     be empty, and each address must be {@code >= 0}.
+     *     be empty, and each address must be {@code >= 0} and within range for the configured
+     *     {@linkplain #linkAddressLength(int) address length} (the range is validated when {@link
+     *     #build()} is called).
      * @return this builder.
      */
     public Builder slaveAddresses(List<Integer> slaveAddresses) {
