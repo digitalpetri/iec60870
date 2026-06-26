@@ -604,7 +604,12 @@ class DefaultIec60870ClientTest {
             clientSessionFactory(serialSession))) {
       serialClient.connect();
 
-      int count = 200;
+      // Each spontaneous ASDU publishes two events (AsduReceived + PointUpdated), and the facade's
+      // SubmissionPublisher offers them with a drop-on-overflow handler into a buffer of
+      // Flow.defaultBufferSize() (256) slots. Keep the whole burst within that capacity
+      // (2 * count <= 256) so no event is ever dropped while the single-thread consumer drains,
+      // regardless of scheduling. A larger burst races the consumer and flakily drops events.
+      int count = 100;
       CountDownLatch latch = new CountDownLatch(count);
       AtomicInteger concurrent = new AtomicInteger();
       AtomicInteger maxConcurrent = new AtomicInteger();
