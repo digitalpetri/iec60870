@@ -1,11 +1,13 @@
 # Glossary
 
-IEC 104 vocabulary mapped to this library's Java types. Each entry gives a short
-plain-English definition and the concrete `com.digitalpetri.iec60870.*` type you'll
-actually use, then links to the guide page where the term is used in anger. For the
-deep mechanics behind a term, follow the architecture links.
+IEC 60870-5 vocabulary — spanning both the 101 (serial/FT1.2) and 104 (TCP/APCI)
+profiles and the ASDU application layer they share — mapped to this library's Java
+types. Each entry gives a short plain-English definition and the concrete
+`com.digitalpetri.iec60870.*` type you'll actually use, then links to the guide page
+where the term is used in anger. For the deep mechanics behind a term, follow the
+architecture links.
 
-One framing underpins half the entries: in IEC 60870-5-104 a **controlling station**
+One framing underpins half the entries: in IEC 60870-5 a **controlling station**
 (master) talks to a **controlled station** (outstation). In this library the
 controlling station is the **client** (`Iec60870Client`) and the controlled station is
 the **server** (`Iec60870Server`). See [Stations, roles, and direction](#stations-roles-and-direction).
