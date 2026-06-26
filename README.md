@@ -46,10 +46,10 @@ published to Maven Central (see [Dependency](#dependency)).
   delegates the link/framing wiring to `Cs101Binding`, and returns the high-level facade. Converges
   `transport-serial` + `cs101` + `application`.
 - `iec60870-examples`: runnable client, server, raw-ASDU, and TLS examples.
-- `iec60870-tests`: cross-module in-JVM client↔server integration tests (including TLS).
-- `iec60870-interop`: interoperability tests that drive the library against `lib60870-C` peer images
+- `iec60870-test-integration`: cross-module in-JVM client↔server integration tests (including TLS).
+- `iec60870-test-interop`: interoperability tests that drive the library against `lib60870-C` peer images
   via Testcontainers. Tagged `@Tag("interop")` and excluded from the default build; run with
-  `-Pinterop` and a running Docker daemon (see `iec60870-interop/README.md`).
+  `-Pinterop` and a running Docker daemon (see `iec60870-test-interop/README.md`).
 
 ## Dependency
 
@@ -288,8 +288,8 @@ runtime types unless a future design explicitly chooses a Netty-buffer-facing co
 
 This project is licensed under the [Eclipse Public License 2.0](LICENSE.md).
 
-The sole exception is the [`iec60870-interop/docker/`](iec60870-interop/docker) subtree, which is
-licensed under the [GNU General Public License v3.0 or later](iec60870-interop/docker/LICENSE.md). Those
+The sole exception is the [`iec60870-test-interop/docker/`](iec60870-test-interop/docker) subtree, which is
+licensed under the [GNU General Public License v3.0 or later](iec60870-test-interop/docker/LICENSE.md). Those
 files build custom C drivers that link the GPLv3 [lib60870-C](https://github.com/mz-automation/lib60870)
 library into the interop test peer image. The library itself never links lib60870-C — it only speaks
 to the resulting container over the network — so the EPL-licensed code and the GPL-licensed

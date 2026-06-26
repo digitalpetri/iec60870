@@ -8,8 +8,8 @@ engine), `iec60870-cs101` (the 101 FT1.2 link layer), `iec60870-application` (th
 **octet transport only**, core-only), `iec60870-tcp` (the **assembly module** holding the user-facing
 builders that wire a 104 — or, optionally, a 101 — stack over TCP), and `iec60870-serial` (the
 **assembly module** holding the user-facing builders that wire a 101 stack over a serial port). A
-further module, `iec60870-tests`, holds cross-module integration tests, and an internal
-`iec60870-test-support` module holds the shared, test-only fixtures those suites reuse.
+further module, `iec60870-test-integration`, holds cross-module integration tests, and an internal
+`iec60870-test-common` module holds the shared, test-only fixtures those suites reuse.
 
 ## The core / cs104 / application / transport split
 
@@ -233,7 +233,7 @@ back into core.
 | `iec60870-tcp` | `iec60870-transport-tcp`, `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **TCP assembly module** (the sole TCP point of convergence); hosts the `TcpIec104*`/`TcpIec101*` builders, which call `Cs104Binding`/`Cs101Binding` over the Netty octet transport |
 | `iec60870-serial` | `iec60870-transport-serial`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **serial assembly module** (the sole serial point of convergence); hosts the `SerialIec101*` builders, which call `Cs101Binding` over the serial octet transport |
 
-The sink modules (`iec60870-examples`, `iec60870-tests`, `iec60870-interop`) name `client`/`server`/
+The sink modules (`iec60870-examples`, `iec60870-test-integration`, `iec60870-test-interop`) name `client`/`server`/
 `point` types directly, so each declares a **direct** `iec60870-application` dependency rather than
 relying on transitive reach through `iec60870-tcp`. The internal dependency graph is acyclic with a
 single source (`core`): `cs104 → core`, `cs101 → core`, `application → core` (`application`, `cs104`,
@@ -241,18 +241,18 @@ and `cs101` are mutually incomparable siblings — no edge among them); the octe
 core-only (`transport-tcp → core`, `transport-serial → core`); the assembly modules converge the
 triple (`tcp → {transport-tcp, cs104, cs101, application, core}`,
 `serial → {transport-serial, cs101, application, core}`); and the sinks → `{application, tcp}`
-(`iec60870-tests` also → `cs101`; `iec60870-examples` and `iec60870-interop` also → `serial` for the
+(`iec60870-test-integration` also → `cs101`; `iec60870-examples` and `iec60870-test-interop` also → `serial` for the
 `SerialIec101*` examples/tests). Nothing depends back into the application, transport, or assembly
 modules. The parent enforcer's `banCircularDependencies` rule asserts this acyclicity on every build.
 
-`iec60870-test-support` is an internal, test-only module that holds the shared, core-level test
+`iec60870-test-common` is an internal, test-only module that holds the shared, core-level test
 fixtures (the deterministic `ManualScheduler`, the `RecordingEvents` `Session.Events` recorder, the
 frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
 `LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, and the
 `ParanoidLeakDetection` JUnit extension). It depends on **core only** — plus `netty-buffer` for the
 `ByteBuf` boundary and `junit-jupiter-api` for the extension — and is consumed at `test` scope by
 `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-transport-tcp`,
-`iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-tests`. Keeping it
+`iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-test-integration`. Keeping it
 core-only mirrors the octet-classes-stay-core-only rule and means it can never become a path for a
 `cs104`/`cs101`/`application`/transport type to leak across module boundaries. It is never published
 (its deploy, sign, and install steps are skipped).

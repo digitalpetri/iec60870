@@ -38,7 +38,7 @@
 
   <modules>
     <module>iec60870-core</module>
-    <module>iec60870-test-support</module>
+    <module>iec60870-test-common</module>
     <module>iec60870-cs104</module>
     <module>iec60870-cs101</module>
     <module>iec60870-application</module>
@@ -47,8 +47,8 @@
     <module>iec60870-tcp</module>
     <module>iec60870-serial</module>
     <module>iec60870-examples</module>
-    <module>iec60870-tests</module>
-    <module>iec60870-interop</module>
+    <module>iec60870-test-integration</module>
+    <module>iec60870-test-interop</module>
   </modules>
 
   <properties>

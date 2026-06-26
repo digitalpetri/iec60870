@@ -34,7 +34,7 @@ import com.digitalpetri.iec60870.fakes.FakeClientTransport;
 import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.session.Session;
-import com.digitalpetri.iec60870.testsupport.ManualScheduler;
+import com.digitalpetri.iec60870.test.common.ManualScheduler;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;

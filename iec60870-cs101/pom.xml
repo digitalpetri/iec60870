@@ -53,7 +53,7 @@
 
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-test-support</artifactId>
+      <artifactId>iec60870-test-common</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>

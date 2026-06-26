@@ -64,11 +64,11 @@ IEC 60870 is a Maven / Java 17 implementation of IEC 60870-5-104.
   assembled session to the `application` facades. It converges `transport-serial` + `cs101` +
   `application`; it is a published API module.
 - `iec60870-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
-- `iec60870-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
-- `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
+- `iec60870-test-integration/` owns cross-module in-JVM client↔server integration tests (including TLS).
+- `iec60870-test-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
   images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
   Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
-- `iec60870-test-support/` is an internal, test-only module holding the shared, core-level test
+- `iec60870-test-common/` is an internal, test-only module holding the shared, core-level test
   fixtures reused across module test suites: the deterministic `ManualScheduler` virtual clock, the
   `RecordingEvents` `Session.Events` recorder, the frame-capturing `RecordingClientTransport` /
   `RecordingServerConnection`, the in-JVM `LoopbackOctetTransport` and fault-injecting
@@ -77,13 +77,13 @@ IEC 60870 is a Maven / Java 17 implementation of IEC 60870-5-104.
   `iec60870-core` (plus `netty-buffer` for the `ByteBuf` boundary and `junit-jupiter-api` for the
   extension) and imports nothing from `cs104`, `application`, or the octet transports; it is consumed
   at `test` scope by `iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`,
-  `iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-tests`, and is never
+  `iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-test-integration`, and is never
   published.
 
-Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-test-support`,
+Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-test-common`,
 `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-transport-tcp`,
 `iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, `iec60870-examples`,
-`iec60870-tests`, `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
+`iec60870-test-integration`, `iec60870-test-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
 `iec60870-core` are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `address`,
 `transport`, and `session`. The 104 link/session package `cs104` (`ApciSession`, `Apdu`,
 `ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`; the 101
@@ -117,8 +117,8 @@ core-vs-transport split is the central design constraint; see `docs/architecture
 - Run a specific test class: `mise exec -- mvn -q -pl <module> test -Dtest=ClassName`
   (see `docs/running-tests.md` for module-targeting patterns)
 - Run the lib60870-C interop tests (Docker required, excluded by default):
-  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec60870-interop -am -Pinterop test`
-  (see `iec60870-interop/README.md` for details)
+  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec60870-test-interop -am -Pinterop test`
+  (see `iec60870-test-interop/README.md` for details)
 
 ## Additional References
 
@@ -128,7 +128,7 @@ project instructions, not optional background material.
 - Java coding conventions: `docs/java-coding-conventions.md`
 - Documentation guidelines: `docs/documentation-guidelines.md`
 - Running tests / module-targeting flags: `docs/running-tests.md`
-- Interop test setup (Docker/Testcontainers): `iec60870-interop/README.md`
+- Interop test setup (Docker/Testcontainers): `iec60870-test-interop/README.md`
 
 ### Architecture Documentation
 
