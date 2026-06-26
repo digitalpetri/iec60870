@@ -32,7 +32,7 @@ together first because everything else leans on them.
 **Controlling station (master).** The station that initiates the connection and issues
 control-direction messages — commands, interrogations, clock sync.
 *In this library:* the **client**, `com.digitalpetri.iec60870.client.Iec60870Client`, built
-via `com.digitalpetri.iec60870.transport.tcp.TcpIec104Client`.
+via `com.digitalpetri.iec60870.tcp.TcpIec104Client`.
 *See:* [Connect & interrogate](../how-to/connect-and-interrogate.md),
 [Send commands](../how-to/send-commands.md).
 

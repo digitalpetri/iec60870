@@ -30,4 +30,4 @@ jobs:
       - name: Run interop tests
         env:
           TESTCONTAINERS_RYUK_DISABLED: true
-        run: mvn -B -pl iec60870-interop -am -Pinterop test
+        run: mvn -B -pl iec60870-test-interop -am -Pinterop test

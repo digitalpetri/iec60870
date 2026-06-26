@@ -30,7 +30,7 @@ try-with-resources or call `close()` when you are done.
 
 ```java
 import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 
 Iec60870Server server =
     TcpIec104Server.builder()

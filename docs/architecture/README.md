@@ -2,17 +2,19 @@
 
 This is the architecture reference for the `com.digitalpetri.iec60870` library, a Java 17
 implementation of IEC 60870-5-104 and its serial companion standard IEC 60870-5-101. The library is
-split into six protocol modules: a protocol core (`iec60870-core`) that owns the wire model, codecs,
-and the `Session`/transport SPIs; a 104 link/session module (`iec60870-cs104`) that owns the APCI
-session engine (`ApciSession`); a 101 link module (`iec60870-cs101`) that owns the FT1.2 link layer
-(`Ft12LinkLayer`); a high-level application module (`iec60870-application`) that owns the
-client/server facades and the station/point model, shared by both profiles; a Netty-backed transport
-(`iec60870-transport-tcp`) that supplies the TCP/TLS plumbing and the user-facing `TcpIec104Client` /
-`TcpIec104Server` entry points; and a serial transport (`iec60870-transport-serial`) that supplies the
-serial-port plumbing and the `SerialIec101Client` / `SerialIec101Server` entry points. Everything a
-caller touches above the socket or serial port lives in the core/cs104/cs101/application modules —
-none of which use Netty runtime types; the transport modules are the only place that knows about
-channels, event loops, TLS engines, and serial ports.
+split into protocol, transport, and assembly modules: a protocol core (`iec60870-core`) that owns the
+wire model, codecs, and the `Session`/transport SPIs; a 104 link/session module (`iec60870-cs104`)
+that owns the APCI session engine (`ApciSession`); a 101 link module (`iec60870-cs101`) that owns the
+FT1.2 link layer (`Ft12LinkLayer`); a high-level application module (`iec60870-application`) that owns
+the client/server facades and the station/point model, shared by both profiles; a core-only
+Netty-backed octet transport (`iec60870-transport-tcp`) that supplies the TCP/TLS plumbing; a
+core-only serial octet transport (`iec60870-transport-serial`) that supplies the serial-port plumbing;
+and two assembly modules — `iec60870-tcp` (the user-facing `TcpIec104Client` / `TcpIec104Server` entry
+points) and `iec60870-serial` (the `SerialIec101Client` / `SerialIec101Server` entry points) — that
+wire the octet transport, link layer, and application facade together. Everything a caller touches
+above the socket or serial port lives in the core/cs104/cs101/application modules — none of which use
+Netty runtime types; the transport modules are the only place that knows about channels, event loops,
+TLS engines, and serial ports.
 
 These documents describe the system **as built**. They are written for someone integrating the
 library or extending it, not for someone editing the protocol internals.
@@ -54,5 +56,7 @@ library or extending it, not for someone editing the protocol internals.
 | High-level server | `iec60870-application` `com.digitalpetri.iec60870.server` |
 | Point / catalog model | `iec60870-application` packages `.point`, `.catalog` |
 | Transport interfaces (no Netty) | `iec60870-core` `com.digitalpetri.iec60870.transport` |
-| Netty TCP/TLS transport + builders | `iec60870-transport-tcp` |
-| Serial transport + builders | `iec60870-transport-serial` |
+| Netty TCP/TLS octet transport (core-only) | `iec60870-transport-tcp` |
+| Serial octet transport (core-only) | `iec60870-transport-serial` |
+| TCP builders (assembly) | `iec60870-tcp` `com.digitalpetri.iec60870.tcp` |
+| Serial builders (assembly) | `iec60870-serial` `com.digitalpetri.iec60870.serial` |

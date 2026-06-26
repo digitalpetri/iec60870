@@ -35,46 +35,68 @@ IEC 60870 is a Maven / Java 17 implementation of IEC 60870-5-104.
   of `Asdu` + the `Session` SPI; the protocol-specific session and its wire framing are injected
   through a session factory. A `NoNettyInApplicationTest` guard fails the build if any `io.netty.*`
   type (even `ByteBuf`) appears in its main sources.
-- `iec60870-transport-tcp/` owns the Netty-backed TCP/TLS transport and the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the **sole 104 assembly point**:
-  they construct the `NettyClientTransport` / `NettyServerTransport`, then delegate the 104 session
-  wiring to `Cs104Binding` (in `cs104`) and hand the assembled `Session` (client) / per-connection
-  session factory (server) to the `application` facades. The builders contain no `new ApciSession(...)`
-  and no direct `ApduFramer` call. The Netty octet classes (decoder, pipeline, transports) stay free
-  of any `cs104`/`application` import; only the `Tcp*` builder types reference `cs104` + `application`.
+- `iec60870-cs101/` owns the genuinely-101 link/session code: the FT1.2 link layers
+  (`Ft12LinkLayer` and the balanced/unbalanced engines) that `implement Session` as peers of
+  `ApciSession`, the FT1.2 frame model, `LinkSettings`, and `Cs101Binding` — the assembly point that
+  wires an FT1.2 link layer to a core octet transport handle. It depends on `iec60870-core` (and
+  `netty-buffer` for the `ByteBuf` codec boundary), imports nothing from the octet transports or
+  `application`, and is a published API module.
+- `iec60870-transport-tcp/` owns the **octet transport only**: the Netty-backed TCP/TLS transport
+  (`NettyClientTransport` / `NettyServerTransport`, the pipeline, and the frame decoders). It is
+  **core-only** — its octet classes import nothing from `cs104`, `cs101`, or `application` — and is
+  not an assembly point. The user-facing builders that wire a 104 / 101-over-TCP stack together live
+  in `iec60870-tcp`.
+- `iec60870-transport-serial/` owns the **octet transport only**: the jSerialComm-backed serial
+  transport (`SerialClientTransport` / `SerialServerTransport`, the FT1.2 deframer, RS-485 options).
+  It is **core-only** — its octet classes import nothing from `cs101` or `application`. The
+  user-facing serial builders live in `iec60870-serial`.
+- `iec60870-tcp/` owns the user-facing TCP builders (`TcpIec104Client` / `TcpIec104Server`,
+  `TcpIec101Client` / `TcpIec101Server`) in package `com.digitalpetri.iec60870.tcp`. Together with
+  `iec60870-serial` it is the **sole assembly point** for the TCP medium: each builder constructs a
+  `NettyClientTransport` / `NettyServerTransport`, delegates the link/session wiring to `Cs104Binding`
+  or `Cs101Binding`, and hands the assembled `Session` (client) / per-connection session factory
+  (server) to the `application` facades. It is the one place where the octet transport, both link
+  layers (`cs104` + `cs101`), and `application` converge; it is a published API module.
+- `iec60870-serial/` owns the user-facing serial builders (`SerialIec101Client` /
+  `SerialIec101Server`) in package `com.digitalpetri.iec60870.serial`. It is the **sole assembly
+  point** for the serial medium: each builder constructs a `SerialClientTransport` /
+  `SerialServerTransport`, delegates the FT1.2 link/session wiring to `Cs101Binding`, and hands the
+  assembled session to the `application` facades. It converges `transport-serial` + `cs101` +
+  `application`; it is a published API module.
 - `iec60870-examples/` holds runnable client, server, raw-ASDU, and TLS examples.
-- `iec60870-tests/` owns cross-module in-JVM client↔server integration tests (including TLS).
-- `iec60870-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
+- `iec60870-test-integration/` owns cross-module in-JVM client↔server integration tests (including TLS).
+- `iec60870-test-interop/` holds interoperability tests that drive the library against `lib60870-C` peer
   images via Testcontainers; tagged `@Tag("interop")` and excluded from the default build (see
   Common Commands). Its `docker/` subtree is GPLv3; the rest of the project is EPL 2.0.
-- `iec60870-test-support/` is an internal, test-only module holding the shared, core-level test
+- `iec60870-test-common/` is an internal, test-only module holding the shared, core-level test
   fixtures reused across module test suites: the deterministic `ManualScheduler` virtual clock, the
   `RecordingEvents` `Session.Events` recorder, the frame-capturing `RecordingClientTransport` /
   `RecordingServerConnection`, the in-JVM `LoopbackOctetTransport` and fault-injecting
   `FaultInjectingOctetTransport` octet transports (protocol-neutral, so they serve a future cs101 /
   serial stack as readily as 104), and the `ParanoidLeakDetection` JUnit extension. It depends on
   `iec60870-core` (plus `netty-buffer` for the `ByteBuf` boundary and `junit-jupiter-api` for the
-  extension) and imports nothing from `cs104`, `application`, or `transport-tcp`; it is consumed at
-  `test` scope by `iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, and
-  `iec60870-tests`, and is never published.
+  extension) and imports nothing from `cs104`, `application`, or the octet transports; it is consumed
+  at `test` scope by `iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`,
+  `iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-test-integration`, and is never
+  published.
 
-Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-test-support`,
-`iec60870-cs104`, `iec60870-application`, `iec60870-transport-tcp`, `iec60870-examples`,
-`iec60870-tests`, `iec60870-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
+Modules are declared in the parent POM in build order: `iec60870-core`, `iec60870-test-common`,
+`iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-transport-tcp`,
+`iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, `iec60870-examples`,
+`iec60870-test-integration`, `iec60870-test-interop`. Source lives under `com.digitalpetri.iec60870`; the kernel packages in
 `iec60870-core` are `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `address`,
 `transport`, and `session`. The 104 link/session package `cs104` (`ApciSession`, `Apdu`,
-`ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`, while the
-high-level packages `client`, `server`, `point`, and `catalog` live in `iec60870-application`.
+`ControlField`, `UFunction`, `ApduFramer`, `ApciSettings`) lives in `iec60870-cs104`; the 101
+link/session package `cs101` (`Ft12LinkLayer`, the FT1.2 frame model, `LinkSettings`,
+`Cs101Binding`) lives in `iec60870-cs101`; and the high-level packages `client`, `server`, `point`,
+and `catalog` live in `iec60870-application`. The user-facing builders live in the assembly modules:
+package `com.digitalpetri.iec60870.tcp` (`iec60870-tcp`) and `com.digitalpetri.iec60870.serial`
+(`iec60870-serial`).
 
-**Future module slots (named only — no code, not in `<modules>`):** `iec60870-cs101`
-(`com.digitalpetri.iec60870.cs101`, → core) would hold an `Ft12LinkLayer` that `implements` the core
-`Session` SPI as a **peer of `ApciSession`** (FT1.2 framing + `LinkSettings`), and
-`iec60870-transport-serial` (`com.digitalpetri.iec60870.transport.serial`) would hold a
-`SerialOctetTransport` implementing the core octet transport SPI — its octet classes depending on
-core only, the same octet-classes-stay-core-only rule `transport-tcp` follows. The corresponding
-future builders are `SerialIec101Client` / `SerialIec101Server` (assembling `{Ft12LinkLayer(cs101) +
-SerialOctetTransport}`) and an optional `TcpIec101Client` / `TcpIec101Server` (101-over-TCP reusing
-`transport-tcp`). These are documented slots only; this effort adds no code for them.
+**Future module slots (named only — no code, not in `<modules>`):** an optional `TcpIec101Client` /
+`TcpIec101Server` 101-over-TCP path already ships in `iec60870-tcp`, so the remaining genuinely-future
+slot is a dedicated 101-over-TCP umbrella only if the user base ever needs `cs104` and `cs101` split
+across separate artifacts. This is a documented slot only; this effort adds no code for it.
 
 Keep new modules under the parent build and centralize dependency/plugin versions in the root POM.
 
@@ -95,8 +117,8 @@ core-vs-transport split is the central design constraint; see `docs/architecture
 - Run a specific test class: `mise exec -- mvn -q -pl <module> test -Dtest=ClassName`
   (see `docs/running-tests.md` for module-targeting patterns)
 - Run the lib60870-C interop tests (Docker required, excluded by default):
-  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec60870-interop -am -Pinterop test`
-  (see `iec60870-interop/README.md` for details)
+  `TESTCONTAINERS_RYUK_DISABLED=true mise exec -- mvn -pl iec60870-test-interop -am -Pinterop test`
+  (see `iec60870-test-interop/README.md` for details)
 
 ## Additional References
 
@@ -106,7 +128,7 @@ project instructions, not optional background material.
 - Java coding conventions: `docs/java-coding-conventions.md`
 - Documentation guidelines: `docs/documentation-guidelines.md`
 - Running tests / module-targeting flags: `docs/running-tests.md`
-- Interop test setup (Docker/Testcontainers): `iec60870-interop/README.md`
+- Interop test setup (Docker/Testcontainers): `iec60870-test-interop/README.md`
 
 ### Architecture Documentation
 

@@ -20,7 +20,7 @@ it talks to is the **controlled station** (server), addressed by its
   [Getting Started](../getting-started.md) hello-server or the
   [`ServerExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ServerExample.java)
   on `127.0.0.1:2404`.
-- The Maven coordinate `com.digitalpetri.iec60870:iec60870-transport-tcp` (version `0.1.0-SNAPSHOT`),
+- The Maven coordinate `com.digitalpetri.iec60870:iec60870-tcp` (version `0.1.0-SNAPSHOT`),
   which transitively brings in `iec60870-core`.
 - Java 17.
 

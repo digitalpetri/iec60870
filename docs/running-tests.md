@@ -24,7 +24,7 @@ mise exec -- mvn -q -pl iec60870-core test -Dtest=*CodecTest
 ```
 
 Use the module that owns the code under test, for example `iec60870-core`,
-`iec60870-transport-tcp`, or `iec60870-tests`.
+`iec60870-transport-tcp`, or `iec60870-test-integration`.
 
 ## Module Targeting Flags
 
@@ -71,19 +71,19 @@ mise exec -- mvn -q clean verify
 
 ## Shared Test Fixtures
 
-Core-level test doubles reused across modules live in the internal `iec60870-test-support` module
-(`com.digitalpetri.iec60870.testsupport`): the deterministic `ManualScheduler` virtual clock, the
+Core-level test doubles reused across modules live in the internal `iec60870-test-common` module
+(`com.digitalpetri.iec60870.test.common`): the deterministic `ManualScheduler` virtual clock, the
 `RecordingEvents` `Session.Events` recorder, the frame-capturing `RecordingClientTransport` /
 `RecordingServerConnection`, the in-JVM `LoopbackOctetTransport` / `FaultInjectingOctetTransport`
 octet transports (which carry their own unit tests in the module), and the `ParanoidLeakDetection`
 JUnit extension. Modules consume it at
 `test` scope; a module opts into paranoid `ByteBuf` leak detection by shipping a
 `META-INF/services/org.junit.jupiter.api.extension.Extension` resource naming
-`com.digitalpetri.iec60870.testsupport.ParanoidLeakDetection`. Fixtures that need types above core
+`com.digitalpetri.iec60870.test.common.ParanoidLeakDetection`. Fixtures that need types above core
 (for example the `ClientEvent`-aware `EventCollector`, or the TLS certificate helpers) stay in the
 module that owns those types.
 
-`iec60870-test-support` is a reactor dependency like any other, so a targeted `-pl <consumer> test`
+`iec60870-test-common` is a reactor dependency like any other, so a targeted `-pl <consumer> test`
 run needs it available: add `-am` (which rebuilds it from source) or run `mvn install` once
 beforehand. Running `-pl` alone against a stale `~/.m2` can surface as a `NoSuchMethodError` from an
 out-of-date `iec60870-core` — the same staleness `-am` exists to avoid.

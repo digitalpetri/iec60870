@@ -23,9 +23,9 @@ TlsOptions options = TlsOptions.builder(sslContext)
 lets TLS be configured against the core API while the actual engine (Netty's `SslHandler`) lives only
 in `iec60870-transport-tcp`. The transport translates `TlsOptions` into its concrete TLS engine; the
 `clientAuthRequired` flag requires client authentication on a server and has no effect on a client.
-`TlsOptions` is passed to the transport-module builders (`TcpIec104Client.builder().tls(...)` /
-`TcpIec104Server.builder().tls(...)`), not to `ClientConfig`/`ServerConfig`, because transport
-concerns are kept out of core configuration.
+`TlsOptions` is passed to the TCP assembly-module builders (`TcpIec104Client.builder().tls(...)` /
+`TcpIec104Server.builder().tls(...)` in `iec60870-tcp`), not to `ClientConfig`/`ServerConfig`,
+because transport concerns are kept out of core configuration.
 
 ### Handshake gating
 
@@ -57,7 +57,7 @@ the `ServerEvent` records and on the `ServerContext` handed to a `ServerHandler`
 
 Two records carry the protocol-layer configuration shared by client and server. Both are immutable,
 validate in their compact constructors, and provide standard-default factories. Transport knobs
-(host, port, TLS) are **not** here — they live on the transport-module builders.
+(host, port, TLS) are **not** here — they live on the assembly-module builders (`iec60870-tcp`).
 
 ### ProtocolProfile — field widths
 

@@ -1,13 +1,15 @@
 # Modules and Dependencies
 
-The library is a Maven multi-module build under the `iec60870-parent` POM. Six modules matter to a
+The library is a Maven multi-module build under the `iec60870-parent` POM. Eight modules matter to a
 caller: `iec60870-core` (the protocol model and SPIs), `iec60870-cs104` (the 104 APCI link/session
 engine), `iec60870-cs101` (the 101 FT1.2 link layer), `iec60870-application` (the high-level
 `Iec60870Client`/`Iec60870Server` API, with no Netty, shared by both profiles), `iec60870-transport-tcp`
-(the Netty TCP/TLS transport plus the builders that assemble a 104 — or, optionally, a 101 — stack),
-and `iec60870-transport-serial` (the serial-port transport plus the builders that assemble a 101
-stack). A further module, `iec60870-tests`, holds cross-module integration tests, and an internal
-`iec60870-test-support` module holds the shared, test-only fixtures those suites reuse.
+(the Netty TCP/TLS **octet transport only**, core-only), `iec60870-transport-serial` (the serial-port
+**octet transport only**, core-only), `iec60870-tcp` (the **assembly module** holding the user-facing
+builders that wire a 104 — or, optionally, a 101 — stack over TCP), and `iec60870-serial` (the
+**assembly module** holding the user-facing builders that wire a 101 stack over a serial port). A
+further module, `iec60870-test-integration`, holds cross-module integration tests, and an internal
+`iec60870-test-common` module holds the shared, test-only fixtures those suites reuse.
 
 ## The core / cs104 / application / transport split
 
@@ -59,7 +61,8 @@ facades never construct an `ApciSession` or touch `Apdu`/`ByteBuf` framing; inst
 protocol-specific session and its wire framing are assembled elsewhere. A `NoNettyInApplicationTest`
 guard fails the build if any `io.netty.*` token appears in the application's main sources.
 
-`iec60870-transport-tcp` owns the Netty side:
+`iec60870-transport-tcp` owns the Netty **octet transport only** — it is core-only and holds no
+builder:
 
 - `NettyClientTransport` / `NettyServerTransport`, the implementations of the core transport
   interfaces;
@@ -67,13 +70,18 @@ guard fails the build if any `io.netty.*` token appears in the application's mai
   frame off the wire, and `InboundFrameHandler`, which forwards each frame to the `TransportListener`
   (outbound is a raw `ByteBuf` write — there is no encoder handler);
 - TLS via Netty's `SslHandler`, and the client channel lifecycle via
-  `com.digitalpetri.netty:netty-channel-fsm`;
-- the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server`, whose builders carry the
-  transport knobs (`host`, `port`, `localBind`, `TlsOptions`, bootstrap/event-loop customization).
+  `com.digitalpetri.netty:netty-channel-fsm`.
 
-A builder in the transport module is the **104 assembly point**: it constructs the Netty transport,
-delegates the 104 session wiring to a `Cs104Binding` (in `cs104`), and hands the assembled `Session`
-(client) / session factory (server) to `new DefaultIec60870Client(...)` /
+These octet classes import nothing from `cs104`, `cs101`, or `application`; a
+`TcpTransportDependencyGuardTest` enforces that core-only boundary.
+
+`iec60870-tcp` owns the **user-facing entry points** `TcpIec104Client` and `TcpIec104Server` (package
+`com.digitalpetri.iec60870.tcp`), whose builders carry the transport knobs (`host`, `port`,
+`localBind`, `TlsOptions`, bootstrap/event-loop customization).
+
+A builder in the assembly module is the **104 assembly point**: it constructs the Netty transport
+(from `transport-tcp`), delegates the 104 session wiring to a `Cs104Binding` (in `cs104`), and hands
+the assembled `Session` (client) / session factory (server) to `new DefaultIec60870Client(...)` /
 `new DefaultIec60870Server(...)`. The builder itself contains no `new ApciSession(...)` and no direct
 `ApduFramer` call — that wiring lives entirely in `Cs104Binding`. `build()` then returns the
 **application interface** type:
@@ -92,7 +100,7 @@ try (Iec60870Client client = TcpIec104Client.builder()
 This is a deliberate placement. The protocol methods on the returned object — `connect`,
 `startDataTransfer`, `interrogate`, `read`, `commands`, `events`, `synchronizeClock`, `send`,
 `close`, and the `*Async` variants — are all defined on the application `Iec60870Client` interface.
-Only the *transport wiring* (host, port, TLS) lives in the transport-module builder; the 104 session
+Only the *transport wiring* (host, port, TLS) lives in the assembly-module builder; the 104 session
 assembly itself is delegated to `Cs104Binding` in `cs104`.
 
 ### `Cs104Binding`: the 104 session assembly
@@ -151,27 +159,29 @@ link reset is the data-transfer-start analog: `Session.startDataTransfer()` driv
 link-reset bring-up and `isDataTransferStarted()` reports link availability, just as STARTDT does on
 the 104 session.
 
-`iec60870-transport-serial` owns the serial side (the package `.transport.serial`):
+`iec60870-transport-serial` owns the serial **octet transport only** (the package
+`.transport.serial`) — it is core-only and holds no builder:
 
 - `SerialClientTransport` / `SerialServerTransport`, the implementations of the core transport
   interfaces over a serial port via jSerialComm (`Ft12SerialChannel`, `SerialServerConnection`);
 - the framing handler `Ft12Deframer`, which slices one whole-frame `ByteBuf` per complete FT1.2 frame
-  off the byte stream, and the `SerialPortConfig` / `Rs485Options` knobs;
-- the **user-facing entry points** `SerialIec101Client` and `SerialIec101Server`, whose builders carry
-  the serial knobs (port name, baud/parity/stop bits, RS-485 options).
+  off the byte stream, and the `SerialPortConfig` / `Rs485Options` knobs.
 
 Its octet classes depend on **core only** — the same octet-classes-stay-core-only rule
-`transport-tcp` follows; only the `SerialIec101Client` / `SerialIec101Server` builders reference
-`cs101` + `application`, calling `Cs101Binding.bindClient(...)` / `bindServer(...)` to assemble the
-`Session` / session factory exactly as the `Tcp*` builders call `Cs104Binding`. A
-`SerialTransportDependencyGuardTest` enforces the octet-classes-stay-core-only boundary.
+`transport-tcp` follows — and a `SerialTransportDependencyGuardTest` enforces that boundary.
+
+`iec60870-serial` owns the **user-facing entry points** `SerialIec101Client` and `SerialIec101Server`
+(package `com.digitalpetri.iec60870.serial`), whose builders carry the serial knobs (port name,
+baud/parity/stop bits, RS-485 options). Each builder constructs the serial transport (from
+`transport-serial`) and calls `Cs101Binding.bindClient(...)` / `bindServer(...)` to assemble the
+`Session` / session factory exactly as the `Tcp*` builders call `Cs104Binding`.
 
 Because `Cs104Binding` and `Cs101Binding` each depend only on their link module + core +
-`netty-buffer`, either binding can be wired to any octet transport. `iec60870-transport-tcp` exploits
+`netty-buffer`, either binding can be wired to any octet transport. `iec60870-tcp` exploits
 this to offer the optional 101-over-TCP entry points `TcpIec101Client` / `TcpIec101Server`, which
 reuse the same `NettyClientTransport` / `NettyServerTransport` but install an `Ft12FrameDecoder` in
-place of `Iec104FrameDecoder` and delegate to `Cs101Binding` — which is why `transport-tcp` now also
-depends on `cs101`. The `SerialIec101*` and `TcpIec101*` builders return the same application
+place of `Iec104FrameDecoder` and delegate to `Cs101Binding` — which is why `iec60870-tcp` depends on
+both `cs104` and `cs101`. The `SerialIec101*` and `TcpIec101*` builders return the same application
 `Iec60870Client` / `Iec60870Server` interfaces the 104 builders return; only the link layer and
 transport beneath the `Session` SPI differ.
 
@@ -218,29 +228,33 @@ back into core.
 | `iec60870-cs104` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 104 link/session engine; `netty-buffer` confined to the `Apdu`/`ControlField` `Serde` codecs; published API module |
 | `iec60870-cs101` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 101 FT1.2 link layer; `netty-buffer` confined to the `Ft12Frame`/`LinkControlField` `Serde` codecs and `Ft12Framer`; published API module |
 | `iec60870-application` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `org.slf4j:slf4j-api` | **zero Netty**; depends on core only (never on cs104 or cs101). Guarded by `NoNettyInApplicationTest` |
-| `iec60870-transport-tcp` | `iec60870-application`, `iec60870-cs104`, `iec60870-cs101`, `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | full Netty stack, including TLS via `netty-handler`; only the `Tcp*` builders reference `cs104`/`cs101`/`application` (the `TcpIec104*` builders call `Cs104Binding`, the optional `TcpIec101*` builders call `Cs101Binding`); the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoders) stay link- and application-free |
-| `iec60870-transport-serial` | `iec60870-application`, `iec60870-cs101`, `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `com.fazecast:jSerialComm`, `org.slf4j:slf4j-api` | the serial transport; jSerialComm and `netty-buffer` confined to the octet classes; only the `SerialIec101*` builders reference `cs101`/`application` (they call `Cs101Binding`); the octet classes (`SerialClientTransport`/`SerialServerTransport`, `Ft12Deframer`) stay cs101- and application-free |
+| `iec60870-transport-tcp` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | **core-only** Netty octet transport, including TLS via `netty-handler`; no `cs104`/`cs101`/`application` dependency; the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoders) stay link- and application-free, enforced by `TcpTransportDependencyGuardTest` |
+| `iec60870-transport-serial` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `com.fazecast:jSerialComm`, `org.slf4j:slf4j-api` | **core-only** serial octet transport; jSerialComm and `netty-buffer` confined to the octet classes; no `cs101`/`application` dependency; the octet classes (`SerialClientTransport`/`SerialServerTransport`, `Ft12Deframer`) stay cs101- and application-free, enforced by `SerialTransportDependencyGuardTest` |
+| `iec60870-tcp` | `iec60870-transport-tcp`, `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **TCP assembly module** (the sole TCP point of convergence); hosts the `TcpIec104*`/`TcpIec101*` builders, which call `Cs104Binding`/`Cs101Binding` over the Netty octet transport |
+| `iec60870-serial` | `iec60870-transport-serial`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **serial assembly module** (the sole serial point of convergence); hosts the `SerialIec101*` builders, which call `Cs101Binding` over the serial octet transport |
 
-The sink modules (`iec60870-examples`, `iec60870-tests`, `iec60870-interop`) name `client`/`server`/
+The sink modules (`iec60870-examples`, `iec60870-test-integration`, `iec60870-test-interop`) name `client`/`server`/
 `point` types directly, so each declares a **direct** `iec60870-application` dependency rather than
-relying on transitive reach through `iec60870-transport-tcp`. The internal dependency graph is
-acyclic with a single source (`core`): `cs104 → core`, `cs101 → core`, `application → core`
-(`application`, `cs104`, and `cs101` are mutually incomparable siblings — no edge among them),
-`transport-tcp → {application, cs104, cs101, core}`, `transport-serial → {application, cs101, core}`,
-and the sinks → `{application, transport-tcp}` (`iec60870-tests` also → `cs101`; `iec60870-examples`
-also → `{core, transport-serial}` for the `SerialIec101*` and `Tcp101` examples). Nothing depends back
-into the application or transport modules.
+relying on transitive reach through `iec60870-tcp`. The internal dependency graph is acyclic with a
+single source (`core`): `cs104 → core`, `cs101 → core`, `application → core` (`application`, `cs104`,
+and `cs101` are mutually incomparable siblings — no edge among them); the octet transports are
+core-only (`transport-tcp → core`, `transport-serial → core`); the assembly modules converge the
+triple (`tcp → {transport-tcp, cs104, cs101, application, core}`,
+`serial → {transport-serial, cs101, application, core}`); and the sinks → `{application, tcp}`
+(`iec60870-test-integration` also → `cs101`; `iec60870-examples` and `iec60870-test-interop` also → `serial` for the
+`SerialIec101*` examples/tests). Nothing depends back into the application, transport, or assembly
+modules. The parent enforcer's `banCircularDependencies` rule asserts this acyclicity on every build.
 
-`iec60870-test-support` is an internal, test-only module that holds the shared, core-level test
+`iec60870-test-common` is an internal, test-only module that holds the shared, core-level test
 fixtures (the deterministic `ManualScheduler`, the `RecordingEvents` `Session.Events` recorder, the
 frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
 `LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, and the
 `ParanoidLeakDetection` JUnit extension). It depends on **core only** — plus `netty-buffer` for the
 `ByteBuf` boundary and `junit-jupiter-api` for the extension — and is consumed at `test` scope by
 `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-transport-tcp`,
-`iec60870-transport-serial`, and `iec60870-tests`. Keeping it core-only mirrors the
-octet-classes-stay-core-only rule and means it can never become a path for a
-`cs104`/`cs101`/`application`/`transport-tcp` type to leak across module boundaries. It is never published
+`iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-test-integration`. Keeping it
+core-only mirrors the octet-classes-stay-core-only rule and means it can never become a path for a
+`cs104`/`cs101`/`application`/transport type to leak across module boundaries. It is never published
 (its deploy, sign, and install steps are skipped).
 
 Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,

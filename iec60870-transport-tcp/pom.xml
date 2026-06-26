@@ -28,21 +28,6 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-application</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-cs104</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-cs101</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
       <groupId>org.jspecify</groupId>
       <artifactId>jspecify</artifactId>
     </dependency>
@@ -84,7 +69,7 @@
 
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-test-support</artifactId>
+      <artifactId>iec60870-test-common</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>

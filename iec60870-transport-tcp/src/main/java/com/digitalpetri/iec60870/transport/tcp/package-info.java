@@ -18,12 +18,14 @@
  *       that forwards each frame to the registered {@code TransportListener}.
  * </ul>
  *
- * <p>The 104 path is assembled by the {@code TcpIec104Client} / {@code TcpIec104Server} builders
- * and is the default: the transport configs leave the frame-decoder factory unset, so {@code
- * Iec104FrameDecoder} is installed. The optional 101-over-TCP path is assembled by the {@code
- * TcpIec101Client} / {@code TcpIec101Server} builders, which set the transport config's
- * frame-decoder factory to supply an {@code Ft12FrameDecoder} and delegate the link-layer wiring to
- * {@code Cs101Binding}; nothing else in the pipeline changes.
+ * <p>This package provides the <b>octet transport only</b>. Assembly of the 104 and 101-over-TCP
+ * stacks — wiring this transport to its link layer and the high-level facades — lives in the
+ * separate {@code iec60870-tcp} module (the {@code com.digitalpetri.iec60870.tcp} builders {@code
+ * TcpIec104Client} / {@code TcpIec104Server} and {@code TcpIec101Client} / {@code
+ * TcpIec101Server}). The 104 path is the default: the transport configs leave the frame-decoder
+ * factory unset, so {@code Iec104FrameDecoder} is installed. The optional 101-over-TCP path instead
+ * sets the transport config's frame-decoder factory to supply an {@code Ft12FrameDecoder}; nothing
+ * else in the pipeline changes.
  *
  * <p>Outbound is a raw {@link io.netty.buffer.ByteBuf} write: the protocol layer above frames each
  * APDU into a complete length-delimited buffer and the transport writes-and-flushes it, so no
