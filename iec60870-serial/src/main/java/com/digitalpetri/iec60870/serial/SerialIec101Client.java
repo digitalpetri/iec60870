@@ -1,30 +1,30 @@
-package com.digitalpetri.iec60870.transport.serial;
+package com.digitalpetri.iec60870.serial;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
+import com.digitalpetri.iec60870.client.ClientConfig;
+import com.digitalpetri.iec60870.client.DefaultIec60870Client;
+import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.cs101.Cs101Binding;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
-import com.digitalpetri.iec60870.server.DefaultIec60870Server;
-import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.server.ServerConfig;
-import com.digitalpetri.iec60870.server.ServerHandler;
-import com.digitalpetri.iec60870.server.Station;
+import com.digitalpetri.iec60870.transport.serial.Rs485Options;
+import com.digitalpetri.iec60870.transport.serial.SerialClientTransport;
+import com.digitalpetri.iec60870.transport.serial.SerialPortConfig;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import org.jspecify.annotations.Nullable;
 
 /**
- * User-facing entry point that builds a serial-backed IEC 60870-5-101 {@link Iec60870Server} for a
- * balanced point-to-point outstation.
+ * User-facing entry point that builds a serial-backed IEC 60870-5-101 {@link Iec60870Client} for a
+ * balanced point-to-point link.
  *
- * <p>This is the serial peer of {@code TcpIec104Server}: it is the sole assembly point that wires
- * the serial octet transport to the CS101 link layer and the high-level server facade. A serial
- * line connects exactly two stations, so the transport accepts a single connection — there is no
- * bind address, port, TLS, or multi-connection cap. {@link Builder#build()} constructs a {@link
- * SerialServerTransport} plus a {@link DefaultIec60870Server} and returns the core {@link
- * Iec60870Server} interface.
+ * <p>This is the serial peer of {@code TcpIec104Client}: it is the sole assembly point that wires
+ * the serial octet transport to the CS101 link layer and the high-level client facade. Transport
+ * knobs (port name, baud rate, framing) configure the serial port; protocol knobs (profile, link
+ * settings, originator address) configure the core client. {@link Builder#build()} constructs a
+ * {@link SerialClientTransport} plus a {@link DefaultIec60870Client} and returns the core {@link
+ * Iec60870Client} interface, whose every protocol method matches the 104 client exactly.
  *
  * <p>The builder holds no link-layer wiring itself: it delegates the full FT1.2 link-engine plus
  * framing assembly to {@link Cs101Binding}, so no {@code Ft12LinkLayer} is constructed and no
@@ -33,23 +33,24 @@ import org.jspecify.annotations.Nullable;
  * <h2>Example</h2>
  *
  * <pre>{@code
- * Station station = Station.builder(CommonAddress.of(1))
- *     .point(definition)
- *     .build();
- *
- * try (Iec60870Server server = SerialIec101Server.builder()
+ * try (Iec60870Client client = SerialIec101Client.builder()
  *         .serialPort("/dev/ttyUSB0")
- *         .addStation(station)
- *         .handler(myHandler)
+ *         .baudRate(9600)
+ *         .linkSettings(LinkSettings.balanced().linkAddress(1).build())
  *         .build()) {
- *     server.start();
- *     server.publish(point, PointValue.scaled(42, Quality.good()), Cause.SPONTANEOUS);
+ *     client.connect();
+ *     InterrogationResult snapshot = client.interrogate(CommonAddress.of(1));
+ *     CommandResult result = client.commands().single(point, true);
  * }
  * }</pre>
+ *
+ * <p>{@link Iec60870Client#connect()} opens the serial port and, when {@link
+ * Builder#startDataTransferOnConnect(boolean) start-on-connect} is enabled (the default), drives
+ * the FT1.2 balanced link-reset bring-up before completing.
  */
-public final class SerialIec101Server {
+public final class SerialIec101Client {
 
-  private SerialIec101Server() {}
+  private SerialIec101Client() {}
 
   /**
    * Returns a new builder seeded with the standard IEC 60870-5-101 8E1 defaults.
@@ -61,12 +62,13 @@ public final class SerialIec101Server {
   }
 
   /**
-   * A builder for a serial-backed {@link Iec60870Server}.
+   * A builder for a serial-backed {@link Iec60870Client}.
    *
    * <p>Transport knobs ({@code serialPort}, {@code baudRate}, {@code dataBits}, {@code parity},
    * {@code stopBits}, {@code readTimeout}, {@code writeTimeout}) configure the serial port;
-   * protocol knobs ({@code profile}, {@code linkSettings}, {@code addStation}, {@code handler},
-   * {@code callbackExecutor}) configure the core server. The builder is not thread-safe.
+   * protocol knobs ({@code profile}, {@code linkSettings}, {@code originatorAddress}, {@code
+   * startDataTransferOnConnect}, {@code callbackExecutor}) configure the core client. The builder
+   * is not thread-safe.
    */
   public static final class Builder {
 
@@ -77,8 +79,8 @@ public final class SerialIec101Server {
     private int stopBits = 1;
     private ProtocolProfile profile = ProtocolProfile.iec101Default();
     private LinkSettings linkSettings = LinkSettings.balanced().build();
-    private final List<Station> stations = new ArrayList<>();
-    private @Nullable ServerHandler handler;
+    private OriginatorAddress originatorAddress = OriginatorAddress.none();
+    private boolean startDataTransferOnConnect = true;
     private @Nullable Executor callbackExecutor;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
@@ -175,32 +177,32 @@ public final class SerialIec101Server {
     }
 
     /**
-     * Adds a station hosted by the outstation.
+     * Sets the originator address placed in control-direction ASDUs. Defaults to {@link
+     * OriginatorAddress#none()}.
      *
-     * @param station the station to host; each must have a distinct common address.
+     * @param originatorAddress the originator address.
      * @return this builder.
-     * @throws NullPointerException if {@code station} is null.
      */
-    public Builder addStation(Station station) {
-      this.stations.add(Objects.requireNonNull(station, "station"));
+    public Builder originatorAddress(OriginatorAddress originatorAddress) {
+      this.originatorAddress = Objects.requireNonNull(originatorAddress, "originatorAddress");
       return this;
     }
 
     /**
-     * Sets the handler that answers control-direction requests. Defaults to the core server's
-     * default handler when unset.
+     * Sets whether {@link Iec60870Client#connect()} also starts data transfer by driving the FT1.2
+     * link-reset bring-up. Defaults to {@code true}.
      *
-     * @param handler the server handler.
+     * @param startDataTransferOnConnect whether to start data transfer on connect.
      * @return this builder.
      */
-    public Builder handler(ServerHandler handler) {
-      this.handler = Objects.requireNonNull(handler, "handler");
+    public Builder startDataTransferOnConnect(boolean startDataTransferOnConnect) {
+      this.startDataTransferOnConnect = startDataTransferOnConnect;
       return this;
     }
 
     /**
-     * Sets the executor that delivers events and runs handler callbacks. Defaults to the core
-     * server's default executor.
+     * Sets the executor that delivers events and completes blocking calls. Defaults to the core
+     * client's default executor.
      *
      * @param callbackExecutor the callback executor.
      * @return this builder.
@@ -250,12 +252,12 @@ public final class SerialIec101Server {
     }
 
     /**
-     * Builds the serial transport and the core server and returns the {@link Iec60870Server}.
+     * Builds the serial transport and the core client and returns the {@link Iec60870Client}.
      *
-     * @return the configured server.
+     * @return the configured client.
      * @throws IllegalStateException if no serial port name was set.
      */
-    public Iec60870Server build() {
+    public Iec60870Client build() {
       if (portName == null) {
         throw new IllegalStateException("serialPort must be set");
       }
@@ -272,37 +274,26 @@ public final class SerialIec101Server {
               .rs485(rs485)
               .build();
 
-      SerialServerTransport transport = new SerialServerTransport(serialConfig);
+      SerialClientTransport transport = new SerialClientTransport(serialConfig);
 
-      ServerConfig.Builder serverConfigBuilder =
-          ServerConfig.builder()
+      ClientConfig.Builder clientConfigBuilder =
+          ClientConfig.builder()
               .protocolProfile(profile)
               .sessionSettings(linkSettings)
-              .stations(stations);
-      if (handler != null) {
-        serverConfigBuilder.handler(handler);
-      }
+              .originatorAddress(originatorAddress)
+              .startDataTransferOnConnect(startDataTransferOnConnect);
       if (callbackExecutor != null) {
-        serverConfigBuilder.callbackExecutor(callbackExecutor);
+        clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
-      ServerConfig serverConfig = serverConfigBuilder.build();
 
       // The builder is the sole 101 assembly point but holds no Ft12Frame<->octet wiring itself: it
-      // delegates the full per-connection Ft12LinkLayer + framing assembly to Cs101Binding.
+      // delegates the full Ft12LinkLayer + framing assembly to Cs101Binding (see its Javadoc).
       Cs101Binding binding = new Cs101Binding(linkSettings, profile);
 
-      // The outbound-queue bound and policy are passed as scalars rather than the ServerConfig
-      // object so Cs101Binding stays free of an iec60870-application import.
-      return new DefaultIec60870Server(
+      return new DefaultIec60870Client(
           transport,
-          serverConfig,
-          (connection, events, scheduler) ->
-              binding.bindServer(
-                  connection,
-                  events,
-                  scheduler,
-                  serverConfig.maxOutboundQueue(),
-                  serverConfig.eventQueuePolicy()));
+          clientConfigBuilder.build(),
+          (events, scheduler) -> binding.bindClient(transport, events, scheduler));
     }
   }
 }

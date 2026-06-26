@@ -49,7 +49,7 @@ Client — override both records:
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import java.time.Duration;
 import org.joou.UShort;
 
@@ -87,7 +87,7 @@ Server — the controlled station applies the *same* records so the two ends agr
 
 ```java
 import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 
 // Reuse the `profile` and `apci` locals built exactly as in the client recipe above —
 // the field widths are a shared wire contract, so both ends must construct the same profile.

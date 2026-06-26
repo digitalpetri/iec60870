@@ -52,11 +52,11 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
 ## Component map
 
 ```
-                         iec60870-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
+       iec60870-tcp (assembly)  →  iec60870-transport-tcp  (Netty: Channel, EventLoopGroup, SslHandler)
                          ┌───────────────────────────────────────────────────────────────┐
-                         │  TcpIec104Client.builder()        TcpIec104Server.builder()    │
-   user-facing  ───────► │  host/port/tls  ──► NettyClientTransport / NettyServerTransport │
-   entry points          │  Iec104FrameDecoder (the whole-frame ByteBuf boundary)         │
+                         │  TcpIec104Client.builder()        TcpIec104Server.builder()    │  ◄── iec60870-tcp
+   user-facing  ───────► │  host/port/tls  ──► NettyClientTransport / NettyServerTransport │  ◄── iec60870-transport-tcp
+   entry points          │  Iec104FrameDecoder (the whole-frame ByteBuf boundary)         │      (core-only octet transport)
                          │  builders delegate 104 assembly to Cs104Binding (in cs104)      │
                          └───────────────────────────────────────────────────────────────┘
             assembles {Session + transport}     returns the application interface
@@ -110,8 +110,9 @@ The diagram shows the 104/TCP stack. The 101 serial profile slots two peer modul
 same `iec60870-application` facade: `iec60870-cs101` (the `Ft12LinkLayer` shown above, a `Session`
 peer of `ApciSession`) and `iec60870-transport-serial` (`SerialClientTransport` /
 `SerialServerTransport`, a core-only octet-transport peer of the Netty transport, reached through the
-`SerialIec101Client` / `SerialIec101Server` builders). The optional `TcpIec101Client` /
-`TcpIec101Server` builders run that same FT1.2 link layer over the Netty transport instead.
+`SerialIec101Client` / `SerialIec101Server` builders in `iec60870-serial`). The optional
+`TcpIec101Client` / `TcpIec101Server` builders (in `iec60870-tcp`) run that same FT1.2 link layer
+over the Netty transport instead.
 
 ### How a message moves through the stack
 

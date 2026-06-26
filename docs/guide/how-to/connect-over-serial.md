@@ -6,9 +6,9 @@ over an [FT1.2](../reference/glossary.md) link layer instead of the 104
 [APCI](../reference/glossary.md) over TCP. Everything you learned in
 [Getting Started](../getting-started.md) and the other how-tos applies unchanged; only the builder
 and two extra configuration records differ. You build a serial client with
-`com.digitalpetri.iec60870.transport.serial.SerialIec101Client`, a serial outstation with
+`com.digitalpetri.iec60870.serial.SerialIec101Client`, a serial outstation with
 `SerialIec101Server`, and — when the wire is TCP rather than an actual UART — the optional
-101-over-TCP pair `com.digitalpetri.iec60870.transport.tcp.TcpIec101Client` / `TcpIec101Server`.
+101-over-TCP pair `com.digitalpetri.iec60870.tcp.TcpIec101Client` / `TcpIec101Server`.
 
 The headline rule comes first: **a serial link has no on-wire parameter negotiation.** The
 [link mode](../reference/link-layer.md) (balanced or unbalanced), the
@@ -54,7 +54,7 @@ import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
-import com.digitalpetri.iec60870.transport.serial.SerialIec101Client;
+import com.digitalpetri.iec60870.serial.SerialIec101Client;
 
 // The SerialIec101* default profile is the 104 default; set the 101 widths the peer expects.
 ProtocolProfile profile = new ProtocolProfile(1, 1, 2, 255);
@@ -94,7 +94,7 @@ drains it round-robin on the configured interval.
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
-import com.digitalpetri.iec60870.transport.serial.SerialIec101Client;
+import com.digitalpetri.iec60870.serial.SerialIec101Client;
 import java.time.Duration;
 import java.util.List;
 
@@ -137,7 +137,7 @@ import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.transport.serial.SerialIec101Server;
+import com.digitalpetri.iec60870.serial.SerialIec101Server;
 
 ProtocolProfile profile = new ProtocolProfile(1, 1, 2, 255);
 
@@ -175,7 +175,7 @@ the master polling each secondary.
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.transport.serial.Rs485Options;
-import com.digitalpetri.iec60870.transport.serial.SerialIec101Client;
+import com.digitalpetri.iec60870.serial.SerialIec101Client;
 import java.util.List;
 
 Rs485Options rs485 =
@@ -218,7 +218,7 @@ import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec101Client;
+import com.digitalpetri.iec60870.tcp.TcpIec101Client;
 
 try (Iec60870Client client =
     TcpIec101Client.builder()

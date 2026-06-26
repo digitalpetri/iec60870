@@ -12,24 +12,20 @@ You are in the [user guide](README.md). This is the tutorial: read it first, the
 
 ## Install
 
-Declare both modules: `iec60870-core` (the Netty-free protocol model and SPIs — `Asdu`, the addresses,
-and the `Session`/transport interfaces) and `iec60870-transport-tcp` (the Netty-backed TCP/TLS transport
-and the `TcpIec104Client` / `TcpIec104Server` builders). The transport module transitively pulls in
-`iec60870-core` and `iec60870-application` — the module that owns the `Iec60870Client` / `Iec60870Server`
-facades — so the facade types are on your classpath. Your code uses types from `iec60870-core` and
-`iec60870-transport-tcp` directly, so declare both.
+Declare a single dependency: `iec60870-tcp`, the TCP assembly module (the Netty-backed TCP/TLS
+transport plus the `TcpIec104Client` / `TcpIec104Server` builders). It transitively pulls in
+everything this tutorial uses — `iec60870-core` (the Netty-free protocol model, addresses, and the
+`Session`/transport SPIs) and `iec60870-application` (the `Iec60870Client` / `Iec60870Server`
+facades) — so all the types under `com.digitalpetri.iec60870.*` are on your classpath. (For an
+IEC 60870-5-101 serial link, depend on `iec60870-serial` instead; see
+[Connect over serial](how-to/connect-over-serial.md).)
 
 Maven:
 
 ```xml
 <dependency>
   <groupId>com.digitalpetri.iec60870</groupId>
-  <artifactId>iec60870-core</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
-</dependency>
-<dependency>
-  <groupId>com.digitalpetri.iec60870</groupId>
-  <artifactId>iec60870-transport-tcp</artifactId>
+  <artifactId>iec60870-tcp</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -37,8 +33,7 @@ Maven:
 Gradle (Kotlin DSL):
 
 ```kotlin
-implementation("com.digitalpetri.iec60870:iec60870-core:0.1.0-SNAPSHOT")
-implementation("com.digitalpetri.iec60870:iec60870-transport-tcp:0.1.0-SNAPSHOT")
+implementation("com.digitalpetri.iec60870:iec60870-tcp:0.1.0-SNAPSHOT")
 ```
 
 The library targets **Java 17**.
@@ -193,13 +188,13 @@ ServerHandler handler =
     };
 ```
 
-Build and start the `com.digitalpetri.iec60870.transport.tcp.TcpIec104Server`. `bindAddress` defaults
+Build and start the `com.digitalpetri.iec60870.tcp.TcpIec104Server`. `bindAddress` defaults
 to `"0.0.0.0"` and `port` to `2404` (the standard IEC 104 port); `build()` returns the
 `com.digitalpetri.iec60870.server.Iec60870Server` interface (an `iec60870-application` type).
 
 ```java
 import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 
 Iec60870Server server =
     TcpIec104Server.builder()
@@ -231,14 +226,14 @@ does not match the point's `PointType`. For periodic and spontaneous publishing 
 ## Hello, client
 
 The client is a controlling station that targets the same CA and the same point addresses as the
-server above. Build the `com.digitalpetri.iec60870.transport.tcp.TcpIec104Client`, then **subscribe a
+server above. Build the `com.digitalpetri.iec60870.tcp.TcpIec104Client`, then **subscribe a
 `Flow.Subscriber<ClientEvent>` before connecting** so no early events are missed. `Iec60870Client` is
 `AutoCloseable`, so build it in a try-with-resources.
 
 ```java
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import java.util.concurrent.Flow;
 
 try (Iec60870Client client =

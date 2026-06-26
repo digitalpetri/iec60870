@@ -44,6 +44,8 @@
     <module>iec60870-application</module>
     <module>iec60870-transport-tcp</module>
     <module>iec60870-transport-serial</module>
+    <module>iec60870-tcp</module>
+    <module>iec60870-serial</module>
     <module>iec60870-examples</module>
     <module>iec60870-tests</module>
     <module>iec60870-interop</module>
@@ -72,6 +74,7 @@
     <maven-dependency-plugin.version>3.10.0</maven-dependency-plugin.version>
     <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
     <maven-enforcer-plugin.version>3.6.2</maven-enforcer-plugin.version>
+    <extra-enforcer-rules.version>1.10.0</extra-enforcer-rules.version>
     <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
     <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
     <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
@@ -389,6 +392,13 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
         <version>${maven-enforcer-plugin.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>extra-enforcer-rules</artifactId>
+            <version>${extra-enforcer-rules.version}</version>
+          </dependency>
+        </dependencies>
         <executions>
           <execution>
             <id>enforce-maven</id>
@@ -398,6 +408,7 @@
             <configuration>
               <rules>
                 <dependencyConvergence/>
+                <banCircularDependencies/>
                 <requireMavenVersion>
                   <version>3.6.3</version>
                 </requireMavenVersion>

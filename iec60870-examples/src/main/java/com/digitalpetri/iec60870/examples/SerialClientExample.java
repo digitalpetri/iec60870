@@ -8,7 +8,7 @@ import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
-import com.digitalpetri.iec60870.transport.serial.SerialIec101Client;
+import com.digitalpetri.iec60870.serial.SerialIec101Client;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;

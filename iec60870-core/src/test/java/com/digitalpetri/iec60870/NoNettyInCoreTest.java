@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.transport.tcp;
+package com.digitalpetri.iec60870;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -113,10 +113,10 @@ class NoNettyInCoreTest {
    */
   private static Path locateCoreMainSources() {
     Path moduleDir = Path.of("").toAbsolutePath();
-    // From iec60870-transport-tcp, the sibling core module is one level up.
-    Path sibling = moduleDir.resolveSibling("iec60870-core").resolve("src/main/java");
-    if (Files.isDirectory(sibling)) {
-      return sibling;
+    // When run from the iec60870-core module directory, the sources are directly under it.
+    Path here = moduleDir.resolve("src/main/java");
+    if (Files.isDirectory(here)) {
+      return here;
     }
     // Fallback: if cwd is the repo root.
     return moduleDir.resolve("iec60870-core").resolve("src/main/java");

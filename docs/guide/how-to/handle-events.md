@@ -228,7 +228,7 @@ import com.digitalpetri.iec60870.server.CommandRequest;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerContext;
 import com.digitalpetri.iec60870.server.ServerHandler;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 
 ServerHandler handler = new ServerHandler() {
   @Override

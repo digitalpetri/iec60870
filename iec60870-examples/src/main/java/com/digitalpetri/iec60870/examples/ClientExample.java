@@ -6,7 +6,7 @@ import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.Flow;

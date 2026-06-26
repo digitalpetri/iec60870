@@ -21,7 +21,7 @@ import com.digitalpetri.iec60870.server.PointDefinition;
 import com.digitalpetri.iec60870.server.ServerContext;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Server;
+import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Path;

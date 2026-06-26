@@ -8,7 +8,7 @@ import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.server.Iec60870Server;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Instant;

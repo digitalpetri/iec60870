@@ -15,7 +15,7 @@ import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import java.io.IOException;

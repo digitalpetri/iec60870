@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.transport.tcp;
+package com.digitalpetri.iec60870.tcp;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
@@ -6,40 +6,33 @@ import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.cs101.Cs101Binding;
-import com.digitalpetri.iec60870.cs101.LinkSettings;
+import com.digitalpetri.iec60870.cs104.ApciSettings;
+import com.digitalpetri.iec60870.cs104.Cs104Binding;
+import com.digitalpetri.iec60870.transport.tcp.NettyClientTransport;
+import com.digitalpetri.iec60870.transport.tcp.NettyClientTransportConfig;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
 import java.net.SocketAddress;
-import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 
 /**
- * User-facing entry point that builds a TCP/TLS {@link Iec60870Client} that speaks IEC 60870-5-101
- * (FT1.2) over the connection.
+ * User-facing entry point that builds a TCP/TLS {@link Iec60870Client}.
  *
- * <p>This is the optional 101-over-TCP peer of {@code TcpIec104Client}: it reuses the same Netty
- * octet transport but installs an {@link Ft12FrameDecoder} in place of the 104 frame decoder, so
- * the link layer on the wire is the FT1.2 link layer assembled by {@link Cs101Binding} rather than
- * the 104 APCI session. Transport wiring (host, port, TLS, event loops) lives here because it must
- * not appear in core; {@link Builder#build()} constructs a {@link NettyClientTransport} plus a
- * {@link DefaultIec60870Client} and returns the core {@link Iec60870Client} interface, whose every
- * protocol method matches the 104 client exactly.
- *
- * <p>The builder holds no link-layer wiring itself: it delegates the full FT1.2 link-engine plus
- * framing assembly to {@link Cs101Binding}, so no {@code Ft12LinkLayer} is constructed and no
- * framer is invoked here.
+ * <p>This is the transport-module factory the proposed API sketches as {@code
+ * Iec60870Client.builder().remote(host, port).tls(..)}. Because transport wiring (host, port, TLS,
+ * event loops) must not appear in core, those knobs live here; {@link Builder#build()} constructs a
+ * {@link NettyClientTransport} plus a {@link DefaultIec60870Client} and returns the core {@link
+ * Iec60870Client} interface, whose every protocol method matches the proposed API exactly.
  *
  * <h2>Example</h2>
  *
  * <pre>{@code
- * try (Iec60870Client client = TcpIec101Client.builder()
+ * try (Iec60870Client client = TcpIec104Client.builder()
  *         .host("127.0.0.1")
  *         .port(2404)
- *         .linkSettings(LinkSettings.balanced().linkAddress(1).build())
  *         .startDataTransferOnConnect(true)
  *         .build()) {
  *     client.connect();
@@ -50,16 +43,14 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>For a TLS connection, supply {@link Builder#tls(TlsOptions)} built from a configured {@link
  * javax.net.ssl.SSLContext}; {@link Iec60870Client#connect()} then completes only after the TLS
- * handshake succeeds. When {@link Builder#startDataTransferOnConnect(boolean) start-on-connect} is
- * enabled (the default), {@code connect()} also drives the FT1.2 link-reset bring-up before
- * completing.
+ * handshake succeeds.
  */
-public final class TcpIec101Client {
+public final class TcpIec104Client {
 
-  private TcpIec101Client() {}
+  private TcpIec104Client() {}
 
   /**
-   * Returns a new builder seeded with typical IEC 60870-5-101 defaults.
+   * Returns a new builder seeded with the standard IEC 60870-5-104 defaults.
    *
    * @return a new builder.
    */
@@ -68,22 +59,20 @@ public final class TcpIec101Client {
   }
 
   /**
-   * A builder for a TCP/TLS-backed IEC 60870-5-101 {@link Iec60870Client}.
+   * A builder for a TCP/TLS-backed {@link Iec60870Client}.
    *
-   * <p>Transport knobs ({@code host}, {@code port}, {@code localBind}, {@code connectTimeout},
-   * {@code tls}, {@code eventLoopGroup}, {@code bootstrapCustomizer}) configure the Netty
-   * transport; protocol knobs ({@code profile}, {@code linkSettings}, {@code originatorAddress},
-   * {@code startDataTransferOnConnect}, {@code callbackExecutor}) configure the core client. The
-   * builder is not thread-safe.
+   * <p>Transport knobs ({@code host}, {@code port}, {@code localBind}, {@code tls}, {@code
+   * eventLoopGroup}, {@code bootstrapCustomizer}) configure the Netty transport; protocol knobs
+   * ({@code profile}, {@code apci}, {@code originatorAddress}, {@code startDataTransferOnConnect},
+   * {@code callbackExecutor}) configure the core client. The builder is not thread-safe.
    */
   public static final class Builder {
 
     private String host = "localhost";
     private int port = 2404;
     private @Nullable SocketAddress localBind;
-    private Duration connectTimeout = Duration.ofSeconds(30);
-    private ProtocolProfile profile = ProtocolProfile.iec101Default();
-    private LinkSettings linkSettings = LinkSettings.balanced().build();
+    private ProtocolProfile profile = ProtocolProfile.iec104Default();
+    private ApciSettings apci = ApciSettings.defaults();
     private @Nullable TlsOptions tls;
     private boolean startDataTransferOnConnect = true;
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
@@ -105,8 +94,7 @@ public final class TcpIec101Client {
     }
 
     /**
-     * Sets the remote TCP port. Defaults to {@code 2404}, the registered IEC 60870-5-104 port;
-     * 101-over-TCP has no registered port, so set this to match the peer.
+     * Sets the remote TCP port. Defaults to {@code 2404}, the registered IEC 104 port.
      *
      * @param port the remote port.
      * @return this builder.
@@ -128,25 +116,7 @@ public final class TcpIec101Client {
     }
 
     /**
-     * Sets the TCP connection-establishment timeout applied to each connect attempt. Defaults to
-     * {@code 30} seconds. A {@link #bootstrapCustomizer(Consumer) bootstrap customizer} runs after
-     * this option is applied and may override it.
-     *
-     * @param connectTimeout the connect timeout; must be positive.
-     * @return this builder.
-     */
-    public Builder connectTimeout(Duration connectTimeout) {
-      this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
-      return this;
-    }
-
-    /**
-     * Sets the wire field widths. Defaults to {@link ProtocolProfile#iec101Default()}, the IEC
-     * 60870-5-101 profile {@code (1, 1, 2, 255)}.
-     *
-     * <p>IEC 60870-5-101 links commonly use narrower fields than 104 (a 1-octet cause of
-     * transmission, a 1-octet common address, and a 2-octet information-object address); set a
-     * matching {@link ProtocolProfile} when the peer expects different widths.
+     * Sets the wire field widths. Defaults to {@link ProtocolProfile#iec104Default()}.
      *
      * @param profile the protocol profile.
      * @return this builder.
@@ -157,17 +127,17 @@ public final class TcpIec101Client {
     }
 
     /**
-     * Sets the FT1.2 link parameters. Defaults to {@link LinkSettings#balanced()
-     * LinkSettings.balanced().build()}.
+     * Sets the APCI flow-control parameters. Defaults to {@link ApciSettings#defaults()}.
      *
-     * <p>The link-address width carried by these settings sizes the FT1.2 frames the transport
-     * deframes, so it is propagated to the transport's frame decoder automatically.
+     * <p>{@code t0} is applied as the TCP connection-establishment timeout for each connect
+     * attempt; a {@link #bootstrapCustomizer(Consumer) bootstrap customizer} runs afterward and may
+     * override it.
      *
-     * @param linkSettings the link settings.
+     * @param apci the APCI settings.
      * @return this builder.
      */
-    public Builder linkSettings(LinkSettings linkSettings) {
-      this.linkSettings = Objects.requireNonNull(linkSettings, "linkSettings");
+    public Builder apci(ApciSettings apci) {
+      this.apci = Objects.requireNonNull(apci, "apci");
       return this;
     }
 
@@ -186,8 +156,8 @@ public final class TcpIec101Client {
     }
 
     /**
-     * Sets whether {@link Iec60870Client#connect()} also starts data transfer by driving the FT1.2
-     * link-reset bring-up. Defaults to {@code true}.
+     * Sets whether {@link Iec60870Client#connect()} also starts data transfer. Defaults to {@code
+     * true}.
      *
      * @param startDataTransferOnConnect whether to start data transfer on connect.
      * @return this builder.
@@ -239,7 +209,7 @@ public final class TcpIec101Client {
      *
      * <p>The customizer runs after the transport applies its own channel options, so it can
      * override them — including the {@code CONNECT_TIMEOUT_MILLIS} derived from {@link
-     * #connectTimeout(Duration)}.
+     * #apci(ApciSettings) t0}.
      *
      * @param bootstrapCustomizer the bootstrap customizer.
      * @return this builder.
@@ -255,18 +225,13 @@ public final class TcpIec101Client {
      * @return the configured client.
      */
     public Iec60870Client build() {
-      // Install the FT1.2 frame decoder in place of the 104 default; the link-address width sizes
-      // its fixed-length frames. This is the only transport difference from the 104 client.
-      int linkAddressLength = linkSettings.linkAddressLength();
-
       NettyClientTransportConfig transportConfig =
           NettyClientTransportConfig.builder(host, port)
               .localBind(localBind)
-              .connectTimeout(connectTimeout)
+              .connectTimeout(apci.t0())
               .tlsOptions(tls)
               .sharedEventLoopGroup(eventLoopGroup)
               .bootstrapCustomizer(bootstrapCustomizer)
-              .frameDecoderFactory(() -> new Ft12FrameDecoder(linkAddressLength))
               .build();
 
       NettyClientTransport transport = new NettyClientTransport(transportConfig);
@@ -274,16 +239,16 @@ public final class TcpIec101Client {
       ClientConfig.Builder clientConfigBuilder =
           ClientConfig.builder()
               .protocolProfile(profile)
-              .sessionSettings(linkSettings)
+              .sessionSettings(apci)
               .originatorAddress(originatorAddress)
               .startDataTransferOnConnect(startDataTransferOnConnect);
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
 
-      // The builder is the sole 101-over-TCP assembly point but holds no Ft12Frame<->octet wiring
-      // itself: it delegates the full Ft12LinkLayer + framing assembly to Cs101Binding.
-      Cs101Binding binding = new Cs101Binding(linkSettings, profile);
+      // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
+      // delegates the full ApciSession + framing assembly to Cs104Binding (see its Javadoc).
+      Cs104Binding binding = new Cs104Binding(apci, profile);
 
       return new DefaultIec60870Client(
           transport,

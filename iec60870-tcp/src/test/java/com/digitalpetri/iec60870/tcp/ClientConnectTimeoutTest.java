@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.transport.tcp;
+package com.digitalpetri.iec60870.tcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;

@@ -39,19 +39,19 @@
     </dependency>
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-transport-tcp</artifactId>
+      <artifactId>iec60870-tcp</artifactId>
       <version>${project.version}</version>
     </dependency>
     <!--
-      The serial transport + CS101 link layer back the IEC 60870-5-101 BALANCED interop test
-      (Cs101BalancedInteropTest), mirroring how transport-tcp backs the CS104 interop tests. They
-      are only needed on the test classpath, so they are scoped to test. transport-serial pulls in
-      cs101 (and jSerialComm) transitively; cs101 is declared explicitly because the test imports
-      LinkSettings directly.
+      The serial assembly module + CS101 link layer back the IEC 60870-5-101 BALANCED interop test
+      (Cs101BalancedInteropTest), mirroring how iec60870-tcp backs the CS104 interop tests. They
+      are only needed on the test classpath, so they are scoped to test. iec60870-serial pulls in
+      cs101 (and the serial transport) transitively; cs101 is declared explicitly because the test
+      imports LinkSettings directly.
     -->
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
-      <artifactId>iec60870-transport-serial</artifactId>
+      <artifactId>iec60870-serial</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>

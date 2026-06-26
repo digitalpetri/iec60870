@@ -28,15 +28,23 @@ published to Maven Central (see [Dependency](#dependency)).
 - `iec60870-application`: the high-level layer with **no** Netty. Holds the `Iec60870Client` /
   `Iec60870Server` facades and the command/station/point/catalog model; depends on `iec60870-core`
   only and speaks purely in terms of `Asdu` + the `Session` SPI.
-- `iec60870-transport-tcp`: Netty-backed TCP/TLS transport implementation, plus the user-facing
-  `TcpIec104Client` / `TcpIec104Server` builders. The builders are the sole 104 assembly point: they
-  construct the Netty transport, delegate the session/framing wiring to `Cs104Binding` (in `cs104`),
-  and return the high-level facade. It also hosts the optional `TcpIec101Client` / `TcpIec101Server`
-  builders, which carry the FT1.2 link layer (in `cs101`) over the same Netty transport.
-- `iec60870-transport-serial`: jSerialComm-backed serial transport implementation, plus the
-  user-facing `SerialIec101Client` / `SerialIec101Server` builders. The builders are the sole 101
-  assembly point: they construct the serial transport, delegate the link/framing wiring to
-  `Cs101Binding` (in `cs101`), and return the high-level facade.
+- `iec60870-transport-tcp`: the Netty-backed TCP/TLS **octet transport only**. Holds
+  `NettyClientTransport` / `NettyServerTransport`, the pipeline, and the frame decoders; it is
+  core-only (no `cs104`/`cs101`/`application`) and is not an assembly point.
+- `iec60870-transport-serial`: the jSerialComm-backed serial **octet transport only**. Holds
+  `SerialClientTransport` / `SerialServerTransport`, the FT1.2 deframer, and RS-485 options; it is
+  core-only (no `cs101`/`application`) and is not an assembly point.
+- `iec60870-tcp`: the user-facing TCP assembly module (package `com.digitalpetri.iec60870.tcp`).
+  Holds the `TcpIec104Client` / `TcpIec104Server` builders and the optional `TcpIec101Client` /
+  `TcpIec101Server` (101-over-TCP) builders. This is the sole TCP assembly point: each builder
+  constructs the Netty transport, delegates the session/framing wiring to `Cs104Binding` /
+  `Cs101Binding`, and returns the high-level facade. Converges `transport-tcp` + `cs104` + `cs101` +
+  `application`.
+- `iec60870-serial`: the user-facing serial assembly module (package
+  `com.digitalpetri.iec60870.serial`). Holds the `SerialIec101Client` / `SerialIec101Server`
+  builders. This is the sole serial assembly point: each builder constructs the serial transport,
+  delegates the link/framing wiring to `Cs101Binding`, and returns the high-level facade. Converges
+  `transport-serial` + `cs101` + `application`.
 - `iec60870-examples`: runnable client, server, raw-ASDU, and TLS examples.
 - `iec60870-tests`: cross-module in-JVM client↔server integration tests (including TLS).
 - `iec60870-interop`: interoperability tests that drive the library against `lib60870-C` peer images
@@ -45,26 +53,29 @@ published to Maven Central (see [Dependency](#dependency)).
 
 ## Dependency
 
-Declare both modules. `iec60870-core` holds the protocol model and the SPIs (and stays free of Netty
-runtime types); the `Iec60870Client` / `Iec60870Server` facades live in `iec60870-application`, which
-`iec60870-transport-tcp` pulls in transitively. `iec60870-transport-tcp` adds the Netty-backed TCP/TLS
-transport and the `TcpIec104Client` / `TcpIec104Server` builders you construct from. The transport
-module depends on the core module transitively, but your code uses types from both, so declare both
-directly.
+Depend on the assembly module for your transport — `iec60870-tcp` for IEC 60870-5-104 (and the
+optional 101-over-TCP path) or `iec60870-serial` for IEC 60870-5-101 over a serial link. Each
+assembly module transitively pulls in everything you need: the core protocol model and SPIs
+(`iec60870-core`), the link layer(s), the octet transport, and the `Iec60870Client` /
+`Iec60870Server` application facade. It is the only coordinate you declare; the types you use from
+`com.digitalpetri.iec60870.*` arrive transitively.
 
 **Pre-release.** This is `0.1.0-SNAPSHOT`; it is not yet published to Maven Central and the API may
 change. Build and install it locally with `mise exec -- mvn install` (see [Building](#building)),
-then depend on it as:
+then depend on the assembly module for your transport:
 
 ```xml
+<!-- TCP: IEC 60870-5-104, plus the optional 101-over-TCP builders -->
 <dependency>
   <groupId>com.digitalpetri.iec60870</groupId>
-  <artifactId>iec60870-core</artifactId>
+  <artifactId>iec60870-tcp</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
+
+<!-- or, for IEC 60870-5-101 over a serial link -->
 <dependency>
   <groupId>com.digitalpetri.iec60870</groupId>
-  <artifactId>iec60870-transport-tcp</artifactId>
+  <artifactId>iec60870-serial</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
@@ -72,8 +83,11 @@ then depend on it as:
 Gradle (Kotlin DSL):
 
 ```kotlin
-implementation("com.digitalpetri.iec60870:iec60870-core:0.1.0-SNAPSHOT")
-implementation("com.digitalpetri.iec60870:iec60870-transport-tcp:0.1.0-SNAPSHOT")
+// TCP: IEC 60870-5-104, plus the optional 101-over-TCP builders
+implementation("com.digitalpetri.iec60870:iec60870-tcp:0.1.0-SNAPSHOT")
+
+// or, for IEC 60870-5-101 over a serial link
+implementation("com.digitalpetri.iec60870:iec60870-serial:0.1.0-SNAPSHOT")
 ```
 
 ## Usage
@@ -169,7 +183,7 @@ try (Iec60870Client client = SerialIec101Client.builder()
 drives the FT1.2 balanced link-reset bring-up before completing. An unbalanced (master / slave)
 multi-drop master uses `LinkSettings.unbalanced()` with a `PollConfig` (its `slaveAddresses` and
 `pollInterval`) and the matching `SerialIec101Server` secondary; the optional `TcpIec101Client` /
-`TcpIec101Server` builders (in `iec60870-transport-tcp`) carry the same FT1.2 link layer over a
+`TcpIec101Server` builders (in `iec60870-tcp`) carry the same FT1.2 link layer over a
 TCP/TLS connection.
 
 ## Documentation

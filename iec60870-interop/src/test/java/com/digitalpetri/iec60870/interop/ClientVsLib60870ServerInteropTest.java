@@ -40,7 +40,7 @@ import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
-import com.digitalpetri.iec60870.transport.tcp.TcpIec104Client;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;

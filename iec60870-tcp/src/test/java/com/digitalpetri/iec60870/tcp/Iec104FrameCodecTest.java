@@ -1,4 +1,4 @@
-package com.digitalpetri.iec60870.transport.tcp;
+package com.digitalpetri.iec60870.tcp;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,6 +19,7 @@ import com.digitalpetri.iec60870.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec60870.cs104.Apdu;
 import com.digitalpetri.iec60870.cs104.ControlField;
 import com.digitalpetri.iec60870.cs104.UFunction;
+import com.digitalpetri.iec60870.transport.tcp.Iec104FrameDecoder;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
