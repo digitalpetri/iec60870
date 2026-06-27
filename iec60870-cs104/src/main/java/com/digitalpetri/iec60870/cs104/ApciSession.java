@@ -533,8 +533,14 @@ public final class ApciSession implements Session {
     switch (function) {
       case TESTFR_ACT -> sendUFrame(UFunction.TESTFR_CON);
       case TESTFR_CON -> {
-        testFrameOutstanding = false;
-        cancelT1();
+        // Only act on a confirmation that matches an outstanding TESTFR act; an unsolicited
+        // TESTFR con must not touch t1, which may be guarding other outstanding APDUs.
+        if (testFrameOutstanding) {
+          testFrameOutstanding = false;
+          cancelT1IfIdle();
+        } else {
+          LOGGER.debug("ignoring unsolicited TESTFR con");
+        }
       }
       case STARTDT_ACT -> handleStartActivation();
       case STOPDT_ACT -> handleStopActivation();
@@ -575,20 +581,24 @@ public final class ApciSession implements Session {
       LOGGER.debug("ignoring STARTDT con received by a SERVER session");
       return;
     }
+    // Only act on a confirmation that matches an outstanding STARTDT act; an unsolicited STARTDT
+    // con must not cancel t1, which may still be guarding outstanding I-frames.
+    CompletableFuture<Void> future = pendingStart;
+    if (future == null) {
+      LOGGER.debug("ignoring unsolicited STARTDT con");
+      return;
+    }
+    pendingStart = null;
+    cancelT1IfIdle();
     boolean changed = !dataTransferStarted;
     dataTransferStarted = true;
-    CompletableFuture<Void> future = pendingStart;
-    pendingStart = null;
-    cancelT1();
     if (changed) {
       events.onDataTransferStateChanged(true);
       flushSendQueue();
     }
-    if (future != null) {
-      // null is the only valid completion value for a CompletableFuture<Void>.
-      //noinspection DataFlowIssue
-      future.complete(null);
-    }
+    // null is the only valid completion value for a CompletableFuture<Void>.
+    //noinspection DataFlowIssue
+    future.complete(null);
   }
 
   private void handleStopConfirmation() {
@@ -596,19 +606,23 @@ public final class ApciSession implements Session {
       LOGGER.debug("ignoring STOPDT con received by a SERVER session");
       return;
     }
+    // Only act on a confirmation that matches an outstanding STOPDT act; an unsolicited STOPDT con
+    // must not cancel t1, which may still be guarding outstanding I-frames or a STARTDT act.
+    CompletableFuture<Void> future = pendingStop;
+    if (future == null) {
+      LOGGER.debug("ignoring unsolicited STOPDT con");
+      return;
+    }
+    pendingStop = null;
+    cancelT1IfIdle();
     boolean changed = dataTransferStarted;
     dataTransferStarted = false;
-    CompletableFuture<Void> future = pendingStop;
-    pendingStop = null;
-    cancelT1();
     if (changed) {
       events.onDataTransferStateChanged(false);
     }
-    if (future != null) {
-      // null is the only valid completion value for a CompletableFuture<Void>.
-      //noinspection DataFlowIssue
-      future.complete(null);
-    }
+    // null is the only valid completion value for a CompletableFuture<Void>.
+    //noinspection DataFlowIssue
+    future.complete(null);
   }
 
   /**
@@ -635,10 +649,9 @@ public final class ApciSession implements Session {
     }
     ackSequenceNumber = receivedNr;
     if (ackSequenceNumber == sendSequenceNumber) {
-      // Nothing outstanding; only keep t1 running if a test frame is awaiting its confirmation.
-      if (!testFrameOutstanding) {
-        cancelT1();
-      }
+      // All sent I-frames acknowledged; cancel t1 only if no other sent APDU (a TESTFR/STARTDT/
+      // STOPDT act) is still awaiting its confirmation.
+      cancelT1IfIdle();
     } else {
       armT1();
     }
@@ -698,6 +711,31 @@ public final class ApciSession implements Session {
     cancelT1();
     int generation = ++t1Generation;
     t1Future = schedule(() -> onT1Expired(generation), t1Millis);
+  }
+
+  /**
+   * Reports whether any sent APDU is still awaiting its acknowledgement and therefore still needs
+   * the single shared {@code t1} timer running. That timer guards every outstanding obligation at
+   * once: sent I-frames not yet confirmed by an inbound N(R), a {@code TESTFR act} awaiting its
+   * {@code TESTFR con}, and a {@code STARTDT}/{@code STOPDT act} awaiting its confirmation.
+   */
+  private boolean awaitingAcknowledgement() {
+    return ackSequenceNumber != sendSequenceNumber
+        || testFrameOutstanding
+        || pendingStart != null
+        || pendingStop != null;
+  }
+
+  /**
+   * Cancels {@code t1} only when nothing it guards remains outstanding. A confirmation that clears
+   * one obligation must not stop the timer while another obligation is still pending; otherwise an
+   * unsolicited or mismatched U-frame confirmation could suppress a timeout that should fail a
+   * STARTDT/STOPDT activation or close a session whose I-frames were never acknowledged.
+   */
+  private void cancelT1IfIdle() {
+    if (!awaitingAcknowledgement()) {
+      cancelT1();
+    }
   }
 
   private void cancelT1() {

@@ -257,6 +257,81 @@ class ApciSessionTest {
     assertEquals(UFunction.TESTFR_CON, output.uFrames().get(0).function());
   }
 
+  // --- Unsolicited / mismatched U-frame confirmations must not suppress t1 ---------------------
+
+  @Test
+  void unsolicitedTestFrameConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // An unacknowledged I-frame arms the shared t1 timer.
+    session.sendAsdu(asdu(1));
+
+    // A peer injects a TESTFR con with no TESTFR act outstanding; it must not cancel t1.
+    session.onApdu(uFrame(UFunction.TESTFR_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited TESTFR con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void unsolicitedStartConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+
+    // No STARTDT act was sent, so this STARTDT con is unsolicited and must not cancel t1.
+    session.onApdu(uFrame(UFunction.STARTDT_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited STARTDT con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void unsolicitedStopConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+
+    // No STOPDT act was sent, so this STOPDT con is unsolicited and must not cancel t1.
+    session.onApdu(uFrame(UFunction.STOPDT_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited STOPDT con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void iFrameAckDoesNotSuppressPendingStartTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // A STARTDT act is outstanding (awaiting STARTDT con) and shares the single t1 with I-frames.
+    CompletionStage<Void> start = session.startDataTransfer();
+    session.sendAsdu(asdu(1));
+
+    // Acknowledging the I-frame clears the I-frame obligation but must leave t1 armed for the
+    // still-outstanding STARTDT con.
+    session.onApdu(sFrame(1));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an I-frame acknowledgement must not suppress the STARTDT confirmation timeout");
+    assertTrue(toFuture(start).isCompletedExceptionally());
+  }
+
   // --- STARTDT / STOPDT handshakes -------------------------------------------------------------
 
   @Test
