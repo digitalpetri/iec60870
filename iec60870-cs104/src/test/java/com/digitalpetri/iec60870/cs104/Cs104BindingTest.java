@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -64,6 +65,20 @@ class Cs104BindingTest {
         List.of(object));
   }
 
+  /**
+   * Encodes {@code apdu} to a whole-frame {@link ByteBuf} and feeds it through the listener, then
+   * releases it — the binding's {@code onFrame} does not own or release the buffer.
+   */
+  private static void feedFrame(@Nullable TransportListener listener, Apdu apdu) {
+    assertNotNull(listener);
+    ByteBuf frame = ApduFramer.encode(apdu, PROFILE, ALLOC);
+    try {
+      listener.onFrame(frame);
+    } finally {
+      frame.release();
+    }
+  }
+
   @Test
   void clientBindingFramesOutboundAsduToTransport() {
     RecordingClientTransport transport = new RecordingClientTransport();
@@ -93,17 +108,15 @@ class Cs104BindingTest {
     Session session = binding.bindClient(transport, events, new ManualScheduler());
     session.onConnected();
 
+    // Drive the STARTDT handshake so data transfer is started before any inbound I-frame: an
+    // I-frame received while data transfer is stopped self-closes the session without delivery.
+    session.startDataTransfer();
+    feedFrame(transport.listener(), new Apdu(new ControlField.TypeU(UFunction.STARTDT_CON), null));
+
     // Feed an inbound I-frame as a whole frame through the transport listener; the binding deframes
     // it and the session delivers the ASDU via Events.onAsdu.
     Asdu asdu = sampleAsdu();
-    Apdu inbound = new Apdu(new ControlField.TypeI(0, 0), asdu);
-    ByteBuf frame = ApduFramer.encode(inbound, PROFILE, ALLOC);
-    try {
-      assertNotNull(transport.listener());
-      transport.listener().onFrame(frame);
-    } finally {
-      frame.release();
-    }
+    feedFrame(transport.listener(), new Apdu(new ControlField.TypeI(0, 0), asdu));
 
     assertEquals(1, events.asdus().size());
     assertEquals(asdu, events.asdus().get(0));

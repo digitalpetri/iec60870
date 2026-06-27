@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.cs104;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
+import com.digitalpetri.iec60870.ProtocolStateException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.asdu.Asdu;
@@ -246,7 +247,9 @@ public final class ApciSession implements Session {
   /**
    * Handles a single inbound APDU according to its I, S, or U format and this session's role.
    *
-   * <p>I-format APDUs whose send sequence number does not match the expected receive state close
+   * <p>An I-format APDU received while data transfer is stopped (before {@code STARTDT} or after
+   * {@code STOPDT}) closes the session with a {@link ProtocolStateException} without delivering its
+   * ASDU. I-format APDUs whose send sequence number does not match the expected receive state close
    * the session with a {@link SequenceNumberException}. Acknowledgements that do not correspond to
    * outstanding sent frames likewise close the session. Otherwise the frame is processed, any
    * acknowledged sent frames are released (which may open the window and flush queued I-frames),
@@ -489,6 +492,17 @@ public final class ApciSession implements Session {
   // --- Inbound frame handling (lock held) -----------------------------------------------------
 
   private void onIFrame(ControlField.TypeI i, Asdu asdu) {
+    if (!dataTransferStarted) {
+      // An I-frame carries user data, which §5.3 permits only while data transfer is started: the
+      // controlling station sends it after STARTDT con, the controlled station after it has set the
+      // started flag. A frame received here arrived before STARTDT or after STOPDT and is bypassing
+      // the data-transfer gate; deliver nothing and close the connection rather than dispatch the
+      // ASDU into application handlers.
+      closeWithError(
+          new ProtocolStateException("received an I-frame while data transfer was stopped"));
+      return;
+    }
+
     int expected = receiveSequenceNumber;
     if (i.sendSequenceNumber() != expected) {
       closeWithError(
