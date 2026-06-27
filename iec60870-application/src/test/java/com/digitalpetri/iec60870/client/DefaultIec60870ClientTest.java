@@ -465,6 +465,29 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
+  void selectBeforeOperateRejectedForBitstringCommand() {
+    // C_BO carries no select/execute qualifier. Under select-before-operate the "select" phase
+    // would encode as a flagless activation indistinguishable from execute, so the station would
+    // operate the output during both the select and the execute phase. The service must reject the
+    // combination rather than execute twice.
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
+
+    // The rejection must reach the caller through the returned stage, not as a synchronous throw
+    // that would bypass an .exceptionally handler on the documented async entry point.
+    CompletionStage<CommandResult> stage =
+        client
+            .commands()
+            .sendAsync(Command.bitstring(point, 0xDEADBEEF), CommandMode.selectBeforeOperate());
+    var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+    assertInstanceOf(IllegalArgumentException.class, ex.getCause());
+
+    // No bit-string activation reached the wire and no command was left pending.
+    assertTrue(session().sentAsdus().isEmpty(), "no bit-string activation may be sent under SBO");
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
   void monitorAsduPublishesPointUpdatedAndAsduReceived() {
     client.connect();
 

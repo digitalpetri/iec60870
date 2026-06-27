@@ -9,6 +9,10 @@ package com.digitalpetri.iec60870.client;
  * execute activation (S/E = 0). Use select-before-operate for safety-critical points where the
  * station is expected to reserve the output before it is operated.
  *
+ * <p>{@link #selectBeforeOperate()} is not applicable to bit-string commands (C_BO): they carry no
+ * select/execute qualifier, so the {@link CommandService} rejects that combination rather than
+ * issuing two flagless activations the station would treat as two executes.
+ *
  * <pre>{@code
  * CommandResult r = client.commands().send(command, CommandMode.selectBeforeOperate());
  * }</pre>

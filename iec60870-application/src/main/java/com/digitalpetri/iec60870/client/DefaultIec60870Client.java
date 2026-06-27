@@ -1228,8 +1228,17 @@ public final class DefaultIec60870Client implements Iec60870Client {
      * @return a stage that completes with the confirming ASDU.
      */
     private CompletionStage<Asdu> sendActivation(Command command, boolean select) {
-      InformationObject object = CommandAsdus.toObject(command, select);
-      AsduType type = CommandAsdus.typeOf(command);
+      InformationObject object;
+      AsduType type;
+      try {
+        object = CommandAsdus.toObject(command, select);
+        type = CommandAsdus.typeOf(command);
+      } catch (RuntimeException e) {
+        // A malformed request (e.g. select-before-operate on a bit-string command, which C_BO
+        // cannot express) is surfaced through the returned stage rather than thrown on the caller's
+        // thread, so every command failure reaches a thenCompose/exceptionally handler uniformly.
+        return CompletableFuture.failedFuture(e);
+      }
       PointAddress target = command.target();
 
       Asdu asdu =

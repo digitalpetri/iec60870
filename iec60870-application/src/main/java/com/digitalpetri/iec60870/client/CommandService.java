@@ -37,6 +37,9 @@ public interface CommandService {
    * @param command the command to send.
    * @param mode the command procedure (direct-execute or select-before-operate).
    * @return the command result.
+   * @throws IllegalArgumentException if {@code mode} is {@link CommandMode#selectBeforeOperate()}
+   *     for a bit-string command; C_BO carries no select/execute qualifier, so
+   *     select-before-operate is not applicable to it.
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed while
    *     the command is in flight.
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
@@ -52,6 +55,9 @@ public interface CommandService {
    * @param mode the command procedure (direct-execute or select-before-operate).
    * @return a stage that completes with the command result, or completes exceptionally on timeout
    *     or disconnect.
+   * @throws IllegalArgumentException if {@code mode} is {@link CommandMode#selectBeforeOperate()}
+   *     for a bit-string command; C_BO carries no select/execute qualifier, so
+   *     select-before-operate is not applicable to it.
    */
   CompletionStage<CommandResult> sendAsync(Command command, CommandMode mode);
 
