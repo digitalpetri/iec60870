@@ -43,10 +43,15 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
@@ -883,5 +888,81 @@ class DefaultIec60870ServerTest {
     assertEquals(Cause.ACTIVATION_TERMINATION, sent.get(2).cause());
 
     server.close();
+  }
+
+  // --- inbound dispatch backlog is bounded -----------------------------------------------------
+
+  @Test
+  void inboundDispatchBacklogIsBounded() {
+    // The session delivers inbound ASDUs without waiting for the handler, so a peer that streams
+    // ASDUs faster than the callback executor drains them must not grow the per-connection dispatch
+    // chain (and retain its ASDUs and futures) without bound. With a small bound injected and a
+    // callback executor that holds tasks until drained, only the bounded number of ASDUs are
+    // chained
+    // and reach the handler; the rest are dropped.
+    int bound = 3;
+    int delivered = 10;
+    QueueingExecutor executor = new QueueingExecutor();
+    AtomicInteger handled = new AtomicInteger();
+
+    ServerHandler counting =
+        new ServerHandler() {
+          @Override
+          public CompletionStage<Boolean> onRawAsduAsync(ServerContext context, Asdu asdu) {
+            handled.incrementAndGet();
+            // Consume the ASDU so per-type dispatch is skipped; this test only counts arrivals.
+            return CompletableFuture.completedFuture(true);
+          }
+        };
+
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(counting)
+            .timeTagStyle(TimeTagStyle.NONE)
+            .callbackExecutor(executor)
+            .build();
+    DefaultIec60870Server server =
+        new DefaultIec60870Server(transport, config, sessionFactory(config), null, bound);
+    server.start();
+    FakeServerTransport.FakeConnection connection = transport.accept("flooder");
+
+    // Deliver a burst while the callback executor holds every task: each ASDU is chained
+    // synchronously under the session, so the bound is exercised entirely during the burst.
+    for (int i = 0; i < delivered; i++) {
+      connection.deliverAsdu(
+          control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress())));
+    }
+
+    // Drain the held tasks; handling each dispatch frees a slot and chains the next, so the whole
+    // retained backlog runs to completion.
+    executor.drain();
+
+    assertEquals(
+        bound,
+        handled.get(),
+        "only the bounded number of inbound ASDUs may reach the handler; the rest are dropped");
+
+    server.close();
+  }
+
+  /**
+   * An executor that holds submitted tasks until {@link #drain()} runs them in submission order.
+   */
+  private static final class QueueingExecutor implements Executor {
+
+    private final Deque<Runnable> tasks = new ArrayDeque<>();
+
+    @Override
+    public void execute(Runnable command) {
+      tasks.addLast(command);
+    }
+
+    /** Runs every queued task, including tasks queued while draining, in submission order. */
+    void drain() {
+      while (!tasks.isEmpty()) {
+        tasks.pollFirst().run();
+      }
+    }
   }
 }

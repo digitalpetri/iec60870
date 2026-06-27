@@ -85,8 +85,22 @@ public final class DefaultIec60870Server implements Iec60870Server {
   /** A fixed instant within the CP56Time2a 2000..2099 century, for synthesized timed echoes. */
   private static final Instant EPOCH_2000 = Instant.parse("2000-01-01T00:00:00Z");
 
+  /**
+   * Default upper bound on the number of inbound ASDUs a single connection will hold on its serial
+   * dispatch chain before further ASDUs are dropped.
+   *
+   * <p>Each accepted connection serializes handler dispatch by chaining every received ASDU onto a
+   * {@link CompletableFuture}, and the session delivers those ASDUs without waiting for the handler
+   * to run. Nothing in IEC 60870-5 bounds the volume a peer may send, so a peer that streams ASDUs
+   * faster than the handler (or the callback executor) drains them could otherwise retain unbounded
+   * ASDUs and dependent futures. This value sits far above any realistic dispatch backlog, so it
+   * bounds memory without affecting the legitimate request/confirm flow.
+   */
+  private static final int DEFAULT_MAX_INBOUND_QUEUE = 1024;
+
   private final ServerTransport transport;
   private final ServerConfig config;
+  private final int maxInboundQueue;
 
   /**
    * Builds a {@link Session} for each accepted connection, wired to the connection's {@link
@@ -148,10 +162,38 @@ public final class DefaultIec60870Server implements Iec60870Server {
       ServerConfig config,
       SessionFactory sessionFactory,
       @Nullable ScheduledExecutorService scheduler) {
+    this(transport, config, sessionFactory, scheduler, DEFAULT_MAX_INBOUND_QUEUE);
+  }
+
+  /**
+   * Creates a server with an injected scheduler and an explicit bound on the number of inbound
+   * ASDUs each connection holds on its serial dispatch chain before further ASDUs are dropped.
+   *
+   * <p>Package-private; the public constructors apply {@link #DEFAULT_MAX_INBOUND_QUEUE}. A test
+   * injects a small bound here to exercise the dispatch-depth limit without flooding a realistic
+   * volume of ASDUs.
+   *
+   * @param transport the transport that accepts controlling-station connections.
+   * @param config the server configuration.
+   * @param sessionFactory builds each connection's session wired to its {@link Session.Events}.
+   * @param scheduler the scheduler for per-connection timers, or {@code null} to create an internal
+   *     one.
+   * @param maxInboundQueue the maximum number of inbound ASDUs a connection holds on its dispatch
+   *     chain before further ASDUs are dropped.
+   * @throws NullPointerException if {@code transport}, {@code config}, or {@code sessionFactory} is
+   *     null.
+   */
+  DefaultIec60870Server(
+      ServerTransport transport,
+      ServerConfig config,
+      SessionFactory sessionFactory,
+      @Nullable ScheduledExecutorService scheduler,
+      int maxInboundQueue) {
 
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
     this.sessionFactory = Objects.requireNonNull(sessionFactory, "sessionFactory");
+    this.maxInboundQueue = maxInboundQueue;
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -386,6 +428,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
     // Serializes handler dispatch; each ASDU chains off the previous dispatch.
     private volatile CompletableFuture<Void> dispatchTail = CompletableFuture.completedFuture(null);
+
+    // Bounds the dispatch chain: the number of ASDUs received but not yet handled. The session
+    // delivers inbound ASDUs without waiting for the handler, so without this bound a peer could
+    // grow the chain (and retain the chained ASDUs and futures) without limit.
+    private final AtomicInteger inFlightDispatches = new AtomicInteger();
+
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     ServerConnection(ServerTransportConnection transportConnection) {
@@ -449,10 +497,23 @@ public final class DefaultIec60870Server implements Iec60870Server {
     // runs under it), so the non-atomic compound assignment is safe.
     @SuppressWarnings("NonAtomicOperationOnVolatileField")
     private void dispatch(Asdu asdu) {
+      // Bound the dispatch backlog: a peer that streams ASDUs faster than the handler drains them
+      // could otherwise retain unbounded ASDUs and futures on the chain. The session delivers this
+      // ASDU under its lock and must not be re-entered, so an over-limit ASDU is dropped here
+      // instead of being back-pressured. Decremented once the dispatch's handling completes.
+      if (inFlightDispatches.incrementAndGet() > maxInboundQueue) {
+        inFlightDispatches.decrementAndGet();
+        LOGGER.debug(
+            "dropping inbound ASDU from {}: dispatch backlog at limit ({})",
+            remoteAddress,
+            maxInboundQueue);
+        return;
+      }
       dispatchTail =
           dispatchTail
               .handle((ignored, ignoredError) -> null)
               .thenComposeAsync(ignored -> handle(asdu), callbackExecutor)
+              .whenComplete((ignored, ignoredError) -> inFlightDispatches.decrementAndGet())
               .exceptionally(
                   error -> {
                     LOGGER.debug("dispatch failed for {}", remoteAddress, error);
