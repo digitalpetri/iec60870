@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.NegativeConfirmationException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
@@ -119,6 +120,45 @@ class DefaultIec60870ClientTest {
     assertEquals(1, result.objects().size());
     assertEquals(1, result.pointValues().size());
     assertEquals((short) 42, result.pointValues().get(0).value().value());
+  }
+
+  @Test
+  void interrogationResponseAccumulationIsBounded() {
+    // A peer that confirms the interrogation but withholds ACT_TERM must not stream an unbounded
+    // number of objects into one pending result list. With a small cap injected, the interrogation
+    // fails once the accumulated objects exceed it instead of growing without bound.
+    int cap = 5;
+    FakeClientTransport boundedTransport = new FakeClientTransport();
+    AtomicReference<@Nullable FakeSession> boundedSession = new AtomicReference<>();
+    try (DefaultIec60870Client boundedClient =
+        new DefaultIec60870Client(
+            boundedTransport,
+            ClientConfig.builder().callbackExecutor(Runnable::run).build(),
+            clientSessionFactory(boundedSession),
+            null,
+            cap)) {
+      boundedClient.connect();
+
+      CompletionStage<InterrogationResult> stage = boundedClient.interrogateAsync(STATION);
+
+      FakeSession driven = requireNonNull(boundedSession.get());
+      // Positive activation confirmation opens the response collection.
+      driven.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+
+      // A within-cap batch is collected and the request stays pending (no ACT_TERM has arrived).
+      driven.deliverAsdu(interrogationResponse(cap));
+      assertFalse(stage.toCompletableFuture().isDone());
+      assertEquals(1, boundedClient.pendingRequestCount());
+
+      // One more object pushes the accumulation past the cap, failing the request rather than
+      // collecting without bound.
+      driven.deliverAsdu(interrogationResponse(1));
+
+      var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+      assertSame(Iec60870Exception.class, ex.getCause().getClass());
+      assertEquals(
+          0, boundedClient.pendingRequestCount(), "an over-cap interrogation must not leak");
+    }
   }
 
   @Test
@@ -1107,6 +1147,23 @@ class DefaultIec60870ClientTest {
         config.originatorAddress(),
         STATION,
         List.of(new MeasuredValueScaled(InformationObjectAddress.of(110), value, goodQds())));
+  }
+
+  private Asdu interrogationResponse(int objectCount) {
+    List<InformationObject> objects = new ArrayList<>();
+    for (int i = 0; i < objectCount; i++) {
+      objects.add(
+          new MeasuredValueScaled(InformationObjectAddress.of(200 + i), (short) i, goodQds()));
+    }
+    return new Asdu(
+        AsduType.M_ME_NB_1,
+        false,
+        Cause.INTERROGATED_BY_STATION,
+        false,
+        false,
+        config.originatorAddress(),
+        STATION,
+        objects);
   }
 
   private Asdu commandConfirmation(InformationObjectAddress ioa, boolean negative) {
