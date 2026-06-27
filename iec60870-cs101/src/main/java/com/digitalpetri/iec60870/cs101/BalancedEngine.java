@@ -690,8 +690,13 @@ final class BalancedEngine implements Ft12Engine {
 
   private void handleUserData(LinkControlField control, @Nullable Asdu asdu) {
     if (!secondaryReset) {
-      // User data before a link reset is irregular; accept it leniently but note the missing reset.
-      LOGGER.debug("received user data before a link reset; accepting leniently");
+      // User data before a link reset bypasses the link-reset handshake that gates data transfer.
+      // The secondary FCB sequence is not yet established, so the frame cannot be validated as a
+      // fresh send versus a replay. A not-reset secondary makes no reply (IEC 60870-5-101 6.2.1.2,
+      // Figure 9 not-reset self-loop): deliver nothing and stay silent, leaving the peer to reset
+      // the link before retrying.
+      LOGGER.debug("received user data before a link reset; dropping (link not reset)");
+      return;
     }
     boolean fcb = control.fcb();
     if (isRetransmission(fcb)) {
@@ -700,9 +705,9 @@ final class BalancedEngine implements Ft12Engine {
       output.send(Objects.requireNonNull(lastSecondaryResponse, "lastSecondaryResponse"));
       return;
     }
-    // A new frame: a changed FCB, or the very first FCV=1 frame before any response was cached (a
-    // peer that sent user data without a standard link reset, whose first FCB happens to equal the
-    // default expectedFcb). Deliver the ASDU, acknowledge, and advance the expected FCB.
+    // A new frame: a changed FCB, or the first FCV=1 frame after a reset before any response was
+    // cached (its FCB happens to equal the post-reset default expectedFcb). Deliver the ASDU,
+    // acknowledge, and advance the expected FCB.
     expectedFcb = fcb;
     Ft12Frame ack = makeAck();
     lastSecondaryResponse = ack;
@@ -721,8 +726,9 @@ final class BalancedEngine implements Ft12Engine {
    * Reports whether an inbound {@code FCV=1} primary frame is a retransmission whose
    * acknowledgement the peer never heard: its FCB is unchanged from the last accepted frame
    * <em>and</em> a prior response is actually cached to replay. The first {@code FCV=1} frame after
-   * a reset — or before any reset, from a peer that never reset the link — has no cached response,
-   * so it reads as a new frame and its ASDU is delivered rather than silently dropped.
+   * a reset has no cached response, so it reads as a new frame and its ASDU is delivered rather
+   * than silently dropped. (User data received before any link reset never reaches this check; it
+   * is rejected by {@link #handleUserData(LinkControlField, Asdu)}.)
    *
    * @param fcb the frame count bit of the inbound primary frame.
    * @return {@code true} if the frame should be treated as a retransmission and replayed.
