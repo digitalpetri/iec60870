@@ -385,6 +385,64 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
+  void emptyCommandConfirmationDoesNotCompleteCommand() {
+    // A command activation confirmation echoes the command's information object, including its IOA.
+    // A confirmation carrying zero information objects is unbound and must not correlate to a
+    // pending command: accepting it would let a same-family, same-station peer complete the wrong
+    // command. The request must stay pending until a confirmation that names the addressed object
+    // arrives.
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
+
+    CompletionStage<CommandResult> stage =
+        client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
+
+    // Same command family (C_SC_NA_1), same station, positive ACT_CON, but no information object.
+    session().deliverAsdu(emptyCommandConfirmation(false));
+    assertFalse(
+        stage.toCompletableFuture().isDone(),
+        "an empty command confirmation must not complete a pending command");
+    assertEquals(1, client.pendingRequestCount());
+
+    // A confirmation that names the addressed object completes the command normally.
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    assertTrue(stage.toCompletableFuture().join().positive());
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
+  void emptyCommandConfirmationDoesNotAdvanceSelectBeforeOperate() {
+    // The select-before-operate sequence sends EXECUTE only after a positive SELECT confirmation.
+    // An empty (unbound) confirmation must not stand in for the SELECT confirmation and trigger the
+    // EXECUTE phase, so no execute activation may reach the wire until the addressed object is
+    // named.
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
+
+    CompletionStage<CommandResult> stage =
+        client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
+
+    // Only the SELECT activation has been sent so far.
+    assertEquals(1, session().sentAsdus().size(), "only the select phase was sent");
+
+    // An empty confirmation must not be mistaken for the select confirmation.
+    session().deliverAsdu(emptyCommandConfirmation(false));
+    assertFalse(stage.toCompletableFuture().isDone());
+    assertEquals(
+        1,
+        session().sentAsdus().size(),
+        "an empty confirmation must not trigger the execute phase");
+    assertEquals(1, client.pendingRequestCount());
+
+    // The real select confirmation advances to the execute phase; the execute confirmation
+    // completes.
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    assertEquals(2, session().sentAsdus().size(), "the execute phase is sent after a real confirm");
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    assertTrue(stage.toCompletableFuture().join().positive());
+  }
+
+  @Test
   void selectBeforeOperateSendsSelectThenExecute() {
     client.connect();
     PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(5000));
@@ -807,6 +865,35 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
+  void clockSyncHeaderOnlyConfirmationCompletes() {
+    client.connect();
+    Instant time = Instant.parse("2024-06-01T12:00:00Z");
+
+    CompletionStage<Void> stage = client.synchronizeClockAsync(STATION, time);
+    assertFalse(stage.toCompletableFuture().isDone());
+
+    // Some peers confirm C_CS_NA_1 with a header-only ACT_CON (no echoed time object). Clock sync
+    // is
+    // a single station-wide operation at IOA 0 with no select/execute phases, so such a
+    // confirmation
+    // must still complete the request rather than time out.
+    Asdu headerOnly =
+        new Asdu(
+            AsduType.C_CS_NA_1,
+            false,
+            Cause.ACTIVATION_CONFIRMATION,
+            false,
+            false,
+            config.originatorAddress(),
+            STATION,
+            List.of());
+    session().deliverAsdu(headerOnly);
+
+    stage.toCompletableFuture().join();
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
   void readNegativeConfirmationSurfacesNegativeConfirmation() {
     client.connect();
     PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
@@ -1176,6 +1263,18 @@ class DefaultIec60870ClientTest {
         config.originatorAddress(),
         STATION,
         List.of(new SingleCommand(ioa, true, new QualifierOfCommand(0, false))));
+  }
+
+  private Asdu emptyCommandConfirmation(boolean negative) {
+    return new Asdu(
+        AsduType.C_SC_NA_1,
+        false,
+        Cause.ACTIVATION_CONFIRMATION,
+        negative,
+        false,
+        config.originatorAddress(),
+        STATION,
+        List.of());
   }
 
   private Asdu clockSyncConfirmation(Instant time, boolean negative) {

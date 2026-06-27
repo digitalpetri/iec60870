@@ -387,8 +387,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
             List.of(command));
 
     CompletableFuture<Asdu> confirmation = new CompletableFuture<>();
+    // Clock sync is a single station-wide operation at IOA 0 with no select/execute phases, so a
+    // header-only activation confirmation (no echoed time object) still correlates.
     PendingConfirmation request =
-        new PendingConfirmation(AsduType.C_CS_NA_1, station, ZERO_ADDRESS, confirmation);
+        new PendingConfirmation(AsduType.C_CS_NA_1, station, ZERO_ADDRESS, false, confirmation);
     CompletableFuture<Void> result = new CompletableFuture<>();
     confirmation.whenComplete(
         (ack, error) -> {
@@ -880,6 +882,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     private final AsduType family;
     private final CommonAddress station;
     private final InformationObjectAddress objectAddress;
+    private final boolean requireAddressedObject;
     private final CompletableFuture<Asdu> future;
     private @Nullable Asdu confirmation;
 
@@ -887,7 +890,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
         AsduType family,
         CommonAddress station,
         InformationObjectAddress objectAddress,
+        boolean requireAddressedObject,
         CompletableFuture<Asdu> future) {
+      this.requireAddressedObject = requireAddressedObject;
       this.family = commandFamily(family);
       this.station = station;
       this.objectAddress = objectAddress;
@@ -922,7 +927,20 @@ public final class DefaultIec60870Client implements Iec60870Client {
       if (!confirmationCause && !asdu.negative()) {
         return Outcome.IGNORED;
       }
-      if (!asdu.objects().isEmpty() && !asdu.objects().get(0).address().equals(objectAddress)) {
+      // A command activation confirmation (positive or negative) mirrors the command back, carrying
+      // its single information object and that object's IOA. For commands (requireAddressedObject),
+      // require the addressed object to be present and matching: an empty confirmation is unbound
+      // and
+      // must not correlate, or a same-family, same-station peer could complete the wrong pending
+      // command or advance a select-before-operate sequence without ever naming the addressed
+      // point.
+      // Clock synchronization (a single station-wide operation at IOA 0, with no select/execute
+      // phases) does not require the echoed object, so a header-only confirmation still completes
+      // it;
+      // when it does carry an object the IOA must still match.
+      boolean ioaMismatch =
+          !asdu.objects().isEmpty() && !asdu.objects().get(0).address().equals(objectAddress);
+      if (ioaMismatch || (requireAddressedObject && asdu.objects().isEmpty())) {
         return Outcome.IGNORED;
       }
       this.confirmation = asdu;
@@ -1228,7 +1246,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
       CompletableFuture<Asdu> confirmation = new CompletableFuture<>();
       PendingConfirmation request =
           new PendingConfirmation(
-              type, target.commonAddress(), target.objectAddress(), confirmation);
+              type, target.commonAddress(), target.objectAddress(), true, confirmation);
       if (!register(request)) {
         confirmation.completeExceptionally(alreadyInFlight("command for " + target));
         return confirmation;
