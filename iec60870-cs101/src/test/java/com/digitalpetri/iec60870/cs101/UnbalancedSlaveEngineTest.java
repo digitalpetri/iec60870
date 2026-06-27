@@ -52,6 +52,7 @@ class UnbalancedSlaveEngineTest {
   // Primary (PRM=1) function codes the master sends (PRM context disambiguates FC0/FC9).
   private static final int FC_RESET_REMOTE_LINK = 0; // primary, FCV=0
   private static final int FC_SEND_CONFIRM_USER_DATA = 3; // primary, FCV=1
+  private static final int FC_SEND_NO_REPLY_USER_DATA = 4; // primary, FCV=0
   private static final int FC_REQUEST_STATUS_OF_LINK = 9; // primary, FCV=0
   private static final int FC_REQUEST_USER_DATA_CLASS_1 = 10; // primary, FCV=1
   private static final int FC_REQUEST_USER_DATA_CLASS_2 = 11; // primary, FCV=1
@@ -342,6 +343,41 @@ class UnbalancedSlaveEngineTest {
 
     assertEquals(List.of(command), events.asdus(), "user data after a reset must be delivered");
     assertEquals(1, output.frames().size(), "the delivered frame is positively acknowledged");
+  }
+
+  @Test
+  void sendNoReplyBeforeLinkResetIsNotDelivered() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+
+    // FC4 (send/no-reply) is another route for the same link-reset bypass as FC3: it carries user
+    // data but expects no reply. Before a link reset the carried ASDU must not be delivered, and
+    // because FC4 is acknowledged by nothing, no frame is emitted in return.
+    slave.onFrame(primaryVariable(FC_SEND_NO_REPLY_USER_DATA, false, false, commandAsdu(130)));
+
+    assertTrue(
+        events.asdus().isEmpty(),
+        "send/no-reply user data before a link reset must not be delivered");
+    assertTrue(
+        events.dataTransferChanges().isEmpty(), "the link never became available without a reset");
+    assertTrue(output.frames().isEmpty(), "send/no-reply is never acknowledged");
+  }
+
+  @Test
+  void sendNoReplyIsDeliveredAfterAReset() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, false, false));
+    output.clear();
+
+    Asdu command = commandAsdu(131);
+    slave.onFrame(primaryVariable(FC_SEND_NO_REPLY_USER_DATA, false, false, command));
+
+    assertEquals(
+        List.of(command),
+        events.asdus(),
+        "send/no-reply user data after a reset must be delivered");
+    assertTrue(output.frames().isEmpty(), "send/no-reply is never acknowledged");
   }
 
   // --- FC3 command delivery + acknowledgement form ---------------------------------------------

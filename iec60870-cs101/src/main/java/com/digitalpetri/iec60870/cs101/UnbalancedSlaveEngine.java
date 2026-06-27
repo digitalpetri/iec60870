@@ -427,7 +427,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     }
     int fc = control.functionCode();
     if (fc == FC_SEND_NO_REPLY_USER_DATA) {
-      handleSendNoReply(asdu);
+      handleSendNoReply(asdu, true);
     } else {
       LOGGER.debug(
           "ignoring non-broadcast-service function code on an unbalanced slave broadcast: FC{}",
@@ -450,7 +450,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       case FC_REQUEST_USER_DATA_CLASS_2 -> handleRequestClass2(control);
       case FC_REQUEST_USER_DATA_CLASS_1 -> handleRequestClass1(control);
       case FC_SEND_CONFIRM_USER_DATA -> handleSendConfirm(control, asdu);
-      case FC_SEND_NO_REPLY_USER_DATA -> handleSendNoReply(asdu);
+      case FC_SEND_NO_REPLY_USER_DATA -> handleSendNoReply(asdu, false);
       default ->
           LOGGER.debug("ignoring unsupported primary function code on unbalanced slave: FC{}", fc);
     }
@@ -595,13 +595,26 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
   }
 
   /**
-   * Handles a send/no-reply user-data (FC4) broadcast: deliver the carried ASDU and send no
-   * response. FC4 has FCV=0 and addresses all secondaries, so it is neither FCB-checked nor
-   * acknowledged.
+   * Handles a send/no-reply user-data (FC4): deliver the carried ASDU and send no response. FC4 has
+   * FCV=0, so it is neither FCB-checked nor acknowledged.
+   *
+   * <p>An <em>addressed</em> FC4 that arrives before the master has reset this link bypasses the
+   * link-reset handshake that gates data transfer (the same bypass closed for send/confirm, FC3),
+   * so it is dropped without delivery. A <em>broadcast</em> FC4 is a connectionless service
+   * addressed to all secondaries rather than part of the per-link reset handshake, so it is
+   * delivered regardless of link-reset state. Either way, FC4 expects no reply, so nothing is sent
+   * in return.
    *
    * @param asdu the carried ASDU, or {@code null} if absent.
+   * @param broadcast whether the frame was addressed to the all-secondaries broadcast address.
    */
-  private void handleSendNoReply(@Nullable Asdu asdu) {
+  private void handleSendNoReply(@Nullable Asdu asdu, boolean broadcast) {
+    if (!broadcast && !linkReset) {
+      LOGGER.debug(
+          "received addressed send/no-reply user data before a link reset on an unbalanced slave;"
+              + " dropping");
+      return;
+    }
     if (asdu != null) {
       events.onAsdu(asdu);
     }
