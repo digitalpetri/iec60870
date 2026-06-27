@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
+import com.digitalpetri.iec60870.ProtocolStateException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -76,6 +77,16 @@ class ApciSessionTest {
     return new ApciSession(role, SETTINGS, scheduler, output, events);
   }
 
+  /**
+   * Drives a CLIENT session through the STARTDT handshake into the started state, so an inbound
+   * I-frame is permitted. An I-frame received while data transfer is stopped self-closes the
+   * session, so any test that feeds inbound user data must establish data transfer first.
+   */
+  private void startClientDataTransfer(ApciSession session) {
+    session.startDataTransfer();
+    session.onApdu(uFrame(UFunction.STARTDT_CON));
+  }
+
   // --- Static helper ---------------------------------------------------------------------------
 
   @Test
@@ -109,6 +120,7 @@ class ApciSessionTest {
   void receivingIFramesAdvancesReceiveSequenceNumberAndDelivers() {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
+    startClientDataTransfer(session);
 
     session.onApdu(iFrame(0, asdu(1)));
     session.onApdu(iFrame(1, asdu(2)));
@@ -162,6 +174,7 @@ class ApciSessionTest {
   void receivingWFramesTriggersSupervisoryAck() {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
+    startClientDataTransfer(session);
 
     // w = 2: the second received I-frame triggers an S-frame ack with N(R) = 2.
     session.onApdu(iFrame(0, asdu(1)));
@@ -178,6 +191,7 @@ class ApciSessionTest {
   void t2ElapsingTriggersSupervisoryAck() {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
+    startClientDataTransfer(session);
 
     // One received I-frame (below w) arms t2 but does not ack yet.
     session.onApdu(iFrame(0, asdu(1)));
@@ -255,6 +269,81 @@ class ApciSessionTest {
 
     assertEquals(1, output.uFrames().size());
     assertEquals(UFunction.TESTFR_CON, output.uFrames().get(0).function());
+  }
+
+  // --- Unsolicited / mismatched U-frame confirmations must not suppress t1 ---------------------
+
+  @Test
+  void unsolicitedTestFrameConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // An unacknowledged I-frame arms the shared t1 timer.
+    session.sendAsdu(asdu(1));
+
+    // A peer injects a TESTFR con with no TESTFR act outstanding; it must not cancel t1.
+    session.onApdu(uFrame(UFunction.TESTFR_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited TESTFR con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void unsolicitedStartConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+
+    // No STARTDT act was sent, so this STARTDT con is unsolicited and must not cancel t1.
+    session.onApdu(uFrame(UFunction.STARTDT_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited STARTDT con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void unsolicitedStopConfirmationDoesNotSuppressIFrameTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    session.sendAsdu(asdu(1));
+
+    // No STOPDT act was sent, so this STOPDT con is unsolicited and must not cancel t1.
+    session.onApdu(uFrame(UFunction.STOPDT_CON));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an unsolicited STOPDT con must not suppress the I-frame acknowledgement timeout");
+  }
+
+  @Test
+  void iFrameAckDoesNotSuppressPendingStartTimeout() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // A STARTDT act is outstanding (awaiting STARTDT con) and shares the single t1 with I-frames.
+    CompletionStage<Void> start = session.startDataTransfer();
+    session.sendAsdu(asdu(1));
+
+    // Acknowledging the I-frame clears the I-frame obligation but must leave t1 armed for the
+    // still-outstanding STARTDT con.
+    session.onApdu(sFrame(1));
+
+    scheduler.advance(T1_MILLIS, TimeUnit.MILLISECONDS);
+    assertInstanceOf(
+        ProtocolTimeoutException.class,
+        events.lastCloseCause(),
+        "an I-frame acknowledgement must not suppress the STARTDT confirmation timeout");
+    assertTrue(toFuture(start).isCompletedExceptionally());
   }
 
   // --- STARTDT / STOPDT handshakes -------------------------------------------------------------
@@ -338,12 +427,66 @@ class ApciSessionTest {
     assertThrows(IllegalStateException.class, session::stopDataTransfer);
   }
 
+  // --- I-frame while data transfer is stopped -> close without delivery ------------------------
+
+  @Test
+  void clientIFrameBeforeStartDataTransferIsRejectedNotDelivered() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+
+    // No STARTDT handshake has completed, so data transfer is stopped. A peer that sends an I-frame
+    // now is bypassing the data-transfer gate: the carried ASDU must not reach the application and
+    // the session must self-close with a ProtocolStateException.
+    session.onApdu(iFrame(0, asdu(1)));
+
+    assertTrue(
+        events.asdus().isEmpty(),
+        "an I-frame received while data transfer is stopped must not be delivered");
+    assertInstanceOf(ProtocolStateException.class, events.lastCloseCause());
+  }
+
+  @Test
+  void serverIFrameBeforeStartActivationIsRejectedNotDelivered() {
+    ApciSession session = newSession(ApciSession.Role.SERVER);
+    session.onConnected();
+
+    // The controlling station has not sent STARTDT act, so the server's data transfer is stopped
+    // and an inbound I-frame must be rejected rather than dispatched into the station handlers.
+    session.onApdu(iFrame(0, asdu(1)));
+
+    assertTrue(
+        events.asdus().isEmpty(),
+        "a server must not deliver an I-frame received before STARTDT act");
+    assertInstanceOf(ProtocolStateException.class, events.lastCloseCause());
+  }
+
+  @Test
+  void serverIFrameAfterStopActivationIsRejectedNotDelivered() {
+    ApciSession session = newSession(ApciSession.Role.SERVER);
+    session.onConnected();
+
+    // Start data transfer and deliver one legitimate I-frame.
+    session.onApdu(uFrame(UFunction.STARTDT_ACT));
+    session.onApdu(iFrame(0, asdu(1)));
+    assertEquals(1, events.asdus().size());
+
+    // Once STOPDT act has been processed, data transfer is stopped again; a further I-frame is
+    // illegal regardless of its (otherwise in-order) sequence number.
+    session.onApdu(uFrame(UFunction.STOPDT_ACT));
+    session.onApdu(iFrame(1, asdu(2)));
+
+    assertEquals(
+        1, events.asdus().size(), "an I-frame received after STOPDT act must not be delivered");
+    assertInstanceOf(ProtocolStateException.class, events.lastCloseCause());
+  }
+
   // --- Received sequence error -> close --------------------------------------------------------
 
   @Test
   void unexpectedReceiveSequenceNumberClosesSession() {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
+    startClientDataTransfer(session);
 
     // Expected N(S) = 0 but the peer skips to 2.
     session.onApdu(iFrame(2, asdu(1)));
@@ -404,6 +547,7 @@ class ApciSessionTest {
             Duration.ofMillis(T3_MILLIS));
     ApciSession session = new ApciSession(ApciSession.Role.CLIENT, wide, scheduler, output, events);
     session.onConnected();
+    startClientDataTransfer(session);
 
     for (int ns = 0; ns <= 32767; ns++) {
       session.onApdu(iFrame(ns, asdu(ns & 0xFF)));
@@ -461,6 +605,7 @@ class ApciSessionTest {
   void badAcknowledgementOnIFrameClosesWithoutDelivering() {
     ApciSession session = newSession(ApciSession.Role.CLIENT);
     session.onConnected();
+    startClientDataTransfer(session);
 
     session.sendAsdu(asdu(1)); // V(S) advances to 1; one frame outstanding
 

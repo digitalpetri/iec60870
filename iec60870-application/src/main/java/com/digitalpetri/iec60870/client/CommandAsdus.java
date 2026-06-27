@@ -74,6 +74,8 @@ final class CommandAsdus {
    * @param command the command.
    * @param select {@code true} for the select phase (S/E = 1), {@code false} for execute (S/E = 0).
    * @return the wire-level information object.
+   * @throws IllegalArgumentException if {@code select} is requested for a bit-string command; C_BO
+   *     carries no select/execute qualifier, so select-before-operate is not applicable to it.
    */
   static InformationObject toObject(Command command, boolean select) {
     InformationObjectAddress ioa = command.target().objectAddress();
@@ -116,6 +118,14 @@ final class CommandAsdus {
           : new SetpointShortFloat(ioa, c.value(), qos);
     }
     if (command instanceof Command.BitstringCommandRequest c) {
+      // C_BO has no select/execute qualifier: a "select" bit-string would encode as a flagless
+      // activation indistinguishable from execute, so the station would operate the output during
+      // both phases. Reject select-before-operate rather than silently execute twice.
+      if (select) {
+        throw new IllegalArgumentException(
+            "select-before-operate is not applicable to bit-string commands: "
+                + "C_BO carries no select/execute qualifier");
+      }
       return time.isPresent()
           ? new Bitstring32CommandWithCp56Time(ioa, c.bits(), cp56(time.get()))
           : new Bitstring32Command(ioa, c.bits());

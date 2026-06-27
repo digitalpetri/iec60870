@@ -18,9 +18,9 @@ import org.jspecify.annotations.Nullable;
  * <p>This configuration covers the protocol-layer behavior of the server: the wire profile, the
  * APCI flow-control parameters, the hosted stations, the request handler, the policy for a full
  * outbound queue, the bound on each connection's outbound queue, the time-tag style used when
- * reporting monitor data, the maximum number of concurrent connections, and the executor that
- * delivers events and runs handler callbacks. Transport concerns (host, port, TLS) are configured
- * on the transport, not here.
+ * reporting monitor data, the maximum number of concurrent connections, the bound on each
+ * connection's inbound dispatch backlog, and the executor that delivers events and runs handler
+ * callbacks. Transport concerns (host, port, TLS) are configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -45,6 +45,8 @@ import org.jspecify.annotations.Nullable;
  * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
  *     and published updates).
  * @param maxConnections the maximum number of concurrent controlling-station connections.
+ * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on its
+ *     serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded chain.
  * @param callbackExecutor the executor used to deliver events and run handler callbacks.
  */
 public record ServerConfig(
@@ -57,6 +59,7 @@ public record ServerConfig(
     Duration outboundBlockTimeout,
     TimeTagStyle timeTagStyle,
     int maxConnections,
+    int maxInboundQueue,
     Executor callbackExecutor) {
 
   /**
@@ -75,10 +78,14 @@ public record ServerConfig(
    * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
    *     and published updates).
    * @param maxConnections the maximum number of concurrent controlling-station connections.
+   * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on
+   *     its serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded
+   *     chain.
    * @param callbackExecutor the executor used to deliver events and run handler callbacks.
    * @throws NullPointerException if any non-primitive component is null.
    * @throws IllegalArgumentException if {@code maxConnections} is not positive, {@code
-   *     maxOutboundQueue} is negative, or {@code outboundBlockTimeout} is not positive.
+   *     maxOutboundQueue} or {@code maxInboundQueue} is negative, or {@code outboundBlockTimeout}
+   *     is not positive.
    */
   public ServerConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -93,6 +100,9 @@ public record ServerConfig(
     }
     if (maxOutboundQueue < 0) {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
+    }
+    if (maxInboundQueue < 0) {
+      throw new IllegalArgumentException("maxInboundQueue must be >= 0: " + maxInboundQueue);
     }
     if (outboundBlockTimeout.isZero() || outboundBlockTimeout.isNegative()) {
       throw new IllegalArgumentException(
@@ -127,6 +137,7 @@ public record ServerConfig(
     private Duration outboundBlockTimeout = Duration.ofSeconds(15);
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
     private int maxConnections = 16;
+    private int maxInboundQueue = 1024;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
 
     private Builder() {}
@@ -257,6 +268,28 @@ public record ServerConfig(
     }
 
     /**
+     * Sets the bound on the number of inbound ASDUs a started connection holds awaiting handling
+     * before further ASDUs are dropped. Defaults to {@code 1024}; a value of {@code 0} leaves the
+     * backlog unbounded.
+     *
+     * <p>Inbound ASDUs are delivered to handlers without waiting for the handler to run, and IEC
+     * 60870-5 places no bound on the volume a peer may send, so a peer that streams ASDUs faster
+     * than the handler (or the callback executor) drains them could otherwise retain unbounded
+     * ASDUs in memory. The default sits far above any realistic backlog, so it bounds memory
+     * without affecting the legitimate request/confirm flow. An over-limit ASDU is dropped rather
+     * than back-pressured (inbound delivery cannot be back-pressured), so treat this purely as a
+     * safety bound.
+     *
+     * @param maxInboundQueue the inbound backlog bound, or {@code 0} for unbounded; must not be
+     *     negative.
+     * @return this builder.
+     */
+    public Builder maxInboundQueue(int maxInboundQueue) {
+      this.maxInboundQueue = maxInboundQueue;
+      return this;
+    }
+
+    /**
      * Sets the executor used to deliver events and run handler callbacks. Defaults to the common
      * {@link ForkJoinPool}.
      *
@@ -277,7 +310,7 @@ public record ServerConfig(
      *
      * @return the configuration.
      * @throws IllegalArgumentException if {@code maxConnections} is not positive or {@code
-     *     maxOutboundQueue} is negative.
+     *     maxOutboundQueue} or {@code maxInboundQueue} is negative.
      */
     public ServerConfig build() {
       return new ServerConfig(
@@ -290,6 +323,7 @@ public record ServerConfig(
           outboundBlockTimeout,
           timeTagStyle,
           maxConnections,
+          maxInboundQueue,
           callbackExecutor);
     }
   }

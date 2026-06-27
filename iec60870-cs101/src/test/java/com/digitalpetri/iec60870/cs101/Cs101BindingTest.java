@@ -115,6 +115,12 @@ class Cs101BindingTest {
     Session session = binding.bindClient(transport, events, new ManualScheduler());
     session.onConnected();
 
+    // Drive the FT1.2 link-reset bring-up so user-data transfer is established before any inbound
+    // data arrives; FT1.2 gates user data behind the link reset, so a pre-reset frame is rejected.
+    session.startDataTransfer();
+    feedFrame(transport.listener(), secondary(FC_STATUS_OF_LINK));
+    feedFrame(transport.listener(), secondary(FC_ACK));
+
     // Feed an inbound user-data frame (primary FC3, fresh FCB) as a whole frame through the
     // transport
     // listener; the binding deframes it and the session's secondary process delivers the carried
@@ -156,6 +162,12 @@ class Cs101BindingTest {
     Session session = binding.bindClient(transport, events, new ManualScheduler());
     session.onConnected();
     assertNotNull(transport.listener());
+
+    // Drive the FT1.2 link-reset bring-up so a valid user-data frame is accepted once the link is
+    // available; FT1.2 gates user data behind the link reset, so a pre-reset frame is rejected.
+    session.startDataTransfer();
+    feedFrame(transport.listener(), secondary(FC_STATUS_OF_LINK));
+    feedFrame(transport.listener(), secondary(FC_ACK));
 
     // A length-valid inbound user-data frame whose checksum octet is flipped, modeling a single-bit
     // line error on a noisy serial link; Ft12Framer.decode throws an AsduDecodeException for the

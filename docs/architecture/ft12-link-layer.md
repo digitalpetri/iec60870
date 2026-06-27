@@ -72,7 +72,8 @@ are:
 - **Secondary (PRM=0):** `FC0` positive acknowledgement (ACK), `FC1` negative acknowledgement
   (NACK), `FC8` respond-user-data (unbalanced), `FC9` respond/data-not-available (unbalanced),
   `FC11` status-of-link, `FC14` link-service-not-functioning and `FC15` link-service-not-implemented
-  (balanced).
+  (balanced; the unbalanced outstation also returns `FC14` to reject user data sent before a link
+  reset).
 
 **FCV gates the FCB.** Only a primary frame with `FCV=1` carries a meaningful frame count bit and is
 FCB-checked by the secondary: user data (`FC3`) and the class polls (`FC10`/`FC11`). The bring-up and
@@ -199,8 +200,10 @@ master, and it simply replays its last response when it sees the same FCB again.
   master can escalate to a class-1 poll) and the **DFC** bit while either bounded class queue is
   saturated (back-pressure).
 - **Availability.** The link becomes available when the master sends its reset-of-remote-link, which
-  fires `Events.onDataTransferStateChanged(true)`. As a `SERVER`-role station the slave never drives
-  `startDataTransfer()`/`stopDataTransfer()`; both throw `IllegalStateException`.
+  fires `Events.onDataTransferStateChanged(true)`. Send/confirm user data (`FC3`) that arrives before
+  that reset is rejected with a link-service-not-functioning (`FC14`) frame and never delivered, so a
+  peer cannot bypass the link-reset gate to inject application data. As a `SERVER`-role station the
+  slave never drives `startDataTransfer()`/`stopDataTransfer()`; both throw `IllegalStateException`.
 
 ## Link addressing
 

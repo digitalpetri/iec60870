@@ -77,6 +77,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final ClientTransport transport;
   private final ClientConfig config;
 
+  /**
+   * Cached from {@link ClientConfig#maxInterrogationResponseObjects()}; {@code 0} means no bound.
+   */
+  private final int maxInterrogationResponseObjects;
+
   private final ScheduledExecutorService scheduler;
   private final boolean ownsScheduler;
 
@@ -143,6 +148,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
     Objects.requireNonNull(sessionFactory, "sessionFactory");
+    this.maxInterrogationResponseObjects = config.maxInterrogationResponseObjects();
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -270,7 +276,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
             List.of(command));
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
-    PendingInterrogation request = new PendingInterrogation(station, future);
+    PendingInterrogation request =
+        new PendingInterrogation(station, future, maxInterrogationResponseObjects);
     if (!register(request)) {
       future.completeExceptionally(
           alreadyInFlight("interrogation of common address " + station.value()));
@@ -346,8 +353,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
             List.of(command));
 
     CompletableFuture<Asdu> confirmation = new CompletableFuture<>();
+    // Clock sync is a single station-wide operation at IOA 0 with no select/execute phases, so a
+    // header-only activation confirmation (no echoed time object) still correlates.
     PendingConfirmation request =
-        new PendingConfirmation(AsduType.C_CS_NA_1, station, ZERO_ADDRESS, confirmation);
+        new PendingConfirmation(AsduType.C_CS_NA_1, station, ZERO_ADDRESS, false, confirmation);
     CompletableFuture<Void> result = new CompletableFuture<>();
     confirmation.whenComplete(
         (ack, error) -> {
@@ -839,6 +848,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     private final AsduType family;
     private final CommonAddress station;
     private final InformationObjectAddress objectAddress;
+    private final boolean requireAddressedObject;
     private final CompletableFuture<Asdu> future;
     private @Nullable Asdu confirmation;
 
@@ -846,7 +856,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
         AsduType family,
         CommonAddress station,
         InformationObjectAddress objectAddress,
+        boolean requireAddressedObject,
         CompletableFuture<Asdu> future) {
+      this.requireAddressedObject = requireAddressedObject;
       this.family = commandFamily(family);
       this.station = station;
       this.objectAddress = objectAddress;
@@ -881,7 +893,20 @@ public final class DefaultIec60870Client implements Iec60870Client {
       if (!confirmationCause && !asdu.negative()) {
         return Outcome.IGNORED;
       }
-      if (!asdu.objects().isEmpty() && !asdu.objects().get(0).address().equals(objectAddress)) {
+      // A command activation confirmation (positive or negative) mirrors the command back, carrying
+      // its single information object and that object's IOA. For commands (requireAddressedObject),
+      // require the addressed object to be present and matching: an empty confirmation is unbound
+      // and
+      // must not correlate, or a same-family, same-station peer could complete the wrong pending
+      // command or advance a select-before-operate sequence without ever naming the addressed
+      // point.
+      // Clock synchronization (a single station-wide operation at IOA 0, with no select/execute
+      // phases) does not require the echoed object, so a header-only confirmation still completes
+      // it;
+      // when it does carry an object the IOA must still match.
+      boolean ioaMismatch =
+          !asdu.objects().isEmpty() && !asdu.objects().get(0).address().equals(objectAddress);
+      if (ioaMismatch || (requireAddressedObject && asdu.objects().isEmpty())) {
         return Outcome.IGNORED;
       }
       this.confirmation = asdu;
@@ -911,13 +936,17 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     private final CommonAddress station;
     private final CompletableFuture<InterrogationResult> future;
+    private final int maxObjects;
     private final List<InformationObject> collected = new ArrayList<>();
     private boolean confirmed;
+    private boolean overflowed;
     private @Nullable Asdu negativeConfirmation;
 
-    PendingInterrogation(CommonAddress station, CompletableFuture<InterrogationResult> future) {
+    PendingInterrogation(
+        CommonAddress station, CompletableFuture<InterrogationResult> future, int maxObjects) {
       this.station = station;
       this.future = future;
+      this.maxObjects = maxObjects;
     }
 
     @Override
@@ -950,6 +979,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
         };
       }
       if (confirmed && isInterrogationResponse(asdu.cause())) {
+        // Bound the accumulated response (maxObjects == 0 disables the bound); see
+        // ClientConfig#maxInterrogationResponseObjects.
+        if (maxObjects > 0 && collected.size() + asdu.objects().size() > maxObjects) {
+          overflowed = true;
+          return Outcome.FAILED;
+        }
         collected.addAll(asdu.objects());
         return Outcome.ACCEPTED;
       }
@@ -963,6 +998,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     void deliverFailure() {
+      if (overflowed) {
+        future.completeExceptionally(
+            new Iec60870Exception(
+                "interrogation response exceeded the maximum of "
+                    + maxObjects
+                    + " objects without an activation termination"));
+        return;
+      }
       Asdu asdu = Objects.requireNonNull(negativeConfirmation);
       future.completeExceptionally(new NegativeConfirmationException(asdu.cause(), asdu));
     }
@@ -1150,8 +1193,17 @@ public final class DefaultIec60870Client implements Iec60870Client {
      * @return a stage that completes with the confirming ASDU.
      */
     private CompletionStage<Asdu> sendActivation(Command command, boolean select) {
-      InformationObject object = CommandAsdus.toObject(command, select);
-      AsduType type = CommandAsdus.typeOf(command);
+      InformationObject object;
+      AsduType type;
+      try {
+        object = CommandAsdus.toObject(command, select);
+        type = CommandAsdus.typeOf(command);
+      } catch (RuntimeException e) {
+        // A malformed request (e.g. select-before-operate on a bit-string command, which C_BO
+        // cannot express) is surfaced through the returned stage rather than thrown on the caller's
+        // thread, so every command failure reaches a thenCompose/exceptionally handler uniformly.
+        return CompletableFuture.failedFuture(e);
+      }
       PointAddress target = command.target();
 
       Asdu asdu =
@@ -1168,7 +1220,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
       CompletableFuture<Asdu> confirmation = new CompletableFuture<>();
       PendingConfirmation request =
           new PendingConfirmation(
-              type, target.commonAddress(), target.objectAddress(), confirmation);
+              type, target.commonAddress(), target.objectAddress(), true, confirmation);
       if (!register(request)) {
         confirmation.completeExceptionally(alreadyInFlight("command for " + target));
         return confirmation;

@@ -27,11 +27,11 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link UnbalancedSlaveEngine}, the unbalanced FT1.2 outstation (secondary) state
  * machine: the buffering of application ASDUs into class-1/class-2 queues, the reset-driven link
- * bring-up, the class-1/class-2 poll responses with access-demand (ACD) escalation, the
- * data-flow-control (DFC) bit being pinned to {@code 0} (the outstation delivers inbound ASDUs
- * synchronously with no receive buffer, so it has no receive-side back-pressure to report per IEC
- * 60870-5-2), FCB-keyed retransmission replay, and the single-character versus full-frame
- * acknowledgement selection.
+ * bring-up, the rejection of send/confirm user data received before a link reset, the
+ * class-1/class-2 poll responses with access-demand (ACD) escalation, the data-flow-control (DFC)
+ * bit being pinned to {@code 0} (the outstation delivers inbound ASDUs synchronously with no
+ * receive buffer, so it has no receive-side back-pressure to report per IEC 60870-5-2), FCB-keyed
+ * retransmission replay, and the single-character versus full-frame acknowledgement selection.
  *
  * <p>The slave is purely reactive — it never initiates a transfer and arms no timers — so every
  * assertion is driven by feeding inbound primary frames through {@link
@@ -52,6 +52,7 @@ class UnbalancedSlaveEngineTest {
   // Primary (PRM=1) function codes the master sends (PRM context disambiguates FC0/FC9).
   private static final int FC_RESET_REMOTE_LINK = 0; // primary, FCV=0
   private static final int FC_SEND_CONFIRM_USER_DATA = 3; // primary, FCV=1
+  private static final int FC_SEND_NO_REPLY_USER_DATA = 4; // primary, FCV=0
   private static final int FC_REQUEST_STATUS_OF_LINK = 9; // primary, FCV=0
   private static final int FC_REQUEST_USER_DATA_CLASS_1 = 10; // primary, FCV=1
   private static final int FC_REQUEST_USER_DATA_CLASS_2 = 11; // primary, FCV=1
@@ -300,6 +301,83 @@ class UnbalancedSlaveEngineTest {
     Ft12Frame.Variable next = assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(2));
     assertEquals(secondCyclic, next.asdu());
     assertEquals(0, slave.pendingSendCount());
+  }
+
+  // --- FC3 pre-reset gate ----------------------------------------------------------------------
+
+  @Test
+  void sendConfirmBeforeLinkResetIsRejectedNotDelivered() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+
+    // The master sends user data without first resetting the link — a link-reset state-machine
+    // bypass. The gate must hold: no ASDU is delivered, the link never becomes available, and a
+    // not-reset secondary makes no reply (no positive ack such as a 0xE5 single char, and no frame
+    // at all).
+    Asdu command = commandAsdu(110);
+    slave.onFrame(primaryVariable(FC_SEND_CONFIRM_USER_DATA, true, true, command));
+
+    assertTrue(events.asdus().isEmpty(), "user data before a link reset must not be delivered");
+    assertTrue(
+        events.dataTransferChanges().isEmpty(), "the link never became available without a reset");
+    assertTrue(
+        output.frames().isEmpty(), "a not-reset secondary makes no reply to pre-reset user data");
+  }
+
+  @Test
+  void sendConfirmIsDeliveredAfterAResetClearsTheGate() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+
+    // A rejected pre-reset frame must neither deliver nor establish the FCB sequence or cache a
+    // response, so the legitimate first post-reset frame is still treated as new.
+    slave.onFrame(primaryVariable(FC_SEND_CONFIRM_USER_DATA, true, true, commandAsdu(120)));
+    assertTrue(events.asdus().isEmpty());
+
+    // Once the master resets the link, the first send/confirm is delivered and acknowledged.
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, false, false));
+    output.clear();
+
+    Asdu command = commandAsdu(121);
+    slave.onFrame(primaryVariable(FC_SEND_CONFIRM_USER_DATA, true, true, command));
+
+    assertEquals(List.of(command), events.asdus(), "user data after a reset must be delivered");
+    assertEquals(1, output.frames().size(), "the delivered frame is positively acknowledged");
+  }
+
+  @Test
+  void sendNoReplyBeforeLinkResetIsNotDelivered() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+
+    // FC4 (send/no-reply) is another route for the same link-reset bypass as FC3: it carries user
+    // data but expects no reply. Before a link reset the carried ASDU must not be delivered, and
+    // because FC4 is acknowledged by nothing, no frame is emitted in return.
+    slave.onFrame(primaryVariable(FC_SEND_NO_REPLY_USER_DATA, false, false, commandAsdu(130)));
+
+    assertTrue(
+        events.asdus().isEmpty(),
+        "send/no-reply user data before a link reset must not be delivered");
+    assertTrue(
+        events.dataTransferChanges().isEmpty(), "the link never became available without a reset");
+    assertTrue(output.frames().isEmpty(), "send/no-reply is never acknowledged");
+  }
+
+  @Test
+  void sendNoReplyIsDeliveredAfterAReset() {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, false, false));
+    output.clear();
+
+    Asdu command = commandAsdu(131);
+    slave.onFrame(primaryVariable(FC_SEND_NO_REPLY_USER_DATA, false, false, command));
+
+    assertEquals(
+        List.of(command),
+        events.asdus(),
+        "send/no-reply user data after a reset must be delivered");
+    assertTrue(output.frames().isEmpty(), "send/no-reply is never acknowledged");
   }
 
   // --- FC3 command delivery + acknowledgement form ---------------------------------------------
