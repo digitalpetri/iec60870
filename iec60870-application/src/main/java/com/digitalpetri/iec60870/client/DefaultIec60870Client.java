@@ -74,19 +74,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
   /** Conventional information object address for station-level commands (interrogation, clock). */
   private static final InformationObjectAddress ZERO_ADDRESS = InformationObjectAddress.of(0);
 
-  /**
-   * Default upper bound on the number of information objects a single interrogation will accumulate
-   * before its response collection is treated as a fault and the request is failed.
-   *
-   * <p>IEC 60870-5 places no aggregate limit on the objects an interrogation may report, so a peer
-   * that confirms the interrogation but never sends an activation termination could otherwise
-   * stream objects into one in-memory list without bound. This value sits far above any realistic
-   * single-station interrogation, so it bounds memory without rejecting legitimate responses.
-   */
-  private static final int DEFAULT_MAX_INTERROGATION_RESPONSE_OBJECTS = 1_000_000;
-
   private final ClientTransport transport;
   private final ClientConfig config;
+
+  /**
+   * Cached from {@link ClientConfig#maxInterrogationResponseObjects()}; {@code 0} means no bound.
+   */
   private final int maxInterrogationResponseObjects;
 
   private final ScheduledExecutorService scheduler;
@@ -151,38 +144,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
       ClientConfig config,
       BiFunction<Session.Events, ScheduledExecutorService, Session> sessionFactory,
       @Nullable ScheduledExecutorService scheduler) {
-    this(transport, config, sessionFactory, scheduler, DEFAULT_MAX_INTERROGATION_RESPONSE_OBJECTS);
-  }
-
-  /**
-   * Creates a client with an injected scheduler and an explicit cap on the number of information
-   * objects a single interrogation will accumulate before its response is treated as a fault.
-   *
-   * <p>Package-private; the public constructors apply {@link
-   * #DEFAULT_MAX_INTERROGATION_RESPONSE_OBJECTS}. A test injects a small cap here to exercise the
-   * bounding behavior without streaming a realistic volume of objects.
-   *
-   * @param transport the transport whose connection lifecycle the client drives.
-   * @param config the client configuration.
-   * @param sessionFactory builds the session wired to the facade's {@link Session.Events}, using
-   *     the supplied scheduler.
-   * @param scheduler the scheduler for request timeouts, or {@code null} to create an internal one.
-   * @param maxInterrogationResponseObjects the maximum number of objects one interrogation
-   *     accumulates before the request is failed.
-   * @throws NullPointerException if {@code transport}, {@code config}, or {@code sessionFactory} is
-   *     null.
-   */
-  DefaultIec60870Client(
-      ClientTransport transport,
-      ClientConfig config,
-      BiFunction<Session.Events, ScheduledExecutorService, Session> sessionFactory,
-      @Nullable ScheduledExecutorService scheduler,
-      int maxInterrogationResponseObjects) {
 
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
     Objects.requireNonNull(sessionFactory, "sessionFactory");
-    this.maxInterrogationResponseObjects = maxInterrogationResponseObjects;
+    this.maxInterrogationResponseObjects = config.maxInterrogationResponseObjects();
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -1013,10 +979,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
         };
       }
       if (confirmed && isInterrogationResponse(asdu.cause())) {
-        // Bound the accumulated response: a peer that confirms the interrogation but never sends
-        // ACT_TERM could otherwise stream objects into this list without limit (heap exhaustion).
-        // The request timeout bounds the time window; this bounds the volume within it.
-        if (collected.size() + asdu.objects().size() > maxObjects) {
+        // Bound the accumulated response (maxObjects == 0 disables the bound); see
+        // ClientConfig#maxInterrogationResponseObjects.
+        if (maxObjects > 0 && collected.size() + asdu.objects().size() > maxObjects) {
           overflowed = true;
           return Outcome.FAILED;
         }

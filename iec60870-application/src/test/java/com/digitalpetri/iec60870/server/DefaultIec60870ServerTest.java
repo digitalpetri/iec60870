@@ -896,10 +896,9 @@ class DefaultIec60870ServerTest {
   void inboundDispatchBacklogIsBounded() {
     // The session delivers inbound ASDUs without waiting for the handler, so a peer that streams
     // ASDUs faster than the callback executor drains them must not grow the per-connection dispatch
-    // chain (and retain its ASDUs and futures) without bound. With a small bound injected and a
+    // chain (and retain its ASDUs and futures) without bound. With a small bound configured and a
     // callback executor that holds tasks until drained, only the bounded number of ASDUs are
-    // chained
-    // and reach the handler; the rest are dropped.
+    // chained and reach the handler; the rest are dropped.
     int bound = 3;
     int delivered = 10;
     QueueingExecutor executor = new QueueingExecutor();
@@ -921,9 +920,10 @@ class DefaultIec60870ServerTest {
             .handler(counting)
             .timeTagStyle(TimeTagStyle.NONE)
             .callbackExecutor(executor)
+            .maxInboundQueue(bound)
             .build();
     DefaultIec60870Server server =
-        new DefaultIec60870Server(transport, config, sessionFactory(config), null, bound);
+        new DefaultIec60870Server(transport, config, sessionFactory(config), null);
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("flooder");
 

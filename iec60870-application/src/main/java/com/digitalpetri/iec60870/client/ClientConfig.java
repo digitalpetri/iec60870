@@ -16,9 +16,10 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>This configuration covers the protocol-layer behavior of the client: the wire profile, the
  * APCI flow-control parameters, the originator address, an optional point catalog, whether to start
- * data transfer automatically on connect, the request and command timeouts, and the executor that
- * delivers events and completes blocking calls. Transport concerns (host, port, TLS) are configured
- * on the transport, not here.
+ * data transfer automatically on connect, the request and command timeouts, the bound on the
+ * objects a single interrogation will accumulate, and the executor that delivers events and
+ * completes blocking calls. Transport concerns (host, port, TLS) are configured on the transport,
+ * not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -39,6 +40,8 @@ import org.jspecify.annotations.Nullable;
  *     transfer.
  * @param commandTimeout the maximum time to await a command confirmation.
  * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
+ * @param maxInterrogationResponseObjects the bound on the number of information objects a single
+ *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
  * @param callbackExecutor the executor used to deliver events and complete blocking calls.
  */
 public record ClientConfig(
@@ -49,6 +52,7 @@ public record ClientConfig(
     boolean startDataTransferOnConnect,
     Duration commandTimeout,
     Duration requestTimeout,
+    int maxInterrogationResponseObjects,
     Executor callbackExecutor) {
 
   /**
@@ -64,10 +68,12 @@ public record ClientConfig(
    *     transfer.
    * @param commandTimeout the maximum time to await a command confirmation.
    * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
+   * @param maxInterrogationResponseObjects the bound on the number of information objects a single
+   *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
    * @param callbackExecutor the executor used to deliver events and complete blocking calls.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
-   *     negative.
+   *     negative, or {@code maxInterrogationResponseObjects} is negative.
    */
   public ClientConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -77,6 +83,10 @@ public record ClientConfig(
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     requirePositive(commandTimeout, "commandTimeout");
     requirePositive(requestTimeout, "requestTimeout");
+    if (maxInterrogationResponseObjects < 0) {
+      throw new IllegalArgumentException(
+          "maxInterrogationResponseObjects must be >= 0: " + maxInterrogationResponseObjects);
+    }
   }
 
   /**
@@ -119,6 +129,7 @@ public record ClientConfig(
     private boolean startDataTransferOnConnect = true;
     private Duration commandTimeout = Duration.ofSeconds(10);
     private Duration requestTimeout = Duration.ofSeconds(30);
+    private int maxInterrogationResponseObjects = 1_000_000;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
 
     private Builder() {}
@@ -204,6 +215,26 @@ public record ClientConfig(
     }
 
     /**
+     * Sets the bound on the number of information objects a single interrogation will accumulate
+     * before its response collection is treated as a fault and the request is failed. Defaults to
+     * {@code 1_000_000}; a value of {@code 0} leaves the accumulation unbounded.
+     *
+     * <p>IEC 60870-5 places no aggregate limit on the objects an interrogation may report, so a
+     * peer that confirms the interrogation but never sends an activation termination could
+     * otherwise accumulate objects in memory without bound. The request timeout bounds the time
+     * window; this bounds the volume within it. The default sits far above any realistic
+     * single-station interrogation, so it bounds memory without rejecting legitimate responses.
+     *
+     * @param maxInterrogationResponseObjects the accumulation bound, or {@code 0} for unbounded;
+     *     must not be negative.
+     * @return this builder.
+     */
+    public Builder maxInterrogationResponseObjects(int maxInterrogationResponseObjects) {
+      this.maxInterrogationResponseObjects = maxInterrogationResponseObjects;
+      return this;
+    }
+
+    /**
      * Sets the executor used to deliver events and complete blocking calls. Defaults to the common
      * {@link ForkJoinPool}.
      *
@@ -234,6 +265,7 @@ public record ClientConfig(
           startDataTransferOnConnect,
           commandTimeout,
           requestTimeout,
+          maxInterrogationResponseObjects,
           callbackExecutor);
     }
   }

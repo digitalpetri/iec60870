@@ -125,18 +125,20 @@ class DefaultIec60870ClientTest {
   @Test
   void interrogationResponseAccumulationIsBounded() {
     // A peer that confirms the interrogation but withholds ACT_TERM must not stream an unbounded
-    // number of objects into one pending result list. With a small cap injected, the interrogation
-    // fails once the accumulated objects exceed it instead of growing without bound.
+    // number of objects into one pending result list. With a small cap configured, the
+    // interrogation fails once the accumulated objects exceed it instead of growing without bound.
     int cap = 5;
     FakeClientTransport boundedTransport = new FakeClientTransport();
     AtomicReference<@Nullable FakeSession> boundedSession = new AtomicReference<>();
     try (DefaultIec60870Client boundedClient =
         new DefaultIec60870Client(
             boundedTransport,
-            ClientConfig.builder().callbackExecutor(Runnable::run).build(),
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .maxInterrogationResponseObjects(cap)
+                .build(),
             clientSessionFactory(boundedSession),
-            null,
-            cap)) {
+            null)) {
       boundedClient.connect();
 
       CompletionStage<InterrogationResult> stage = boundedClient.interrogateAsync(STATION);
@@ -398,7 +400,7 @@ class DefaultIec60870ClientTest {
         client.commands().sendAsync(Command.single(point, true), CommandMode.directExecute());
 
     // Same command family (C_SC_NA_1), same station, positive ACT_CON, but no information object.
-    session().deliverAsdu(emptyCommandConfirmation(false));
+    session().deliverAsdu(emptyCommandConfirmation());
     assertFalse(
         stage.toCompletableFuture().isDone(),
         "an empty command confirmation must not complete a pending command");
@@ -426,7 +428,7 @@ class DefaultIec60870ClientTest {
     assertEquals(1, session().sentAsdus().size(), "only the select phase was sent");
 
     // An empty confirmation must not be mistaken for the select confirmation.
-    session().deliverAsdu(emptyCommandConfirmation(false));
+    session().deliverAsdu(emptyCommandConfirmation());
     assertFalse(stage.toCompletableFuture().isDone());
     assertEquals(
         1,
@@ -1288,12 +1290,12 @@ class DefaultIec60870ClientTest {
         List.of(new SingleCommand(ioa, true, new QualifierOfCommand(0, false))));
   }
 
-  private Asdu emptyCommandConfirmation(boolean negative) {
+  private Asdu emptyCommandConfirmation() {
     return new Asdu(
         AsduType.C_SC_NA_1,
         false,
         Cause.ACTIVATION_CONFIRMATION,
-        negative,
+        false,
         false,
         config.originatorAddress(),
         STATION,
