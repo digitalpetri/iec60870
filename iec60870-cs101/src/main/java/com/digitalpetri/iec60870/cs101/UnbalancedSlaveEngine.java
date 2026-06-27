@@ -554,25 +554,32 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
   }
 
   /**
-   * Handles a send/confirm user-data (FC3, FCV=1) command: on a changed FCB deliver the carried
-   * ASDU and acknowledge; on an unchanged FCB replay the cached acknowledgement without
+   * Handles a send/confirm user-data (FC3, FCV=1) command. User data that arrives before the master
+   * has reset the link bypasses the link-reset handshake that gates data transfer; a not-reset
+   * secondary makes no reply (IEC 60870-5-101 6.2.1.1, Figure 6 not-reset self-loop), so it is
+   * dropped and never delivered. Once the link is reset, a changed FCB delivers the carried ASDU
+   * and acknowledges, while an unchanged FCB replays the cached acknowledgement without
    * re-delivering.
    *
    * @param control the inbound primary control field, supplying the FCB.
    * @param asdu the carried command ASDU, or {@code null} if absent.
    */
   private void handleSendConfirm(LinkControlField control, @Nullable Asdu asdu) {
+    if (!linkReset) {
+      // User data before a link reset bypasses the handshake that gates data transfer.
+      // The expected FCB sequence is not yet established, so the frame cannot be told
+      // apart as a fresh send versus a replay. A not-reset secondary makes no reply
+      // (the Figure 6 not-reset self-loop, and the sibling FC4 path), so deliver
+      // nothing and stay silent; the master resets the link before retrying.
+      LOGGER.debug("received user data before a link reset on an unbalanced slave; dropping");
+      return;
+    }
     boolean fcb = control.fcb();
     if (isRetransmission(fcb)) {
       replayLastResponse();
       return;
     }
     expectedFcb = fcb;
-    if (!linkReset) {
-      // A command before a link reset is irregular; accept it leniently but note the missing reset.
-      LOGGER.debug(
-          "received user data before a link reset on an unbalanced slave; accepting leniently");
-    }
     boolean acd = !class1Queue.isEmpty();
     Ft12Frame ack = e5OrFixed(FC_ACK, acd);
     lastResponse = ack;
