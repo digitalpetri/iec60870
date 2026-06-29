@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.test.interop;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,13 +11,10 @@ import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec60870.asdu.element.DoublePointState;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
-import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.element.Vti;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent;
-import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
@@ -175,7 +171,7 @@ class Cs101UnbalancedInteropTest {
               .startDataTransferOnConnect(true)
               .build();
 
-      RecordingSubscriber events = new RecordingSubscriber();
+      InteropEventRecorder events = new InteropEventRecorder();
       client.events().subscribe(events);
 
       try {
@@ -183,29 +179,8 @@ class Cs101UnbalancedInteropTest {
         client.connect();
         assertTrue(client.isConnected(), "client should be connected after connect()");
 
-        // Station interrogation: the C slave queues the response as class-1 data; the master drains
-        // it via the access-demand escalation off its class-2 poll (contract section 3/4).
-        InterrogationResult result = client.interrogate(STATION, QualifierOfInterrogation.STATION);
-        assertTrue(result.terminated(), "station interrogation must end with ACT_TERM");
-        assertFalse(result.pointValues().isEmpty(), "station interrogation must return points");
-
-        // A command to an ACCEPT IOA is positively confirmed; the REJECT IOA is negative.
-        CommandResult accept = client.commands().single(PointAddress.of(1, IOA_ACCEPT), true);
-        assertTrue(
-            accept.positive(), () -> "accept command must be positive; cause=" + accept.cause());
-
-        CommandResult reject = client.commands().single(PointAddress.of(1, IOA_REJECT), true);
-        assertFalse(reject.positive(), "command to IOA 3000 must be negatively confirmed");
-
-        // Spontaneous traffic: the C slave enqueues a periodic M_ME_NB_1 at IOA 1050 every 2s as
-        // class-2 data, which the master's class-2 poll delivers as Cause.PERIODIC.
-        ClientEvent.PointUpdated update =
-            events.awaitPointUpdated(
-                u ->
-                    u.address().objectAddress().value().longValue() == IOA_SCALED
-                        && u.cause() == Cause.PERIODIC,
-                WAIT_TIMEOUT);
-        assertNotNull(update, "expected a periodic PointUpdated for IOA 1050");
+        InteropClientContract.assertBroadClientContract(
+            client, events, OriginatorAddress.none(), WAIT_TIMEOUT, WAIT_TIMEOUT);
       } finally {
         client.close();
       }
@@ -270,6 +245,8 @@ class Cs101UnbalancedInteropTest {
             () -> "C master reported failures (fail!=0). Container log:\n" + logs);
         assertContains(logs, "PASS: link available");
         assertContains(logs, "PASS: station interrogation (ACT_CON + data)");
+        assertContains(logs, "PASS: counter interrogation (ACT_CON + data)");
+        assertContains(logs, "PASS: read command returned data");
         assertContains(logs, "PASS: accept command confirmed (P/N=0)");
         assertContains(logs, "PASS: reject command negatively confirmed (P/N=1)");
         assertContains(logs, "PASS: spontaneous data observed");

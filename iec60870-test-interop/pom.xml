@@ -43,11 +43,10 @@
       <version>${project.version}</version>
     </dependency>
     <!--
-      The serial assembly module + CS101 link layer back the IEC 60870-5-101 BALANCED interop test
-      (Cs101BalancedInteropTest), mirroring how iec60870-tcp backs the CS104 interop tests. They
-      are only needed on the test classpath, so they are scoped to test. iec60870-serial pulls in
-      cs101 (and the serial transport) transitively; cs101 is declared explicitly because the test
-      imports LinkSettings directly.
+      The serial assembly module + CS101 link layer back the IEC 60870-5-101 serial interop tests,
+      while iec60870-tcp backs CS104 and 101-over-TCP. They are only needed on the test classpath,
+      so they are scoped to test. iec60870-serial pulls in cs101 (and the serial transport)
+      transitively; cs101 is declared explicitly because the tests import LinkSettings directly.
     -->
     <dependency>
       <groupId>com.digitalpetri.iec60870</groupId>
@@ -70,6 +69,18 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>

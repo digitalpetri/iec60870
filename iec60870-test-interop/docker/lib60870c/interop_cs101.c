@@ -641,6 +641,8 @@ fail(const char* msg) { printf("FAIL: %s\n", msg); failCount++; }
 
 static volatile bool linkAvailable = false;
 static volatile bool sawData = false;
+static volatile bool sawCounterData = false;
+static volatile bool sawReadData = false;
 static volatile bool sawSpontaneous = false;
 
 static volatile bool lastActConSeen = false;
@@ -688,11 +690,17 @@ masterAsduReceivedHandler(void* parameter, int address, CS101_ASDU asdu)
     else if (cot == CS101_COT_SPONTANEOUS || cot == CS101_COT_PERIODIC) {
         sawSpontaneous = true;
     }
+    else if (cot >= CS101_COT_REQUESTED_BY_GENERAL_COUNTER
+            && cot <= CS101_COT_REQUESTED_BY_GROUP_4_COUNTER) {
+        sawCounterData = true;
+        sawData = true;
+    }
     else if (cot >= CS101_COT_INTERROGATED_BY_STATION /* 20 */
-            && cot <= CS101_COT_REQUESTED_BY_GROUP_4_COUNTER /* 41 */) {
+            && cot <= CS101_COT_INTERROGATED_BY_GROUP_16 /* 36 */) {
         sawData = true;
     }
     else if (cot == CS101_COT_REQUEST) {
+        sawReadData = true;
         sawData = true;
     }
 
@@ -785,7 +793,27 @@ runMaster(SerialPort port)
     else
         fail("station interrogation incomplete");
 
-    /* 3. Command expected to be ACCEPTED (single command ON, direct execute). */
+    /* 3. Counter interrogation -> expect ACT_CON + integrated totals. */
+    sawCounterData = false;
+    resetActConWatch();
+    CS101_Master_sendCounterInterrogationCommand(master, CS101_COT_ACTIVATION, g_ca,
+            IEC60870_QCC_RQT_GENERAL + IEC60870_QCC_FRZ_READ);
+    Thread_sleep(3000);
+    if (lastActConSeen && sawCounterData)
+        pass("counter interrogation (ACT_CON + data)");
+    else
+        fail("counter interrogation incomplete");
+
+    /* 4. Read command on a monitor IOA -> expect COT REQUEST data. */
+    sawReadData = false;
+    CS101_Master_sendReadCommand(master, g_ca, IOA_SP_NA);
+    Thread_sleep(2500);
+    if (sawReadData)
+        pass("read command returned data");
+    else
+        fail("read command returned no data");
+
+    /* 5. Command expected to be ACCEPTED (single command ON, direct execute). */
     resetActConWatch();
     {
         InformationObject sc = (InformationObject)
@@ -802,7 +830,7 @@ runMaster(SerialPort port)
         fail("accept command: no ACT_CON received");
     }
 
-    /* 4. Command expected to be REJECTED (single command ON, direct execute). */
+    /* 6. Command expected to be REJECTED (single command ON, direct execute). */
     resetActConWatch();
     {
         InformationObject sc = (InformationObject)
@@ -819,7 +847,7 @@ runMaster(SerialPort port)
         fail("reject command: no ACT_CON received");
     }
 
-    /* 5. Spontaneous / periodic update from the slave (contract section 8). */
+    /* 7. Spontaneous / periodic update from the slave (contract section 8). */
     if (waitFlag(&sawSpontaneous, 8000))
         pass("spontaneous data observed");
     else
@@ -852,6 +880,8 @@ runMaster(SerialPort port)
 enum UnbalancedPhase {
     UM_WAIT_LINK,
     UM_INTERROGATE,
+    UM_COUNTER,
+    UM_READ,
     UM_ACCEPT,
     UM_REJECT,
     UM_SPONT,
@@ -954,9 +984,45 @@ runUnbalancedMaster(SerialPort port)
                 }
                 if (lastActConSeen && sawData) {
                     pass("station interrogation (ACT_CON + data)");
-                    phase = UM_ACCEPT; entered = false;
+                    phase = UM_COUNTER; entered = false;
                 } else if (now > phaseDeadline) {
                     fail("station interrogation incomplete");
+                    phase = UM_COUNTER; entered = false;
+                }
+                break;
+
+            case UM_COUNTER:
+                if (!entered) {
+                    entered = true;
+                    sawCounterData = false;
+                    resetActConWatch();
+                    CS101_Master_useSlaveAddress(master, slaveAddr);
+                    CS101_Master_sendCounterInterrogationCommand(master, CS101_COT_ACTIVATION, g_ca,
+                            IEC60870_QCC_RQT_GENERAL + IEC60870_QCC_FRZ_READ);
+                    phaseDeadline = now + 20000;
+                }
+                if (lastActConSeen && sawCounterData) {
+                    pass("counter interrogation (ACT_CON + data)");
+                    phase = UM_READ; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("counter interrogation incomplete");
+                    phase = UM_READ; entered = false;
+                }
+                break;
+
+            case UM_READ:
+                if (!entered) {
+                    entered = true;
+                    sawReadData = false;
+                    CS101_Master_useSlaveAddress(master, slaveAddr);
+                    CS101_Master_sendReadCommand(master, g_ca, IOA_SP_NA);
+                    phaseDeadline = now + 15000;
+                }
+                if (sawReadData) {
+                    pass("read command returned data");
+                    phase = UM_ACCEPT; entered = false;
+                } else if (now > phaseDeadline) {
+                    fail("read command returned no data");
                     phase = UM_ACCEPT; entered = false;
                 }
                 break;

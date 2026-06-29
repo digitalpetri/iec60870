@@ -33,6 +33,7 @@
 #define DEF_CA         1
 #define DEF_ACCEPT_IOA 2000
 #define DEF_REJECT_IOA 3000
+#define DEF_TLS_CERT_DIR "/interop-tls"
 #define READ_IOA       1000 /* single-point monitor neighbour to read */
 
 static int passCount = 0;
@@ -43,6 +44,84 @@ pass(const char* msg) { printf("PASS: %s\n", msg); passCount++; }
 
 static void
 fail(const char* msg) { printf("FAIL: %s\n", msg); failCount++; }
+
+static bool
+envFlag(const char* name)
+{
+    const char* value = getenv(name);
+    return value != NULL
+            && (strcmp(value, "1") == 0
+                || strcmp(value, "true") == 0
+                || strcmp(value, "TRUE") == 0
+                || strcmp(value, "yes") == 0
+                || strcmp(value, "on") == 0);
+}
+
+static void
+tlsPath(char* out, size_t outSize, const char* certDir, const char* filename)
+{
+    snprintf(out, outSize, "%s/%s", certDir, filename);
+}
+
+static bool
+requireTlsLoad(const char* label, bool ok)
+{
+    if (!ok) {
+        printf("TLS failed to load %s\n", label);
+    }
+    return ok;
+}
+
+static void
+tlsEventHandler(void* parameter, TLSEventLevel eventLevel, int eventCode, const char* message, TLSConnection con)
+{
+    (void) parameter;
+    (void) con;
+    printf("TLS event level=%i code=%i message=%s\n", eventLevel, eventCode, message ? message : "");
+}
+
+static TLSConfiguration
+createClientTlsConfiguration(void)
+{
+    const char* certDir = getenv("INTEROP_TLS_CERT_DIR");
+    if (!certDir) certDir = DEF_TLS_CERT_DIR;
+
+    char ca[256];
+    char ownCert[256];
+    char ownKey[256];
+    char allowedServer[256];
+    tlsPath(ca, sizeof(ca), certDir, "ca.pem");
+    tlsPath(ownCert, sizeof(ownCert), certDir, "client.pem");
+    tlsPath(ownKey, sizeof(ownKey), certDir, "client-key.pem");
+    tlsPath(allowedServer, sizeof(allowedServer), certDir, "server.pem");
+
+    TLSConfiguration tlsConfig = TLSConfiguration_create();
+    if (tlsConfig == NULL) {
+        printf("TLS failed to create configuration\n");
+        return NULL;
+    }
+
+    TLSConfiguration_setMinTlsVersion(tlsConfig, TLS_VERSION_TLS_1_2);
+    TLSConfiguration_setChainValidation(tlsConfig, true);
+    TLSConfiguration_setAllowOnlyKnownCertificates(tlsConfig, true);
+    TLSConfiguration_setEventHandler(tlsConfig, tlsEventHandler, NULL);
+    TLSConfiguration_clearCipherSuiteList(tlsConfig);
+    TLSConfiguration_addCipherSuite(tlsConfig, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256);
+
+    bool ok = true;
+    ok = requireTlsLoad("client-key.pem", TLSConfiguration_setOwnKeyFromFile(tlsConfig, ownKey, NULL)) && ok;
+    ok = requireTlsLoad("client.pem", TLSConfiguration_setOwnCertificateFromFile(tlsConfig, ownCert)) && ok;
+    ok = requireTlsLoad("ca.pem", TLSConfiguration_addCACertificateFromFile(tlsConfig, ca)) && ok;
+    ok = requireTlsLoad("server.pem", TLSConfiguration_addAllowedCertificateFromFile(tlsConfig, allowedServer)) && ok;
+
+    if (!ok) {
+        TLSConfiguration_destroy(tlsConfig);
+        return NULL;
+    }
+
+    printf("TLS enabled certDir=%s\n", certDir);
+    return tlsConfig;
+}
 
 /* State observed via the ASDU received handler. */
 static volatile bool startdtConfirmed = false;
@@ -160,10 +239,30 @@ main(int argc, char** argv)
     const char* rEnv = getenv("INTEROP_REJECT_IOA");
     if (rEnv) rejectIoa = atoi(rEnv);
 
-    printf("INTEROP-CLIENT START host=%s port=%i ca=%i acceptIoa=%i rejectIoa=%i\n",
-            host, port, ca, acceptIoa, rejectIoa);
+    bool tlsEnabled = envFlag("INTEROP_TLS");
+    TLSConfiguration tlsConfig = NULL;
+    if (tlsEnabled) {
+        tlsConfig = createClientTlsConfiguration();
+        if (tlsConfig == NULL) {
+            fail("TLS configuration");
+            printf("INTEROP-CLIENT RESULT pass=%i fail=%i\n", passCount, failCount);
+            return 2;
+        }
+    }
 
-    CS104_Connection con = CS104_Connection_create(host, port);
+    printf("INTEROP-CLIENT START host=%s port=%i ca=%i acceptIoa=%i rejectIoa=%i tls=%i\n",
+            host, port, ca, acceptIoa, rejectIoa, tlsEnabled ? 1 : 0);
+
+    CS104_Connection con = tlsEnabled
+            ? CS104_Connection_createSecure(host, port, tlsConfig)
+            : CS104_Connection_create(host, port);
+    if (con == NULL) {
+        fail("create connection");
+        printf("INTEROP-CLIENT RESULT pass=%i fail=%i\n", passCount, failCount);
+        if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
+        return 2;
+    }
+
     CS101_AppLayerParameters alParams = CS104_Connection_getAppLayerParameters(con);
     alParams->originatorAddress = 3;
 
@@ -175,6 +274,7 @@ main(int argc, char** argv)
         fail("connect");
         printf("INTEROP-CLIENT RESULT pass=%i fail=%i\n", passCount, failCount);
         CS104_Connection_destroy(con);
+        if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
         return 2;
     }
     pass("connect");
@@ -280,6 +380,7 @@ main(int argc, char** argv)
 
     Thread_sleep(500);
     CS104_Connection_destroy(con);
+    if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
 
     printf("INTEROP-CLIENT RESULT pass=%i fail=%i\n", passCount, failCount);
     return (failCount == 0) ? 0 : 1;

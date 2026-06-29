@@ -10,6 +10,7 @@ import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.PointDefinition;
+import com.digitalpetri.iec60870.server.ServerEvent;
 import com.digitalpetri.iec60870.server.Station;
 import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 import io.netty.channel.Channel;
@@ -26,6 +27,9 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Flow;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -77,6 +81,8 @@ class ServerSlotExhaustionIntegrationTest {
   private final ChannelGroup acceptedChildChannels =
       new DefaultChannelGroup("accepted-children", GlobalEventExecutor.INSTANCE);
 
+  private final ServerEventCollector serverEvents = new ServerEventCollector();
+
   private @Nullable Iec60870Server server;
 
   @AfterEach
@@ -117,6 +123,11 @@ class ServerSlotExhaustionIntegrationTest {
     admittedChild.closeFuture().awaitUninterruptibly(EOF_TIMEOUT.toMillis());
     assertFalse(
         admittedChild.isActive(), "the admitted server-side child should be closed (slot freed)");
+    serverEvents.await(
+        ServerEvent.ConnectionClosed.class,
+        e -> true,
+        EOF_TIMEOUT,
+        "the application connection slot to be released");
 
     Socket reused = connect(port);
     assertStaysOpen(
@@ -178,6 +189,7 @@ class ServerSlotExhaustionIntegrationTest {
                           }
                         }))
             .build();
+    server.events().subscribe(serverEvents);
     server.start();
     return port;
   }
@@ -250,6 +262,54 @@ class ServerSlotExhaustionIntegrationTest {
     try (ServerSocket socket = new ServerSocket(0)) {
       socket.setReuseAddress(true);
       return socket.getLocalPort();
+    }
+  }
+
+  private static final class ServerEventCollector implements Flow.Subscriber<ServerEvent> {
+
+    private final ConcurrentLinkedQueue<ServerEvent> events = new ConcurrentLinkedQueue<>();
+
+    @Override
+    public void onSubscribe(Flow.Subscription subscription) {
+      subscription.request(Long.MAX_VALUE);
+    }
+
+    @Override
+    public void onNext(ServerEvent item) {
+      events.add(item);
+    }
+
+    @Override
+    public void onError(Throwable throwable) {
+      // The publisher closes on server shutdown; the test only needs events seen before that point.
+    }
+
+    @Override
+    public void onComplete() {
+      // No action: assertions inspect the events collected up to completion.
+    }
+
+    <T extends ServerEvent> T await(
+        Class<T> type, Predicate<T> predicate, Duration timeout, String what) {
+      long deadline = System.nanoTime() + timeout.toNanos();
+      while (System.nanoTime() < deadline) {
+        for (ServerEvent event : events) {
+          if (type.isInstance(event)) {
+            T typed = type.cast(event);
+            if (predicate.test(typed)) {
+              return typed;
+            }
+          }
+        }
+        try {
+          //noinspection BusyWait
+          Thread.sleep(20);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError("interrupted while awaiting " + what, e);
+        }
+      }
+      throw new AssertionError("timed out after " + timeout.toMillis() + " ms awaiting " + what);
     }
   }
 }

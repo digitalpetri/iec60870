@@ -497,24 +497,28 @@ class ClientVsLib60870ServerInteropTest {
   // --- Commands -------------------------------------------------------------------------------
 
   @Test
-  @DisplayName("Every command type to an ACCEPT IOA is positively confirmed (direct + SBO)")
+  @DisplayName("Every command type to an ACCEPT IOA is positively confirmed")
   void acceptedCommands() {
     PointAddress accept = PointAddress.of(1, IOA_ACCEPT);
 
     // Each entry: a builder for the command under test, keyed by a human label for diagnostics.
-    record Case(String label, Command command) {}
+    record Case(String label, Command command, boolean supportsSelectBeforeOperate) {}
+
     List<Case> cases =
         List.of(
-            new Case("single(45)", Command.single(accept, true)),
-            new Case("double(46)", Command.doublePoint(accept, DoubleCommandState.ON)),
+            new Case("single(45)", Command.single(accept, true), true),
+            new Case("double(46)", Command.doublePoint(accept, DoubleCommandState.ON), true),
             new Case(
                 "regulating-step(47)",
-                Command.regulatingStep(accept, StepCommandState.NEXT_STEP_HIGHER)),
+                Command.regulatingStep(accept, StepCommandState.NEXT_STEP_HIGHER),
+                true),
             new Case(
-                "setpoint-norm(48)", Command.setpointNormalized(accept, NormalizedValue.of(0.25))),
-            new Case("setpoint-scaled(49)", Command.setpointScaled(accept, (short) 4321)),
-            new Case("setpoint-short(50)", Command.setpointShortFloat(accept, 2.71828f)),
-            new Case("bitstring(51)", Command.bitstring(accept, 0x0F0F0F0F)));
+                "setpoint-norm(48)",
+                Command.setpointNormalized(accept, NormalizedValue.of(0.25)),
+                true),
+            new Case("setpoint-scaled(49)", Command.setpointScaled(accept, (short) 4321), true),
+            new Case("setpoint-short(50)", Command.setpointShortFloat(accept, 2.71828f), true),
+            new Case("bitstring(51)", Command.bitstring(accept, 0x0F0F0F0F), false));
 
     for (Case c : cases) {
       CommandResult direct = client().commands().send(c.command(), CommandMode.directExecute());
@@ -523,13 +527,16 @@ class ClientVsLib60870ServerInteropTest {
           () ->
               c.label() + " direct-execute must be positively confirmed; cause=" + direct.cause());
 
-      CommandResult sbo = client().commands().send(c.command(), CommandMode.selectBeforeOperate());
-      assertTrue(
-          sbo.positive(),
-          () ->
-              c.label()
-                  + " select-before-operate must be positively confirmed; cause="
-                  + sbo.cause());
+      if (c.supportsSelectBeforeOperate()) {
+        CommandResult sbo =
+            client().commands().send(c.command(), CommandMode.selectBeforeOperate());
+        assertTrue(
+            sbo.positive(),
+            () ->
+                c.label()
+                    + " select-before-operate must be positively confirmed; cause="
+                    + sbo.cause());
+      }
     }
   }
 

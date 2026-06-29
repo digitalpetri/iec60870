@@ -24,11 +24,16 @@ FROM debian:bookworm-slim AS build
 # https://github.com/mz-automation/lib60870 for available refs.
 ARG LIB60870_REF=v2.3.5
 ARG LIB60870_REPO=https://github.com/mz-automation/lib60870.git
+ARG MBEDTLS_VERSION=2.28.9
+ARG MBEDTLS_SHA256=e85ea97aaf78dd6c0a5ba2e54dd5932ffa15f39abfc189c26beef7684630c02b
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
+        binutils \
+        bzip2 \
         ca-certificates \
         cmake \
+        curl \
         g++ \
         gcc \
         git \
@@ -42,12 +47,41 @@ RUN git clone --depth 1 --branch "${LIB60870_REF}" "${LIB60870_REPO}" lib60870 \
     && git -C lib60870 rev-parse HEAD > /lib60870.commit \
     && echo "lib60870 ref ${LIB60870_REF} -> $(cat /lib60870.commit)"
 
+# lib60870-C enables CS104 TLS support automatically when mbedTLS is present
+# under this exact dependency directory. Keep the runtime peers plaintext by
+# default; INTEROP_TLS=1 selects the secure API at process startup.
+RUN curl -fsSLo /tmp/mbedtls.tar.bz2 \
+        "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MBEDTLS_VERSION}/mbedtls-${MBEDTLS_VERSION}.tar.bz2" \
+    && echo "${MBEDTLS_SHA256}  /tmp/mbedtls.tar.bz2" | sha256sum -c - \
+    && mkdir -p /src/lib60870/lib60870-C/dependencies \
+    && tar -xjf /tmp/mbedtls.tar.bz2 -C /src/lib60870/lib60870-C/dependencies \
+    && mv "/src/lib60870/lib60870-C/dependencies/mbedtls-${MBEDTLS_VERSION}" \
+          /src/lib60870/lib60870-C/dependencies/mbedtls-2.28 \
+    && rm /tmp/mbedtls.tar.bz2
+
+# lib60870-C's bundled mbedTLS config only enables static RSA key exchange, but
+# current JDKs do not enable static RSA cipher suites by default. The library's
+# TLS backend already advertises ECDHE-RSA suites, so compile the matching
+# mbedTLS modules into the image for Java interop.
+RUN sed -i \
+        -e '/#define MBEDTLS_KEY_EXCHANGE_RSA_ENABLED/a #define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED' \
+        -e '/#define MBEDTLS_ENTROPY_C/a #define MBEDTLS_ECDH_C' \
+        -e '/#define MBEDTLS_ENTROPY_C/a #define MBEDTLS_ECP_C' \
+        -e '/#define MBEDTLS_ENTROPY_C/a #define MBEDTLS_ECP_DP_SECP256R1_ENABLED' \
+        -e '/#define MBEDTLS_ENTROPY_C/a #define MBEDTLS_ECP_DP_SECP384R1_ENABLED' \
+        -e '/#define MBEDTLS_ENTROPY_C/a #define MBEDTLS_ECP_NIST_OPTIM' \
+        /src/lib60870/lib60870-C/src/hal/tls/mbedtls/mbedtls_config.h
+
 # Build the library + examples (BUILD_EXAMPLES is ON by default).
 # Examples are not installed by the library's `make install`, so we build the
 # example targets directly and copy the resulting binaries out by hand.
 WORKDIR /src/lib60870/lib60870-C/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release .. \
-    && make -j"$(nproc)" lib60870 cs104_server simple_client
+    && make -j"$(nproc)" lib60870 cs104_server simple_client \
+    && LIB_A="$(find . -type f -name 'liblib60870.a' | head -n1)" \
+    && test -n "${LIB_A}" \
+    && nm -g "${LIB_A}" | grep -q 'CS104_Slave_createSecure' \
+    && nm -g "${LIB_A}" | grep -q 'CS104_Connection_createSecure'
 
 # Collect the two example binaries into a known location. Their build output
 # paths differ per example subdir, so locate them by name.
@@ -78,9 +112,12 @@ RUN set -eux; \
           -I${LIB_ROOT}/src/inc/api \
           -I${LIB_ROOT}/src/inc/internal \
           -I${LIB_ROOT}/src/common/inc \
-          -I${LIB_ROOT}/src/hal/inc"; \
-    gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_server.c "${LIB_A}" -lpthread -o /out/interop_server; \
-    gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_client.c "${LIB_A}" -lpthread -o /out/interop_client; \
+          -I${LIB_ROOT}/src/hal/inc \
+          -I${LIB_ROOT}/src/hal/tls/mbedtls \
+          -I${LIB_ROOT}/dependencies/mbedtls-2.28/include"; \
+    TLS_DEFS='-DCONFIG_CS104_SUPPORT_TLS=1 -DMBEDTLS_CONFIG_FILE="mbedtls_config.h"'; \
+    gcc -O2 -Wall -Wextra ${TLS_DEFS} ${INCS} /interop-src/interop_server.c "${LIB_A}" -lpthread -o /out/interop_server; \
+    gcc -O2 -Wall -Wextra ${TLS_DEFS} ${INCS} /interop-src/interop_client.c "${LIB_A}" -lpthread -o /out/interop_client; \
     gcc -O2 -Wall -Wextra ${INCS} /interop-src/interop_cs101.c  "${LIB_A}" -lpthread -o /out/interop_cs101; \
     chmod +x /out/cs101-entrypoint.sh; \
     ls -l /out/interop_server /out/interop_client /out/interop_cs101 /out/cs101-entrypoint.sh

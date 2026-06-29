@@ -6,7 +6,8 @@ addresses, values, and confirmation behaviour documented here. The custom C driv
 (`interop_server.c`, `interop_client.c`) implement exactly this contract.
 
 - Peer library: **lib60870-C** (MZ Automation), pinned tag **v2.3.5** (see `lib60870c/Dockerfile`).
-- Transport: **plaintext IEC 60870-5-104 over TCP, port 2404**. TLS is **not** compiled into the image.
+- Transport: **IEC 60870-5-104 over TCP, port 2404**. Plaintext is the default; `INTEROP_TLS=1`
+  enables CS104 TLS/mTLS with generated per-test certificates.
 - Application-layer sizing: lib60870-C CS104 defaults — **CA = 2 octets, IOA = 3 octets, COT = 2 octets**
   (COT field carries originator address). The interop server uses the stack defaults; do not assume
   1-octet CA/COT.
@@ -155,7 +156,7 @@ The server inspects each control ASDU's IOA:
 - **IOA == 3000 -> REJECT.** The server replies `ACT_CON` **negative (P/N = 1)** and performs no update.
 - **IOA anywhere else** (outside 2000..2999 and not 3000) -> stack returns `UNKNOWN_IOA (47)`.
 
-Supported command type IDs (all both direct-execute and select-before-operate):
+Supported command type IDs:
 
 | Command | TypeID | Value used by `interop_client` accept test |
 |---------|-------:|--------------------------------------------|
@@ -166,6 +167,10 @@ Supported command type IDs (all both direct-execute and select-before-operate):
 | Setpoint scaled           | C_SE_NB_1 (49) | `4321` |
 | Setpoint short float      | C_SE_NC_1 (50) | `2.71828` |
 | Bitstring 32 command      | C_BO_NA_1 (51) | `0x0F0F0F0F` |
+
+All command types above are covered in direct-execute mode. Select-before-operate is covered for the
+command types that carry a select/execute qualifier (`C_SC`, `C_DC`, `C_RC`, and `C_SE_*`); `C_BO`
+is direct-only.
 
 Return-information mapping (only meaningful for accepted commands in 2000..2999): the server mirrors a
 single-command accept to single-point IOA **1000**, and a setpoint-short accept to short-float IOA
@@ -194,7 +199,8 @@ The server prints stable, greppable markers. Anchor waits on these substrings:
 
 | Marker | Meaning |
 |--------|---------|
-| `INTEROP-SERVER READY` | server bound and listening on 0.0.0.0:2404 |
+| `TLS enabled certDir=...` | server loaded TLS material and selected `CS104_Slave_createSecure` |
+| `INTEROP-SERVER READY` | server bound and listening on 0.0.0.0:2404 (`tls=0` or `tls=1`) |
 | `END-OF-INIT sent` | end-of-initialization emitted |
 | `CONN opened` / `CONN activated` / `CONN closed` | connection lifecycle |
 | `IC station` / `IC group=N` | station / group N interrogation handled |
@@ -228,6 +234,29 @@ docker run -d --name iec104-srv --network <net> -p 2404:2404 \
 `interop_server` takes no required arguments. Optional env:
 - `INTEROP_PORT` (default `2404`)
 - `INTEROP_CA` (default `1`)
+- `INTEROP_TLS` (default unset/false; set to `1` to require TLS)
+- `INTEROP_TLS_CERT_DIR` (default `/interop-tls`)
+
+When `INTEROP_TLS=1`, the cert directory must contain these PEM files:
+
+| File | Used by |
+|------|---------|
+| `ca.pem` | CA trust anchor |
+| `server.pem` | server certificate |
+| `server-key.pem` | server private key |
+| `client.pem` | allowed client certificate for mutual authentication |
+
+TLS server mode uses TLS 1.2 minimum, CA chain validation, and a generated client certificate for
+mutual authentication. A TLS server run therefore looks like:
+
+```bash
+docker run -d --name iec104-tls-srv --network <net> -p 2404:2404 \
+  -e INTEROP_TLS=1 \
+  -e INTEROP_TLS_CERT_DIR=/interop-tls \
+  -v "$PWD/tls:/interop-tls:ro" \
+  lib60870c-interop:v2.3.5 \
+  stdbuf -oL -eL interop_server
+```
 
 **Client (controlling station, drives our Java SERVER — the LIMITED scenario):**
 
@@ -246,6 +275,19 @@ docker run --rm --network <net> \
 | (n/a)   | `INTEROP_CA`   | `1` | common address to address |
 | (n/a)   | `INTEROP_ACCEPT_IOA` | `2000` | IOA expected to be ACCEPTED |
 | (n/a)   | `INTEROP_REJECT_IOA` | `3000` | IOA expected to be REJECTED |
+| (n/a)   | `INTEROP_TLS` | unset/false | set to `1` to use `CS104_Connection_createSecure` |
+| (n/a)   | `INTEROP_TLS_CERT_DIR` | `/interop-tls` | directory containing TLS PEM files |
+
+When `INTEROP_TLS=1`, the cert directory must contain these PEM files:
+
+| File | Used by |
+|------|---------|
+| `ca.pem` | CA trust anchor |
+| `client.pem` | client certificate |
+| `client-key.pem` | client private key |
+| `server.pem` | allowed server certificate |
+
+TLS client mode uses TLS 1.2 minimum, chain validation, and allow-only-known-certificate validation.
 
 ---
 
