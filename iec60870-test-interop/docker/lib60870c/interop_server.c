@@ -25,10 +25,12 @@
 #include "cs104_slave.h"
 #include "hal_thread.h"
 #include "hal_time.h"
+#include "tls_config.h"
 
 /* ---- contract constants (keep in sync with INTEROP-CONTRACT.md) ---- */
 #define DEFAULT_PORT 2404
 #define DEFAULT_CA   1
+#define DEFAULT_TLS_CERT_DIR "/interop-tls"
 
 /* Monitor image: IOA = 1000 + typeBlock*10 + timeVariant */
 #define IOA_SP_NA 1000
@@ -84,6 +86,84 @@ static void
 nowTime(CP56Time2a t)
 {
     CP56Time2a_createFromMsTimestamp(t, Hal_getTimeInMs());
+}
+
+/* -------------------- optional CS104 TLS -------------------- */
+static bool
+envFlag(const char* name)
+{
+    const char* value = getenv(name);
+    return value != NULL
+            && (strcmp(value, "1") == 0
+                || strcmp(value, "true") == 0
+                || strcmp(value, "TRUE") == 0
+                || strcmp(value, "yes") == 0
+                || strcmp(value, "on") == 0);
+}
+
+static void
+tlsPath(char* out, size_t outSize, const char* certDir, const char* filename)
+{
+    snprintf(out, outSize, "%s/%s", certDir, filename);
+}
+
+static bool
+requireTlsLoad(const char* label, bool ok)
+{
+    if (!ok) {
+        printf("TLS failed to load %s\n", label);
+    }
+    return ok;
+}
+
+static void
+tlsEventHandler(void* parameter, TLSEventLevel eventLevel, int eventCode, const char* message, TLSConnection con)
+{
+    (void) parameter;
+    (void) con;
+    printf("TLS event level=%i code=%i message=%s\n", eventLevel, eventCode, message ? message : "");
+}
+
+static TLSConfiguration
+createServerTlsConfiguration(void)
+{
+    const char* certDir = getenv("INTEROP_TLS_CERT_DIR");
+    if (!certDir) certDir = DEFAULT_TLS_CERT_DIR;
+
+    char ca[256];
+    char ownCert[256];
+    char ownKey[256];
+    char allowedClient[256];
+    tlsPath(ca, sizeof(ca), certDir, "ca.pem");
+    tlsPath(ownCert, sizeof(ownCert), certDir, "server.pem");
+    tlsPath(ownKey, sizeof(ownKey), certDir, "server-key.pem");
+    tlsPath(allowedClient, sizeof(allowedClient), certDir, "client.pem");
+
+    TLSConfiguration tlsConfig = TLSConfiguration_create();
+    if (tlsConfig == NULL) {
+        printf("TLS failed to create configuration\n");
+        return NULL;
+    }
+
+    TLSConfiguration_setMinTlsVersion(tlsConfig, TLS_VERSION_TLS_1_2);
+    TLSConfiguration_setChainValidation(tlsConfig, true);
+    TLSConfiguration_setEventHandler(tlsConfig, tlsEventHandler, NULL);
+    TLSConfiguration_clearCipherSuiteList(tlsConfig);
+    TLSConfiguration_addCipherSuite(tlsConfig, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256);
+
+    bool ok = true;
+    ok = requireTlsLoad("server-key.pem", TLSConfiguration_setOwnKeyFromFile(tlsConfig, ownKey, NULL)) && ok;
+    ok = requireTlsLoad("server.pem", TLSConfiguration_setOwnCertificateFromFile(tlsConfig, ownCert)) && ok;
+    ok = requireTlsLoad("ca.pem", TLSConfiguration_addCACertificateFromFile(tlsConfig, ca)) && ok;
+    ok = requireTlsLoad("client.pem", TLSConfiguration_addAllowedCertificateFromFile(tlsConfig, allowedClient)) && ok;
+
+    if (!ok) {
+        TLSConfiguration_destroy(tlsConfig);
+        return NULL;
+    }
+
+    printf("TLS enabled certDir=%s\n", certDir);
+    return tlsConfig;
 }
 
 /*
@@ -557,7 +637,25 @@ main(int argc, char** argv)
     const char* caEnv = getenv("INTEROP_CA");
     if (caEnv) g_ca = atoi(caEnv);
 
-    slave = CS104_Slave_create(50, 50);
+    bool tlsEnabled = envFlag("INTEROP_TLS");
+    TLSConfiguration tlsConfig = NULL;
+    if (tlsEnabled) {
+        tlsConfig = createServerTlsConfiguration();
+        if (tlsConfig == NULL) {
+            return 1;
+        }
+        slave = CS104_Slave_createSecure(50, 50, tlsConfig);
+    }
+    else {
+        slave = CS104_Slave_create(50, 50);
+    }
+
+    if (slave == NULL) {
+        printf("INTEROP-SERVER FAILED to create slave (tls=%i)\n", tlsEnabled ? 1 : 0);
+        if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
+        return 1;
+    }
+
     CS104_Slave_setLocalAddress(slave, "0.0.0.0");
     CS104_Slave_setLocalPort(slave, port);
     CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
@@ -575,12 +673,13 @@ main(int argc, char** argv)
     CS104_Slave_start(slave);
 
     if (!CS104_Slave_isRunning(slave)) {
-        printf("INTEROP-SERVER FAILED to start on port %i\n", port);
+        printf("INTEROP-SERVER FAILED to start on port %i tls=%i\n", port, tlsEnabled ? 1 : 0);
         CS104_Slave_destroy(slave);
+        if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
         return 1;
     }
 
-    printf("INTEROP-SERVER READY port=%i ca=%i\n", port, g_ca);
+    printf("INTEROP-SERVER READY port=%i ca=%i tls=%i\n", port, g_ca, tlsEnabled ? 1 : 0);
 
     /* End-of-initialization at startup (queued; delivered once a client is active). */
     sendEndOfInit();
@@ -604,6 +703,7 @@ main(int argc, char** argv)
     printf("INTEROP-SERVER stopping\n");
     CS104_Slave_stop(slave);
     CS104_Slave_destroy(slave);
+    if (tlsConfig) TLSConfiguration_destroy(tlsConfig);
     Thread_sleep(200);
     return 0;
 }

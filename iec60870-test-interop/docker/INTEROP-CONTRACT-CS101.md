@@ -3,12 +3,12 @@
 # IEC 60870-5-101 Interop Contract (BALANCED + UNBALANCED)
 
 This file is the **source of truth** for the lib60870-C CS101 interop peer used by the
-`iec60870-test-interop` Testcontainers tests `Cs101BalancedInteropTest` and `Cs101UnbalancedInteropTest`.
-It is the serial sibling of [`INTEROP-CONTRACT.md`](INTEROP-CONTRACT.md) (CS104): the
-application-layer point image, interrogation groups, command partitioning, and spontaneous traffic
-are **reused verbatim** from that contract. This document pins only the things that differ for a
-serial link: the link mode and addressing, the serial parameters, the PTY/TCP bridge topology, the
-FT1.2 behaviors, and the log markers / run env vars.
+`iec60870-test-interop` Testcontainers tests `Cs101BalancedInteropTest`, `Cs101UnbalancedInteropTest`,
+and `Cs101OverTcpInteropTest`. It is the CS101 sibling of [`INTEROP-CONTRACT.md`](INTEROP-CONTRACT.md)
+(CS104): the application-layer point image, interrogation groups, command partitioning, and
+spontaneous traffic are **reused verbatim** from that contract. This document pins only the things
+that differ for CS101: the link mode and addressing, the serial parameters, the PTY/TCP bridge
+topology, the FT1.2 behaviors, and the log markers / run env vars.
 
 Sections 1–5 describe the **balanced** link (the default). [Section 6](#6-unbalanced-mode) describes
 the **unbalanced** link, selected with `INTEROP_CS101_MODE=unbalanced`; it reuses everything in
@@ -22,7 +22,8 @@ image. Everything under `docker/` is therefore GPL-3.0-or-later (see `docker/LIC
 `SPDX-License-Identifier` headers).
 
 - Peer library: **lib60870-C** (MZ Automation), pinned tag **v2.3.5** (see `lib60870c/Dockerfile`).
-- Transport: **IEC 60870-5-101 balanced (FT1.2) over an emulated serial line**, 9600 8E1.
+- Transport: **IEC 60870-5-101 balanced/unbalanced (FT1.2) over an emulated serial line**, 9600 8E1,
+  plus **balanced 101-over-TCP plaintext** through the same PTY bridge.
 - Application-layer sizing: **COT = 1 octet (no originator address), CA = 1 octet, IOA = 2 octets**,
   matching the Java side's `ProtocolProfile(1, 1, 2, 255)`. This is narrower than the CS104 defaults
   (CA = 2, IOA = 3, COT = 2); the CS101 peer sets `sizeOfCOT = 1`, `sizeOfCA = 1`, `sizeOfIOA = 2` on
@@ -84,32 +85,61 @@ startup ordering (it may come up before the Java side is reading the line).
 ## 3. PTY / TCP bridge topology
 
 A serial line is point-to-point, but Testcontainers exposes TCP ports, not serial devices. socat
-bridges the gap on **both** ends. The container entrypoint
-(`lib60870c/cs101-entrypoint.sh`) runs, in the background:
+bridges the gap. The container entrypoint (`lib60870c/cs101-entrypoint.sh`) always creates
+`/dev/ttyCS101` for the C peer and then selects one of two bridge modes with
+`INTEROP_CS101_BRIDGE`.
+
+### 3.1 `listen` bridge mode
 
 ```
 socat PTY,link=/dev/ttyCS101,raw,echo=0,b9600  TCP-LISTEN:2404,reuseaddr,nodelay
 ```
 
-It creates a pseudo-terminal, symlinks the slave side to `/dev/ttyCS101` (the device the C peer
-opens), and exposes the other end as `TCP-LISTEN:2404`. Testcontainers maps container port 2404 to a
-host port. The **host** test then runs its own:
+`listen` is the default and is used in two ways:
+
+- Serial interop (`Cs101BalancedInteropTest`, `Cs101UnbalancedInteropTest`) maps container port 2404
+  to a host port. The **host** test then runs its own:
 
 ```
 socat PTY,link=<host pty>,raw,echo=0  TCP:localhost:<mappedPort>
 ```
 
-so the complete octet path is:
+  so the complete octet path is:
 
 ```
 Java <-> host PTY <-> host socat <-> TCP <-> (docker port map) <-> container socat <-> /dev/ttyCS101 <-> C peer
 ```
 
-The Java `SerialIec101Client` / `SerialIec101Server` opens `<host pty>` as its serial device.
+  The Java `SerialIec101Client` / `SerialIec101Server` opens `<host pty>` as its serial device.
 
-> **Host socat is required.** The test that drives this bridge `Assumptions.assumeTrue`s on
+- 101-over-TCP client interop (`Cs101OverTcpInteropTest`) connects Java `TcpIec101Client` directly to
+  the mapped container port:
+
+```
+Java TcpIec101Client <-> TCP <-> (docker port map) <-> container socat <-> /dev/ttyCS101 <-> C peer
+```
+
+> **Host socat is required only for serial interop.** The serial tests `Assumptions.assumeTrue` on
 > `which socat` and **skips cleanly** when the host has no `socat` (install it with `brew install
-> socat` or the platform equivalent to run the test).
+> socat` or the platform equivalent to run the test). The 101-over-TCP tests do not require host
+> `socat`.
+
+### 3.2 `connect` bridge mode
+
+`connect` is used when the C CS101 master drives a Java `TcpIec101Server`. The container-side bridge
+connects the C peer's PTY to a TCP server that Java is already listening on:
+
+```
+socat PTY,link=/dev/ttyCS101,raw,echo=0,b9600  TCP:${INTEROP_CS101_TCP_HOST}:${INTEROP_CS101_TCP_PORT},nodelay
+```
+
+The complete octet path is:
+
+```
+C peer <-> /dev/ttyCS101 <-> container socat <-> TCP <-> Java TcpIec101Server
+```
+
+This mode must not require host `socat`.
 
 ---
 
@@ -152,14 +182,17 @@ Env vars consumed by the peer / entrypoint:
 | `INTEROP_CS101_ROLE`   | `slave` | role to run (`slave` or `master`) |
 | `INTEROP_CS101_DEVICE` | `/dev/ttyCS101` | serial device the peer opens (created by socat) |
 | `INTEROP_CS101_BAUD`   | `9600`  | baud rate |
-| `INTEROP_CS101_TCP_PORT` | `2404` | container-side TCP-LISTEN port (entrypoint) |
+| `INTEROP_CS101_BRIDGE` | `listen` | bridge mode (`listen` or `connect`) |
+| `INTEROP_CS101_TCP_HOST` | `host.testcontainers.internal` | TCP target host for `connect` bridge mode |
+| `INTEROP_CS101_TCP_PORT` | `2404` | TCP-LISTEN port for `listen`, or TCP target port for `connect` |
 | `INTEROP_CA`           | `1`     | common address |
 | `INTEROP_ACCEPT_IOA`   | `2000`  | IOA expected to be ACCEPTED (master role) |
 | `INTEROP_REJECT_IOA`   | `3000`  | IOA expected to be REJECTED (master role) |
 
 The `INTEROP_CS101_PEER START` / `READY` markers carry `mode=<balanced|unbalanced>` and
 `role=<slave|master>`, giving a distinct readiness marker per mode/role (for example
-`INTEROP-CS101-PEER READY role=slave mode=unbalanced ca=1 linkAddr=1`).
+`INTEROP-CS101-PEER READY role=slave mode=unbalanced ca=1 linkAddr=1`). The bridge marker carries
+the selected bridge mode and endpoint.
 
 Stable, greppable log markers (anchor `Wait.forLogMessage(...)` on these substrings):
 
@@ -179,9 +212,11 @@ The C master, once `LINK available`, runs and logs `PASS:`/`FAIL:` for:
 
 1. `link available` — the balanced link reached the available state.
 2. `station interrogation (ACT_CON + data)` — station IC returns ACT_CON + data.
-3. `accept command confirmed (P/N=0)` — single command ON, direct, to `INTEROP_ACCEPT_IOA`.
-4. `reject command negatively confirmed (P/N=1)` — single command ON, direct, to `INTEROP_REJECT_IOA`.
-5. `spontaneous data observed` — at least one COT SPONTANEOUS/PERIODIC ASDU from the slave.
+3. `counter interrogation (ACT_CON + data)` — general counter interrogation returns ACT_CON + data.
+4. `read command returned data` — read command for IOA 1000 returns a data ASDU.
+5. `accept command confirmed (P/N=0)` — single command ON, direct, to `INTEROP_ACCEPT_IOA`.
+6. `reject command negatively confirmed (P/N=1)` — single command ON, direct, to `INTEROP_REJECT_IOA`.
+7. `spontaneous data observed` — at least one COT SPONTANEOUS/PERIODIC ASDU from the slave.
 
 It then prints `INTEROP-CS101-MASTER RESULT pass=<n> fail=<n>` and exits non-zero if `fail != 0`.
 
@@ -255,8 +290,8 @@ is still pending, which the master uses to escalate to a class-1 poll.
 The role table, log markers, and the master's scripted `PASS:`/`FAIL:` steps + final
 `INTEROP-CS101-MASTER RESULT pass=<n> fail=<n>` line (section 5) are **identical** to the balanced
 master, with `mode=unbalanced` in the `START` / `READY` markers. The unbalanced master role drives
-the same five scripted steps (link available, station interrogation, accept command, reject command,
-spontaneous data) on its single-threaded poll loop.
+the same seven scripted steps (link available, station interrogation, counter interrogation, read,
+accept command, reject command, spontaneous data) on its single-threaded poll loop.
 
 | Role (mode=unbalanced) | C peer is | Java side under test | Driven by |
 |------|-----------|----------------------|-----------|
@@ -291,6 +326,27 @@ docker run --rm -p 2404:2404 \
   cs101-entrypoint.sh
 ```
 
+**Balanced 101-over-TCP, Java client drives the C slave (no host socat):**
+
+```bash
+docker run --rm -p 2404:2404 \
+  -e INTEROP_CS101_MODE=balanced -e INTEROP_CS101_ROLE=slave \
+  -e INTEROP_CS101_BRIDGE=listen \
+  lib60870c-interop:v2.3.5 cs101-entrypoint.sh
+# then connect TcpIec101Client to localhost:<mappedPort>
+```
+
+**Balanced 101-over-TCP, C master drives a Java TCP server (no host socat):**
+
+```bash
+docker run --rm \
+  -e INTEROP_CS101_MODE=balanced -e INTEROP_CS101_ROLE=master \
+  -e INTEROP_CS101_BRIDGE=connect \
+  -e INTEROP_CS101_TCP_HOST=host.testcontainers.internal \
+  -e INTEROP_CS101_TCP_PORT=<java-server-port> \
+  lib60870c-interop:v2.3.5 cs101-entrypoint.sh
+```
+
 **Unbalanced peers** add `-e INTEROP_CS101_MODE=unbalanced`:
 
 ```bash
@@ -306,4 +362,8 @@ docker run --rm -p 2404:2404 \
 ```
 
 The CS104 binaries (`interop_server`, `interop_client`, stock `cs104_server` / `simple_client`) and
-their contract are unchanged.
+their contract are documented in [`INTEROP-CONTRACT.md`](INTEROP-CONTRACT.md).
+
+Native lib60870-C CS101 TLS is out of scope for this interop peer because lib60870-C's CS101 API is
+serial-port based. TLS for Java `TcpIec101Client` / `TcpIec101Server` is covered by loopback
+integration tests in `iec60870-test-integration`.

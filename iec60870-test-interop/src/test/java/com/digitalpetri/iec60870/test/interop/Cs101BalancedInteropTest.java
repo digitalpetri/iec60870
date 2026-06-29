@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.test.interop;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,13 +11,10 @@ import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec60870.asdu.element.DoublePointState;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
-import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.element.Vti;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent;
-import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
-import com.digitalpetri.iec60870.client.InterrogationResult;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
@@ -98,8 +94,16 @@ class Cs101BalancedInteropTest {
   /** CS101 wire sizing: COT 1 (no OA), CA 1, IOA 2 — matches the C peer's app-layer params. */
   private static final ProtocolProfile PROFILE = new ProtocolProfile(1, 1, 2, 255);
 
-  /** Balanced FT1.2 link, address 1, length 1 (the {@code LinkSettings.balanced()} defaults). */
-  private static final LinkSettings LINK = LinkSettings.balanced().build();
+  /**
+   * Balanced FT1.2 link, address 1, length 1. The host PTY + Docker bridge can add enough latency
+   * to make the production 200 ms ACK timeout too tight for broad interop responses, so the serial
+   * interop scenario matches lib60870-C's 1000 ms ACK timeout.
+   */
+  private static final LinkSettings LINK =
+      LinkSettings.balanced()
+          .confirmTimeout(Duration.ofSeconds(1))
+          .repeatTimeout(Duration.ofSeconds(2))
+          .build();
 
   /** Contract: monitor IOAs and command accept/reject partitioning (reused from CS104). */
   private static final int IOA_SCALED = 1050; // periodic update IOA (contract section 8)
@@ -141,7 +145,7 @@ class Cs101BalancedInteropTest {
               .startDataTransferOnConnect(true)
               .build();
 
-      RecordingSubscriber events = new RecordingSubscriber();
+      InteropEventRecorder events = new InteropEventRecorder();
       client.events().subscribe(events);
 
       try {
@@ -149,27 +153,8 @@ class Cs101BalancedInteropTest {
         client.connect();
         assertTrue(client.isConnected(), "client should be connected after connect()");
 
-        // Station interrogation returns the non-time monitor image (contract section 3/4).
-        InterrogationResult result = client.interrogate(STATION, QualifierOfInterrogation.STATION);
-        assertTrue(result.terminated(), "station interrogation must end with ACT_TERM");
-        assertFalse(result.pointValues().isEmpty(), "station interrogation must return points");
-
-        // A command to an ACCEPT IOA is positively confirmed; the REJECT IOA is negative.
-        CommandResult accept = client.commands().single(PointAddress.of(1, IOA_ACCEPT), true);
-        assertTrue(
-            accept.positive(), () -> "accept command must be positive; cause=" + accept.cause());
-
-        CommandResult reject = client.commands().single(PointAddress.of(1, IOA_REJECT), true);
-        assertFalse(reject.positive(), "command to IOA 3000 must be negatively confirmed");
-
-        // Spontaneous traffic: the C slave enqueues a periodic M_ME_NB_1 at IOA 1050 every 2s.
-        ClientEvent.PointUpdated update =
-            events.awaitPointUpdated(
-                u ->
-                    u.address().objectAddress().value().longValue() == IOA_SCALED
-                        && u.cause() == Cause.PERIODIC,
-                WAIT_TIMEOUT);
-        assertNotNull(update, "expected a periodic PointUpdated for IOA 1050");
+        InteropClientContract.assertBroadClientContract(
+            client, events, OriginatorAddress.none(), WAIT_TIMEOUT, WAIT_TIMEOUT);
       } finally {
         client.close();
       }
@@ -231,6 +216,8 @@ class Cs101BalancedInteropTest {
             () -> "C master reported failures (fail!=0). Container log:\n" + logs);
         assertContains(logs, "PASS: link available");
         assertContains(logs, "PASS: station interrogation (ACT_CON + data)");
+        assertContains(logs, "PASS: counter interrogation (ACT_CON + data)");
+        assertContains(logs, "PASS: read command returned data");
         assertContains(logs, "PASS: accept command confirmed (P/N=0)");
         assertContains(logs, "PASS: reject command negatively confirmed (P/N=1)");
         assertContains(logs, "PASS: spontaneous data observed");
