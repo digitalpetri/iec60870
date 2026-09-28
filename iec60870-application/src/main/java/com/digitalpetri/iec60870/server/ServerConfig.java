@@ -42,8 +42,8 @@ import org.jspecify.annotations.Nullable;
  *     for an unbounded queue.
  * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
  *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
- * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
- *     and published updates).
+ * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
+ *     interrogation answers. Default station and group interrogation answers use no time tags.
  * @param maxConnections the maximum number of concurrent controlling-station connections.
  * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on its
  *     serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded chain.
@@ -75,8 +75,8 @@ public record ServerConfig(
    *     0} for an unbounded queue.
    * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
    *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
-   * @param timeTagStyle the time-tag style used when reporting monitor data (interrogation answers
-   *     and published updates).
+   * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
+   *     interrogation answers. Default station and group interrogation answers use no time tags.
    * @param maxConnections the maximum number of concurrent controlling-station connections.
    * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on
    *     its serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded
@@ -244,8 +244,9 @@ public record ServerConfig(
     }
 
     /**
-     * Sets the time-tag style used when reporting monitor data. Defaults to {@link
-     * TimeTagStyle#CP56}.
+     * Sets the time-tag style used for published updates, read answers, and counter interrogation
+     * answers. Defaults to {@link TimeTagStyle#CP56}. Default station and group interrogation
+     * answers use no time tags.
      *
      * @param timeTagStyle the time-tag style.
      * @return this builder.

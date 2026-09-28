@@ -143,6 +143,13 @@ station initiates the link-reset bring-up, and which station may drive
 - **User data is one frame at a time.** `sendAsdu(asdu)` queues the ASDU and flushes the queue; the
   flush sends a send/confirm user-data frame (`FC3`, `FCV=1`) only while the link is available and no
   primary frame is outstanding. Queued ASDUs go out in submission order.
+- **DFC back-pressure.** An acknowledgement with `DFC=1` confirms the current ASDU and advances its
+  FCB, but suspends further data sends. A negative acknowledgement (`FC1`) retains the rejected ASDU
+  and its FCB. Both start request-status (`FC9`) probes; only a ready status (`FC11`, `DFC=0`) resumes
+  data, retrying any rejected ASDU before queued data. A busy status reply proves liveness and
+  schedules another probe after `repeatTimeout` without consuming `maxRetries`. Unanswered probes
+  still use the normal confirmation/retry limit. Busy status during initial bring-up defers the
+  reset, and busy status from an idle probe also suspends data.
 - **Idle keep-alive and liveness.** The link-state timer probes an idle but available link with a
   request-status-of-link (`FC9`) keep-alive; a received test-function (`FC2`) or status request is
   answered from the secondary process. If a primary frame goes unconfirmed after the configured
@@ -163,13 +170,20 @@ its DFC flag).
 
 - **Per-slave bring-up.** Each configured slave is brought up independently with `FC9 → FC11 → FC0 →
   ack`; the reset's acknowledgement transitions that slave to `AVAILABLE` and restarts its FCB at
-  `1`.
+  `1`. A status reply with `DFC=1` defers that slave's next status request until the next poll tick
+  and releases the bus for other slaves. Only a status reply with `DFC=0` advances to reset. Busy
+  replies refresh the unanswered-probe budget; a slave that stops replying still exhausts its
+  configured retries.
 - **Poll scheduler.** Once available, slaves are polled for class-2 data with request-class-2
   (`FC11`, `FCV=1`) frames, round-robin across the available slaves, on the configured
   `PollConfig.pollInterval` cadence. The `pump()` bus loop runs only while data transfer is started
-  and the bus is free, in priority order: (1) bring up any not-yet-reset slave; (2) deliver the head
-  command if its target slave can accept it; (3) on a due poll tick, request class-2 data from the
-  next available slave.
+  and the bus is free. Bus turns rotate among commands, due class-2 polls, and slave bring-up,
+  skipping activities without eligible work. A sustained command backlog therefore cannot starve
+  application responses waiting at a slave or the initialization of another slave. Commands skip
+  blocked targets while preserving submission order for each slave. Polls and bring-up each rotate
+  across their eligible slaves. Outstanding retries and bounded class-1 drains complete before the
+  activity rotation resumes; the poll interval marks work due rather than guaranteeing an exact
+  transmission time on the shared bus.
 - **Class-1/class-2 and ACD escalation.** A poll response carrying the **access-demand bit (ACD)**
   escalates immediately to a request-class-1 (`FC10`) drain of the slave's high-priority data,
   bounded by `MAX_ACD_DRAIN` (16) consecutive drains so a slave that keeps asserting ACD cannot
@@ -236,7 +250,7 @@ an injected `ScheduledExecutorService` and run under the engine lock.
 | Timer | Default | Meaning | Where applied |
 |---|---|---|---|
 | `confirmTimeout` | 200 ms | Time to wait for the acknowledgement of a sent primary frame before the first retransmission | `BalancedEngine`, `UnbalancedMasterEngine` |
-| `repeatTimeout` | 1000 ms | Spacing between repeated transmissions of an unacknowledged primary frame | `BalancedEngine`, `UnbalancedMasterEngine` |
+| `repeatTimeout` | 1000 ms | Spacing between unacknowledged-frame retries; also the delay before probing a responsive busy balanced peer again | `BalancedEngine`, `UnbalancedMasterEngine` |
 | `linkStateTimeout` | 5000 ms | Idle interval after which an available link is probed with a request-status-of-link keep-alive | `BalancedEngine` |
 | `pollInterval` | 1000 ms | Cadence between class-2 poll cycles across the available slaves | `UnbalancedMasterEngine` |
 
