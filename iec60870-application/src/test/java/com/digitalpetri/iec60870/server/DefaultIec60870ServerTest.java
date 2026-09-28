@@ -940,6 +940,62 @@ class DefaultIec60870ServerTest {
     server.close();
   }
 
+  @Test
+  void asynchronousRawHookResumesTypedHandlingOnCallbackExecutor() throws InterruptedException {
+    var executor = new QueueingExecutor();
+    var rawResult = new CompletableFuture<Boolean>();
+    var rawCalls = new AtomicInteger();
+    List<Thread> readThreads = new CopyOnWriteArrayList<>();
+    List<String> calls = new CopyOnWriteArrayList<>();
+    ServerHandler handler =
+        new ServerHandler() {
+          @Override
+          public CompletionStage<Boolean> onRawAsduAsync(ServerContext context, Asdu asdu) {
+            int call = rawCalls.incrementAndGet();
+            calls.add("raw" + call);
+            return call == 1 ? rawResult : CompletableFuture.completedFuture(false);
+          }
+
+          @Override
+          public ReadResponse onRead(ServerContext context, ReadRequest request) {
+            readThreads.add(Thread.currentThread());
+            calls.add("read" + readThreads.size());
+            return context.defaultRead(request);
+          }
+        };
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(handler)
+            .callbackExecutor(executor)
+            .build();
+    try (var server = new DefaultIec60870Server(transport, config, sessionFactory(config))) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+      Asdu request =
+          control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress()));
+      connection.deliverAsdu(request);
+      connection.deliverAsdu(request);
+      executor.drain();
+      assertEquals(List.of("raw1"), calls);
+
+      // Complete the first hook off the callback executor, as an asynchronous I/O operation would.
+      var completingThread = new Thread(() -> rawResult.complete(false), "raw-hook-completion");
+      completingThread.start();
+      completingThread.join(5000);
+      assertFalse(completingThread.isAlive());
+      assertTrue(readThreads.isEmpty(), "typed handling must wait for the callback executor");
+      assertEquals(List.of("raw1"), calls, "the next request must wait for typed handling");
+      assertTrue(connection.sentAsdus().isEmpty());
+
+      executor.drain();
+      assertEquals(List.of(Thread.currentThread(), Thread.currentThread()), readThreads);
+      assertEquals(List.of("raw1", "read1", "raw2", "read2"), calls);
+      assertEquals(2, connection.sentAsdus().size());
+    }
+  }
+
   // --- inbound dispatch backlog is bounded -----------------------------------------------------
 
   @Test

@@ -490,13 +490,14 @@ public final class DefaultIec60870Server implements Iec60870Server {
       return config
           .handler()
           .onRawAsduAsync(context, asdu)
-          .thenCompose(
+          .thenComposeAsync(
               consumed -> {
                 if (consumed) {
                   return done();
                 }
                 return dispatchByType(context, asdu);
-              });
+              },
+              callbackExecutor);
     }
 
     /** Routes an ASDU to the per-type handling once the raw hook has declined it. */
