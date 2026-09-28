@@ -500,7 +500,18 @@ public final class DefaultIec60870Client implements Iec60870Client {
   @Override
   public CompletionStage<Void> sendAsync(Asdu asdu) {
     Objects.requireNonNull(asdu, "asdu");
-    return submitToSession(asdu);
+    var result = new CompletableFuture<Void>();
+    submitToSession(asdu)
+        .whenCompleteAsync(
+            (ignored, error) -> {
+              if (error == null) {
+                result.complete(null);
+              } else {
+                result.completeExceptionally(error);
+              }
+            },
+            callbackExecutor);
+    return result;
   }
 
   // --- Session output / input -----------------------------------------------------------------
@@ -509,13 +520,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * Hands an outbound application ASDU to the session and returns a stage for the write.
    *
    * @param asdu the ASDU to send.
-   * @return a stage that completes once the ASDU has been queued/sent, or completes exceptionally
-   *     if the session is closed.
+   * @return a stage that completes after the transport write, or fails if the ASDU cannot be sent.
    */
   private CompletionStage<Void> submitToSession(Asdu asdu) {
     try {
-      session.sendAsdu(asdu);
-      return CompletableFuture.completedFuture(null);
+      return session.sendAsduAsync(asdu);
     } catch (RuntimeException e) {
       return CompletableFuture.failedFuture(e);
     }
@@ -681,8 +690,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
         .whenComplete(
             (ignored, error) -> {
               if (error != null) {
-                removePending(request);
-                callbackExecutor.execute(() -> request.fail(error));
+                if (removePending(request)) {
+                  callbackExecutor.execute(() -> request.fail(error));
+                }
               }
             });
   }

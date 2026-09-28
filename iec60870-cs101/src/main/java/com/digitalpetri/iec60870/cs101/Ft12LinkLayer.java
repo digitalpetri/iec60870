@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.session.Session;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -63,6 +64,20 @@ public final class Ft12LinkLayer implements Session {
      * @param frame the frame to send.
      */
     void send(Ft12Frame frame);
+
+    /**
+     * Writes a frame and returns its transport completion.
+     *
+     * <p>The default treats {@link #send(Ft12Frame)} as a synchronous write. Asynchronous sinks
+     * must override this method and return their actual write stage.
+     *
+     * @param frame the frame to send.
+     * @return the write completion.
+     */
+    default CompletionStage<Void> sendAsync(Ft12Frame frame) {
+      send(frame);
+      return CompletableFuture.completedFuture(null);
+    }
   }
 
   private final Ft12Engine delegate;
@@ -159,6 +174,11 @@ public final class Ft12LinkLayer implements Session {
   @Override
   public void sendAsdu(Asdu asdu) {
     delegate.sendAsdu(asdu);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return delegate.sendAsduAsync(asdu);
   }
 
   @Override

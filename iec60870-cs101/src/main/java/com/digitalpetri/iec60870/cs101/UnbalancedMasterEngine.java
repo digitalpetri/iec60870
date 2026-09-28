@@ -4,10 +4,10 @@ import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
-import java.util.ArrayDeque;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -195,13 +195,12 @@ final class UnbalancedMasterEngine implements Ft12Engine {
 
   // Outbound command-queue bound and overflow policy (0 == unbounded).
   private final int maxOutboundQueue;
-  private final OutboundQueuePolicy queuePolicy;
 
   // Per-secondary state, keyed by link address; rebuilt (all UNRESET) on every (re)connect.
   private final Map<Integer, SlaveState> slaves = new HashMap<>();
 
   // The global command queue of ASDUs awaiting transmission as user data.
-  private final ArrayDeque<Asdu> commandQueue = new ArrayDeque<>();
+  private final OutboundAsduQueue commandQueue;
 
   private boolean closed;
   private boolean started; // == isDataTransferStarted(); true while the poller runs
@@ -257,7 +256,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     this.maxOutboundQueue = maxOutboundQueue;
-    this.queuePolicy = Objects.requireNonNull(queuePolicy, "queuePolicy");
+    this.commandQueue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
 
     this.broadcastAddress = settings.broadcastAddress();
     this.confirmTimeoutMillis = settings.confirmTimeout().toMillis();
@@ -433,29 +432,24 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    */
   @Override
   public void sendAsdu(Asdu asdu) {
+    submitAsdu(asdu, false);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return submitAsdu(asdu, true);
+  }
+
+  private CompletionStage<Void> submitAsdu(Asdu asdu, boolean reliable) {
     Objects.requireNonNull(asdu, "asdu");
     lock.lock();
     try {
       if (closed) {
-        return;
+        return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
-      // Enforce the configured queue bound (0 == unbounded). BLOCK is never honored by parking here
-      // (that would block the caller under the lock); a full BLOCK queue drops the newest as a
-      // last-resort guard, the publisher having been expected to await capacity first.
-      if (maxOutboundQueue > 0 && commandQueue.size() >= maxOutboundQueue) {
-        switch (queuePolicy) {
-          case DROP_OLDEST -> {
-            commandQueue.pollFirst();
-            commandQueue.addLast(asdu);
-          }
-          case DROP_NEWEST, BLOCK -> {
-            // Drop the newly offered ASDU; keep the already accepted history.
-          }
-        }
-      } else {
-        commandQueue.addLast(asdu);
-      }
+      Entry entry = commandQueue.offer(asdu, reliable);
       pump();
+      return entry.completion();
     } finally {
       lock.unlock();
     }
@@ -525,6 +519,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
         return;
       }
       closed = true;
+      commandQueue.failAll(new ConnectionClosedException("session closed"));
       cancelAllTimers();
       queueDrained.signalAll();
     } finally {
@@ -577,13 +572,14 @@ final class UnbalancedMasterEngine implements Ft12Engine {
 
   private boolean trySendCommand() {
     // Scan past commands for UNRESET or DFC-blocked slaves while retaining each slave's FIFO order.
-    Asdu command = removeFirstDeliverableCommand();
-    if (command == null) {
+    Entry entry = removeFirstDeliverableCommand();
+    if (entry == null) {
       return false;
     }
+    Asdu command = entry.asdu();
     int target = commonAddressOf(command);
     if (target == broadcastAddress) {
-      sendBroadcast(command);
+      sendBroadcast(entry);
     } else {
       SlaveState slave = slaves.get(target);
       if (slave == null || slave.linkState == LinkState.ERROR) {
@@ -592,8 +588,9 @@ final class UnbalancedMasterEngine implements Ft12Engine {
             slave == null ? "unconfigured" : "failed",
             target);
         rejectUndeliverable(command);
+        entry.fail(new IllegalStateException("no available slave for common address " + target));
       } else {
-        sendUserData(target, command);
+        sendUserData(target, entry);
       }
     }
     // A broadcast or local rejection also consumes its turn, even though the bus remains free.
@@ -612,17 +609,14 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * @return the first deliverable command, removed from the queue, or {@code null} if none can be
    *     acted on now.
    */
-  private @Nullable Asdu removeFirstDeliverableCommand() {
-    Iterator<Asdu> it = commandQueue.iterator();
-    while (it.hasNext()) {
-      Asdu command = it.next();
-      if (commandDeliverableNow(commonAddressOf(command))) {
-        it.remove();
-        queueDrained.signalAll();
-        return command;
-      }
+  private @Nullable Entry removeFirstDeliverableCommand() {
+    Entry entry =
+        commandQueue.removeFirstMatching(
+            candidate -> commandDeliverableNow(commonAddressOf(candidate.asdu())));
+    if (entry != null) {
+      queueDrained.signalAll();
     }
-    return null;
+    return entry;
   }
 
   /**
@@ -694,12 +688,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * @return {@code true} if {@link #pump()} would act on some queued command this turn.
    */
   private boolean hasDeliverableCommand() {
-    for (Asdu command : commandQueue) {
-      if (commandDeliverableNow(commonAddressOf(command))) {
-        return true;
-      }
-    }
-    return false;
+    return commandQueue.anyMatch(entry -> commandDeliverableNow(commonAddressOf(entry.asdu())));
   }
 
   /**
@@ -987,18 +976,22 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * again so the caller can continue servicing other work.
    *
    * @param slaveAddress the target secondary's link address.
-   * @param asdu the command ASDU to transmit.
+   * @param entry the command submission to transmit.
    * @return {@code true} if a user-data transaction is now outstanding (the bus is busy), {@code
    *     false} if framing failed and the command was rejected locally (the bus is still free).
    */
-  private boolean sendUserData(int slaveAddress, Asdu asdu) {
+  private boolean sendUserData(int slaveAddress, Entry entry) {
+    Asdu asdu = entry.asdu();
     boolean fcb = fcbFor(slaveAddress);
     setPending(new Pending(slaveAddress, Kind.USER_DATA, asdu, fcb, 0));
+    CompletionStage<Void> write;
     try {
-      output.send(
-          new Ft12Frame.Variable(
-              LinkControlField.primary(false, fcb, true, FC_USER_DATA), slaveAddress, asdu));
+      write =
+          output.sendAsync(
+              new Ft12Frame.Variable(
+                  LinkControlField.primary(false, fcb, true, FC_USER_DATA), slaveAddress, asdu));
     } catch (RuntimeException e) {
+      entry.fail(e);
       // Framing failed before anything reached the bus (e.g. an ASDU too large for a single FT1.2
       // variable frame). Roll back the just-opened transaction so the bus is not left wedged with a
       // pending transaction that has no armed confirm timer; the FCB was only read, not toggled, so
@@ -1017,16 +1010,21 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       return true;
     }
     armConfirmTimer(confirmTimeoutMillis);
+    entry.completeFrom(write);
     return true;
   }
 
-  private void sendBroadcast(Asdu asdu) {
-    // FC4 send/no-reply to all stations: FCV=0, no confirmation, no pending transaction.
-    output.send(
-        new Ft12Frame.Variable(
-            LinkControlField.primary(false, false, false, FC_USER_DATA_NO_REPLY),
-            broadcastAddress,
-            asdu));
+  private void sendBroadcast(Entry entry) {
+    try {
+      entry.completeFrom(
+          output.sendAsync(
+              new Ft12Frame.Variable(
+                  LinkControlField.primary(false, false, false, FC_USER_DATA_NO_REPLY),
+                  broadcastAddress,
+                  entry.asdu())));
+    } catch (RuntimeException error) {
+      entry.fail(error);
+    }
   }
 
   private void retransmitPending(Pending p) {
@@ -1231,7 +1229,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     pollCursor = 0;
     bringUpCursor = 0;
     nextBusActivity = BusActivity.COMMAND;
-    commandQueue.clear();
+    commandQueue.failAll(new ConnectionClosedException("session reset"));
     slaves.clear();
     for (int address : slaveAddresses) {
       slaves.put(address, new SlaveState());

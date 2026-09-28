@@ -1680,6 +1680,11 @@ class DefaultIec60870ClientTest {
     }
 
     @Override
+    public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+      throw new IllegalStateException("write failed");
+    }
+
+    @Override
     public void sendAsdu(Asdu asdu) {
       throw new IllegalStateException("write failed");
     }

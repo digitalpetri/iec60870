@@ -141,19 +141,17 @@ class ProtocolErrorFrameIntegrationTest {
   void corruptInboundISequenceNumberClosesClientWithSequenceErrorAndFailsPending() {
     EventCollector events = startWithholdingServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
-    DefaultIec60870Server server = requireNonNull(this.server);
 
-    // A request the server will never confirm, so it is genuinely pending when the corruption
-    // lands.
+    // Withhold the response so the request is pending when its first reply is corrupted.
     CompletableFuture<InterrogationResult> pending =
         client.interrogateAsync(STATION).toCompletableFuture();
     assertFalse(pending.isDone(), "interrogation must still be pending before the corruption");
 
     // Corrupt the NEXT inbound (server->client) I-frame's N(S): flip bit 1 of control octet 0
     // (frame byte 2), which advances N(S) by one while keeping bit 0 = 0 so it stays an I-frame.
-    // Then make the server emit exactly one spontaneous monitor I-frame to trigger it.
+    // Release the handler to emit ACT_CON as the next I-frame. Publications wait behind the GI.
     fault.corruptNext(SERVER_TO_CLIENT, flipBit(2, 0x02));
-    server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS);
+    requireNonNull(withheld.get()).complete(InterrogationResponse.of(List.of()));
 
     // (a) the pending request failed with ConnectionClosedException caused by
     // SequenceNumberException.
@@ -238,10 +236,8 @@ class ProtocolErrorFrameIntegrationTest {
   void garbledInboundWholeFrameDecodeFailureDropsConnectionCleanly() {
     EventCollector events = startWithholdingServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
-    DefaultIec60870Server server = requireNonNull(this.server);
 
-    // A request the server will never confirm, so it is genuinely pending when the corrupted frame
-    // lands and the decode failure closes the session.
+    // Withhold the response so the request is pending when its first reply is corrupted.
     CompletableFuture<InterrogationResult> pending =
         client.interrogateAsync(STATION).toCompletableFuture();
     assertFalse(pending.isDone(), "interrogation must still be pending before the corruption");
@@ -252,7 +248,7 @@ class ProtocolErrorFrameIntegrationTest {
 
     // The decode failure is now swallowed inside the binding's onFrame; sending the triggering
     // frame no longer throws.
-    server.publish(SINGLE_POINT, PointValue.single(true), Cause.SPONTANEOUS);
+    requireNonNull(withheld.get()).complete(InterrogationResponse.of(List.of()));
 
     // (a) exactly one ConnectionClosed, whose cause is the START-octet AsduDecodeException routed
     // through events.onConnectionLost.

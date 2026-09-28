@@ -172,20 +172,25 @@ public final class Cs101Binding {
     Ft12LinkLayer[] holder = new Ft12LinkLayer[1];
 
     Ft12LinkLayer.Output output =
-        frame -> {
-          // Frame the FT1.2 frame into a whole-frame ByteBuf and hand it to the octet transport,
-          // which owns and releases the buffer. A failed write closes the session and routes the
-          // loss to the facade through Session.Events.onConnectionLost.
-          ByteBuf buffer = Ft12Framer.encode(frame, profile, linkAddressLength, allocator);
-          frameSink
-              .send(buffer)
-              .whenComplete(
-                  (ignored, error) -> {
-                    if (error != null) {
-                      holder[0].close();
-                      events.onConnectionLost(error);
-                    }
-                  });
+        new Ft12LinkLayer.Output() {
+          @Override
+          public void send(Ft12Frame frame) {
+            sendAsync(frame);
+          }
+
+          @Override
+          public CompletionStage<Void> sendAsync(Ft12Frame frame) {
+            ByteBuf buffer = Ft12Framer.encode(frame, profile, linkAddressLength, allocator);
+            return frameSink
+                .send(buffer)
+                .whenComplete(
+                    (ignored, error) -> {
+                      if (error != null) {
+                        holder[0].close();
+                        events.onConnectionLost(error);
+                      }
+                    });
+          }
         };
 
     Ft12LinkLayer session =

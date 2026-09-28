@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.session;
 
 import com.digitalpetri.iec60870.asdu.Asdu;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.jspecify.annotations.Nullable;
 
@@ -69,14 +70,37 @@ public interface Session {
   boolean isDataTransferStarted();
 
   /**
-   * Sends an application ASDU, honoring the session's flow-control window.
+   * Submits a discardable application ASDU, honoring the session's flow-control window.
    *
    * <p>If the ASDU cannot be transmitted immediately it is queued and sent later when the window
-   * opens or data transfer starts. Queued ASDUs are sent in submission order.
+   * opens or data transfer starts. The configured overflow policy may discard it. Use {@link
+   * #sendAsduAsync(Asdu)} when the caller needs a write completion or protection from overflow
+   * eviction.
    *
    * @param asdu the application ASDU to send.
    */
   void sendAsdu(Asdu asdu);
+
+  /**
+   * Sends an ASDU without allowing outbound overflow policies to discard it.
+   *
+   * <p>The stage completes when the underlying transport finishes the first write, not when the
+   * peer acknowledges or processes it. It remains pending while flow control queues the ASDU, and
+   * fails on queue rejection, encoding/write failure, close, or connection reset before completion.
+   * A full bounded queue evicts its oldest discardable ASDU, or rejects this submission if every
+   * queued ASDU is reliable.
+   *
+   * <p>Completions may run under the session lock. Dependent work must be dispatched to an executor
+   * before blocking or calling back into the session. Legacy implementations must override this
+   * method to support tracked sends; the default fails without submitting the ASDU.
+   *
+   * @param asdu the application ASDU to send.
+   * @return the transport-write completion.
+   */
+  default CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return CompletableFuture.failedFuture(
+        new UnsupportedOperationException("session does not support tracked sends"));
+  }
 
   /**
    * Awaits free capacity in the outbound send queue, off the session's hot path, for a blocking

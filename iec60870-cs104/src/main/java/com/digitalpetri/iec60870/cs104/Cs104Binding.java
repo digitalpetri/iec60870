@@ -171,20 +171,25 @@ public final class Cs104Binding {
     ApciSession[] holder = new ApciSession[1];
 
     ApciSession.Output output =
-        apdu -> {
-          // Frame the APDU into a whole-frame ByteBuf and hand it to the octet transport, which
-          // owns and releases the buffer. A failed write closes the session and routes the loss to
-          // the facade through Session.Events.onConnectionLost.
-          ByteBuf frame = ApduFramer.encode(apdu, profile, allocator);
-          frameSink
-              .send(frame)
-              .whenComplete(
-                  (ignored, error) -> {
-                    if (error != null) {
-                      holder[0].close();
-                      events.onConnectionLost(error);
-                    }
-                  });
+        new ApciSession.Output() {
+          @Override
+          public void send(Apdu apdu) {
+            sendAsync(apdu);
+          }
+
+          @Override
+          public CompletionStage<Void> sendAsync(Apdu apdu) {
+            ByteBuf buffer = ApduFramer.encode(apdu, profile, allocator);
+            return frameSink
+                .send(buffer)
+                .whenComplete(
+                    (ignored, error) -> {
+                      if (error != null) {
+                        holder[0].close();
+                        events.onConnectionLost(error);
+                      }
+                    });
+          }
         };
 
     ApciSession session =

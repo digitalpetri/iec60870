@@ -168,6 +168,35 @@ class ApciSessionTest {
     assertTrue(session.isDataTransferStarted());
   }
 
+  @Test
+  void writeCompletionCanStopTheRemainingServerQueue() {
+    ApciSession session = newSession(ApciSession.Role.SERVER);
+    session.onConnected();
+    session.onApdu(uFrame(UFunction.STARTDT_ACT));
+    session.sendAsdu(asdu(1));
+    session.sendAsdu(asdu(2));
+    session.sendAsdu(asdu(3));
+    var first = session.sendAsduAsync(asdu(4)).toCompletableFuture();
+    var second = session.sendAsduAsync(asdu(5)).toCompletableFuture();
+    first.thenRun(() -> session.onApdu(uFrame(UFunction.STOPDT_ACT)));
+
+    session.onApdu(sFrame(3));
+
+    assertTrue(first.isDone());
+    assertFalse(first.isCompletedExceptionally());
+    assertEquals(4, output.iFrames().size());
+    assertFalse(second.isDone(), "the next queued write must wait for STARTDT");
+    session.onApdu(sFrame(4));
+    assertFalse(second.isDone());
+
+    session.onApdu(uFrame(UFunction.STARTDT_ACT));
+
+    assertTrue(second.isDone());
+    assertFalse(second.isCompletedExceptionally());
+    assertEquals(5, output.iFrames().size());
+    assertEquals(4, output.iFrames().get(4).sendSequenceNumber());
+  }
+
   // --- w-triggered S-frame ---------------------------------------------------------------------
 
   @Test
