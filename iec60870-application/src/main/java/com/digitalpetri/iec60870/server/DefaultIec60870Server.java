@@ -262,8 +262,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               .orElseThrow(() -> new IllegalArgumentException("no point defined at: " + point))
               .type();
 
-      // Update the station image, then build the monitor ASDU from the chosen time-tag style.
-      station.updateValue(point.objectAddress(), value);
+      // Validate and build the monitor ASDU before changing the station image.
       InformationObject object =
           MonitorMapping.toMonitorObject(type, point.objectAddress(), value, config.timeTagStyle());
       Asdu asdu =
@@ -276,6 +275,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               OriginatorAddress.none(),
               point.commonAddress(),
               List.of(object));
+      station.updateValue(point.objectAddress(), value);
 
       for (ServerConnection connection : connections) {
         connection.enqueueMonitor(asdu);

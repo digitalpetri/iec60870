@@ -85,7 +85,8 @@ public interface Iec60870Server extends AutoCloseable {
    *
    * <p>The point must be defined on a hosted station, and the value's runtime type must match the
    * point's type. Connections that have not started data transfer are skipped; for started
-   * connections whose outbound queue is full, the configured {@link OutboundQueuePolicy} applies.
+   * connections whose outbound queue is full, the configured {@link OutboundQueuePolicy} applies. A
+   * value that fails validation leaves the station image unchanged and is not enqueued.
    *
    * @param point the fully qualified address of the point.
    * @param value the new value to publish.
@@ -98,6 +99,8 @@ public interface Iec60870Server extends AutoCloseable {
 
   /**
    * Publishes a new value for a point asynchronously.
+   *
+   * <p>A value that fails validation leaves the station image unchanged and is not enqueued.
    *
    * @param point the fully qualified address of the point.
    * @param value the new value to publish.

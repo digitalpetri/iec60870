@@ -4,6 +4,7 @@ import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
@@ -47,6 +48,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -384,6 +386,66 @@ class DefaultIec60870ServerTest {
     assertTrue(sent.get(0).objects().get(0) instanceof SinglePointInformation spi && !spi.on());
 
     server.close();
+  }
+
+  @Test
+  void rejectedPublishLeavesImageIntact() {
+    assertRejectedPublishLeavesImageIntact(false);
+  }
+
+  @Test
+  void rejectedAsyncPublishLeavesImageIntact() {
+    assertRejectedPublishLeavesImageIntact(true);
+  }
+
+  private void assertRejectedPublishLeavesImageIntact(boolean asynchronous) {
+    try (DefaultIec60870Server server = server(new ServerHandler() {})) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+      Station station = server.stations().station(CA).orElseThrow();
+      PointValue<?> original = station.currentValue(POINT.objectAddress()).orElseThrow();
+      PointValue<Short> invalid = PointValue.scaled((short) 7);
+
+      if (asynchronous) {
+        CompletionException failure =
+            assertThrows(
+                CompletionException.class,
+                () ->
+                    server
+                        .publishAsync(POINT, invalid, Cause.SPONTANEOUS)
+                        .toCompletableFuture()
+                        .join());
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+      } else {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> server.publish(POINT, invalid, Cause.SPONTANEOUS));
+      }
+
+      assertSame(original, station.currentValue(POINT.objectAddress()).orElseThrow());
+      assertTrue(connection.sentAsdus().isEmpty(), "a rejected value must not be published");
+      connection.deliverAsdu(
+          control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress())));
+      connection.deliverAsdu(
+          control(
+              AsduType.C_IC_NA_1,
+              Cause.ACTIVATION,
+              new InterrogationCommand(ZERO, QualifierOfInterrogation.STATION)));
+
+      List<Asdu> replies = connection.sentAsdus();
+      assertEquals(
+          List.of(
+              Cause.REQUEST,
+              Cause.ACTIVATION_CONFIRMATION,
+              Cause.INTERROGATED_BY_STATION,
+              Cause.ACTIVATION_TERMINATION),
+          replies.stream().map(Asdu::cause).toList());
+      InformationObject expected =
+          new SinglePointInformation(POINT.objectAddress(), true, original.quality().toQds());
+      assertEquals(List.of(expected), replies.get(0).objects());
+      assertEquals(List.of(expected), replies.get(2).objects());
+    }
   }
 
   @Test
