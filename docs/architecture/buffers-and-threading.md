@@ -145,7 +145,9 @@ The practical rule for application code:
 `OutboundQueuePolicy`. `Session.sendAsduAsync` submits a protected ASDU and returns its first
 transport-write completion. It remains pending while flow control or polling holds the ASDU in the
 queue. It fails if the queue is full, encoding or writing fails, or the session closes or resets
-before completion. Success does not mean that the peer acknowledged or processed the ASDU.
+before completion. Success does not mean that the peer acknowledged or processed the ASDU. An APCI
+encoding rejection fails only the affected submission; queued writes after it can continue. The legacy void APCI send
+still throws when its ASDU is rejected synchronously.
 
 Protected entries cannot be evicted by later event publishing. `DROP_OLDEST` evicts the oldest
 remaining discardable entry; if all queued entries are protected, the incoming event is dropped.

@@ -300,8 +300,10 @@ public final class ApciSession implements Session {
    * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, or — for a
    * {@link Role#SERVER} — data transfer has not been started, the ASDU is queued and transmitted
    * later when the window opens or data transfer starts. Queued ASDUs are sent in submission order.
+   * A synchronous encoding failure propagates to the caller without closing the session.
    *
    * @param asdu the application ASDU to send.
+   * @throws IllegalArgumentException if immediate encoding rejects the ASDU.
    */
   @Override
   public void sendAsdu(Asdu asdu) {
@@ -321,7 +323,7 @@ public final class ApciSession implements Session {
         return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
       Entry entry = sendQueue.offer(asdu, reliable);
-      flushSendQueue();
+      flushSendQueue(reliable ? null : entry);
       return entry.completion();
     } finally {
       lock.unlock();
@@ -682,6 +684,10 @@ public final class ApciSession implements Session {
   // --- Outbound helpers (lock held) -----------------------------------------------------------
 
   private void flushSendQueue() {
+    flushSendQueue(null);
+  }
+
+  private void flushSendQueue(@Nullable Entry synchronousSubmission) {
     if (role == Role.SERVER && !dataTransferStarted) {
       return;
     }
@@ -701,9 +707,14 @@ public final class ApciSession implements Session {
       try {
         write = output.sendAsync(new Apdu(control, asdu));
       } catch (RuntimeException error) {
+        // Encoding can reject an ASDU before the transport sees it. Preserve the synchronous
+        // void-call exception; otherwise fail only this submission and keep draining. No sequence
+        // number or acknowledgement timer has been committed for the rejected frame.
         entry.fail(error);
-        closeWithError(error);
-        return;
+        if (entry == synchronousSubmission) {
+          throw error;
+        }
+        continue;
       }
       // output.send(...) may have synchronously closed the session; if so, do not advance state or
       // arm t1/t3 on a now-closed session.
