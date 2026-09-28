@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
@@ -37,6 +38,7 @@ import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.point.Quality;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import com.digitalpetri.iec60870.session.Session;
 import java.net.SocketAddress;
@@ -47,12 +49,14 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -146,6 +150,67 @@ class DefaultIec60870ServerTest {
     assertEquals(Cause.ACTIVATION_TERMINATION, sent.get(2).cause());
 
     server.close();
+  }
+
+  @Test
+  void defaultInterrogationUsesUntimedData() {
+    assertUntimedInterrogation(ServerConfig.builder(), AsduType.M_SP_TB_1);
+  }
+
+  @Test
+  void cp24InterrogationUsesUntimedData() {
+    assertUntimedInterrogation(
+        ServerConfig.builder().timeTagStyle(TimeTagStyle.CP24), AsduType.M_SP_TA_1);
+  }
+
+  private void assertUntimedInterrogation(ServerConfig.Builder builder, AsduType spontaneousType) {
+    Station station = singlePointStation();
+    PointValue<Boolean> value =
+        PointValue.single(false)
+            .withQuality(Quality.invalidQuality())
+            .withTimestamp(Instant.parse("2026-01-02T03:04:05Z"));
+    station.updateValue(POINT.objectAddress(), value);
+    ServerConfig config = builder.station(station).callbackExecutor(DIRECT).build();
+    try (var server = new DefaultIec60870Server(transport, config, sessionFactory(config))) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+
+      for (QualifierOfInterrogation qoi :
+          List.of(QualifierOfInterrogation.STATION, QualifierOfInterrogation.GROUP_1)) {
+        int before = connection.sentAsdus().size();
+        InterrogationCommand command = new InterrogationCommand(ZERO, qoi);
+        connection.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION, command));
+
+        assertEquals(before + 3, connection.sentAsdus().size());
+        List<Asdu> replies = connection.sentAsdus().subList(before, before + 3);
+        assertEquals(Cause.ACTIVATION_CONFIRMATION, replies.get(0).cause());
+        assertFalse(replies.get(0).negative());
+        assertEquals(List.of(command), replies.get(0).objects());
+        Asdu monitor = replies.get(1);
+        assertEquals(AsduType.M_SP_NA_1, monitor.type());
+        assertEquals(
+            qoi.equals(QualifierOfInterrogation.STATION)
+                ? Cause.INTERROGATED_BY_STATION
+                : Cause.INTERROGATED_BY_GROUP_1,
+            monitor.cause());
+        assertEquals(CA, monitor.commonAddress());
+        assertEquals(
+            List.of(
+                new SinglePointInformation(POINT.objectAddress(), false, value.quality().toQds())),
+            monitor.objects());
+        assertEquals(Cause.ACTIVATION_TERMINATION, replies.get(2).cause());
+        assertEquals(List.of(command), replies.get(2).objects());
+      }
+
+      // An interrogation omits the timestamp on the wire without changing the image or publishing
+      // style.
+      assertEquals(value, station.currentValue(POINT.objectAddress()).orElseThrow());
+      server.publish(POINT, value, Cause.SPONTANEOUS);
+      List<Asdu> sent = connection.sentAsdus();
+      assertEquals(spontaneousType, sent.get(sent.size() - 1).type());
+      assertEquals(Cause.SPONTANEOUS, sent.get(sent.size() - 1).cause());
+    }
   }
 
   @Test
@@ -322,6 +387,66 @@ class DefaultIec60870ServerTest {
     assertTrue(sent.get(0).objects().get(0) instanceof SinglePointInformation spi && !spi.on());
 
     server.close();
+  }
+
+  @Test
+  void rejectedPublishLeavesImageIntact() {
+    assertRejectedPublishLeavesImageIntact(false);
+  }
+
+  @Test
+  void rejectedAsyncPublishLeavesImageIntact() {
+    assertRejectedPublishLeavesImageIntact(true);
+  }
+
+  private void assertRejectedPublishLeavesImageIntact(boolean asynchronous) {
+    try (DefaultIec60870Server server = server(new ServerHandler() {})) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+      Station station = server.stations().station(CA).orElseThrow();
+      PointValue<?> original = station.currentValue(POINT.objectAddress()).orElseThrow();
+      PointValue<Short> invalid = PointValue.scaled((short) 7);
+
+      if (asynchronous) {
+        CompletionException failure =
+            assertThrows(
+                CompletionException.class,
+                () ->
+                    server
+                        .publishAsync(POINT, invalid, Cause.SPONTANEOUS)
+                        .toCompletableFuture()
+                        .join());
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+      } else {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> server.publish(POINT, invalid, Cause.SPONTANEOUS));
+      }
+
+      assertSame(original, station.currentValue(POINT.objectAddress()).orElseThrow());
+      assertTrue(connection.sentAsdus().isEmpty(), "a rejected value must not be published");
+      connection.deliverAsdu(
+          control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress())));
+      connection.deliverAsdu(
+          control(
+              AsduType.C_IC_NA_1,
+              Cause.ACTIVATION,
+              new InterrogationCommand(ZERO, QualifierOfInterrogation.STATION)));
+
+      List<Asdu> replies = connection.sentAsdus();
+      assertEquals(
+          List.of(
+              Cause.REQUEST,
+              Cause.ACTIVATION_CONFIRMATION,
+              Cause.INTERROGATED_BY_STATION,
+              Cause.ACTIVATION_TERMINATION),
+          replies.stream().map(Asdu::cause).toList());
+      InformationObject expected =
+          new SinglePointInformation(POINT.objectAddress(), true, original.quality().toQds());
+      assertEquals(List.of(expected), replies.get(0).objects());
+      assertEquals(List.of(expected), replies.get(2).objects());
+    }
   }
 
   @Test
@@ -540,34 +665,26 @@ class DefaultIec60870ServerTest {
     server.close();
   }
 
-  // --- F19: empty C_TS_TA_1 echo must encode cleanly -------------------------------------------
-
   @Test
-  void emptyTimedTestCommandReplyEchoesTimedCommand() {
+  void timedTestCommandEchoesSequenceAndTime() {
     DefaultIec60870Server server = server(new ServerHandler() {});
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    // C_TS_TA_1 with no information objects: the synthesized echo must be a TestCommandWithCp56Time
-    // so the codec does not throw a ClassCastException at encode time.
-    Asdu request =
-        new Asdu(
-            AsduType.C_TS_TA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            OriginatorAddress.none(),
-            CA,
-            List.of());
+    TestCommandWithCp56Time command =
+        new TestCommandWithCp56Time(
+            ZERO,
+            UShort.valueOf(123),
+            Cp56Time2a.from(Instant.parse("2026-09-28T12:00:00Z"), ZoneOffset.UTC));
+    Asdu request = control(AsduType.C_TS_TA_1, Cause.ACTIVATION, command);
     connection.deliverAsdu(request);
 
     List<Asdu> sent = connection.sentAsdus();
     assertEquals(1, sent.size());
     Asdu reply = sent.get(0);
     assertEquals(AsduType.C_TS_TA_1, reply.type());
-    assertInstanceOf(TestCommandWithCp56Time.class, reply.objects().get(0));
+    assertEquals(command, reply.objects().get(0));
 
     server.close();
   }
@@ -645,14 +762,13 @@ class DefaultIec60870ServerTest {
   }
 
   @Test
-  void counterInterrogationWithEmptyObjectsIsRejected() {
+  void counterInterrogationWithEmptyObjectsIsDiscarded() {
     DefaultIec60870Server server = server(new ServerHandler() {});
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    // A C_CI_NA_1 carrying no information object cannot select a counter group; the server replies
-    // with a single negative confirmation (UNKNOWN_INFORMATION_OBJECT_ADDRESS) and nothing else.
+    // An invalid object count is discarded; no counter request can be inferred from it.
     Asdu request =
         new Asdu(
             AsduType.C_CI_NA_1,
@@ -665,10 +781,7 @@ class DefaultIec60870ServerTest {
             List.of());
     connection.deliverAsdu(request);
 
-    List<Asdu> sent = connection.sentAsdus();
-    assertEquals(1, sent.size());
-    assertTrue(sent.get(0).negative());
-    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, sent.get(0).cause());
+    assertTrue(connection.sentAsdus().isEmpty());
 
     server.close();
   }
@@ -888,6 +1001,62 @@ class DefaultIec60870ServerTest {
     assertEquals(Cause.ACTIVATION_TERMINATION, sent.get(2).cause());
 
     server.close();
+  }
+
+  @Test
+  void asynchronousRawHookResumesTypedHandlingOnCallbackExecutor() throws InterruptedException {
+    var executor = new QueueingExecutor();
+    var rawResult = new CompletableFuture<Boolean>();
+    var rawCalls = new AtomicInteger();
+    List<Thread> readThreads = new CopyOnWriteArrayList<>();
+    List<String> calls = new CopyOnWriteArrayList<>();
+    ServerHandler handler =
+        new ServerHandler() {
+          @Override
+          public CompletionStage<Boolean> onRawAsduAsync(ServerContext context, Asdu asdu) {
+            int call = rawCalls.incrementAndGet();
+            calls.add("raw" + call);
+            return call == 1 ? rawResult : CompletableFuture.completedFuture(false);
+          }
+
+          @Override
+          public ReadResponse onRead(ServerContext context, ReadRequest request) {
+            readThreads.add(Thread.currentThread());
+            calls.add("read" + readThreads.size());
+            return context.defaultRead(request);
+          }
+        };
+    ServerConfig config =
+        ServerConfig.builder()
+            .station(singlePointStation())
+            .handler(handler)
+            .callbackExecutor(executor)
+            .build();
+    try (var server = new DefaultIec60870Server(transport, config, sessionFactory(config))) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+      Asdu request =
+          control(AsduType.C_RD_NA_1, Cause.REQUEST, new ReadCommand(POINT.objectAddress()));
+      connection.deliverAsdu(request);
+      connection.deliverAsdu(request);
+      executor.drain();
+      assertEquals(List.of("raw1"), calls);
+
+      // Complete the first hook off the callback executor, as an asynchronous I/O operation would.
+      var completingThread = new Thread(() -> rawResult.complete(false), "raw-hook-completion");
+      completingThread.start();
+      completingThread.join(5000);
+      assertFalse(completingThread.isAlive());
+      assertTrue(readThreads.isEmpty(), "typed handling must wait for the callback executor");
+      assertEquals(List.of("raw1"), calls, "the next request must wait for typed handling");
+      assertTrue(connection.sentAsdus().isEmpty());
+
+      executor.drain();
+      assertEquals(List.of(Thread.currentThread(), Thread.currentThread()), readThreads);
+      assertEquals(List.of("raw1", "read1", "raw2", "read2"), calls);
+      assertEquals(2, connection.sentAsdus().size());
+    }
   }
 
   // --- inbound dispatch backlog is bounded -----------------------------------------------------

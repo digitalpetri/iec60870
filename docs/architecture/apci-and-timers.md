@@ -67,8 +67,10 @@ Two parameters from `ApciSettings` bound the window (§5.5):
 
 Send side: `sendAsdu(asdu)` appends to an internal queue and flushes it. The flush loop sends I-frames
 only while `sequenceDistance(ack, V(S)) < k`; once `k` frames are outstanding it stops, leaving the
-rest queued, until an inbound N(R) acknowledges enough frames to reopen the window. (For a `SERVER`
-role it also holds the queue until data transfer has started.)
+rest queued, until an inbound N(R) acknowledges enough frames to reopen the window. A `SERVER`
+also holds the queue until data transfer has started. Once either role begins STOPDT, it holds
+queued and newly offered ASDUs until the next STARTDT handshake completes, even if an
+acknowledgement reopens the window.
 
 Receive side: each received I-frame increments an unacked-received counter. When that counter reaches
 `w`, the session immediately sends an S-frame carrying the current V(R) and resets the counter.
@@ -81,11 +83,21 @@ starts data transfer (§5.3). The small role differences are the only client/ser
 `ApciSession`:
 
 - **`Role.CLIENT`** initiates. `startDataTransfer()` sends `STARTDT act`, arms `t1`, and returns a
-  `CompletionStage` that completes when `STARTDT con` arrives. `stopDataTransfer()` is symmetric with
-  `STOPDT act`/`con`.
+  `CompletionStage` that completes when `STARTDT con` arrives. `stopDataTransfer()` immediately
+  stops outbound I-frames, acknowledges received I-frames, and sends `STOPDT act`. It continues to
+  receive and immediately acknowledge in-flight I-frames until `STOPDT con` completes the returned
+  stage. After STOPDT, the queue stays held until the next `STARTDT con`. On a fresh connection,
+  the client can send commands before the first `STARTDT con`, as permitted by §5.3.
 - **`Role.SERVER`** responds. On `STARTDT act` it sets the started flag, replies `STARTDT con`, and
-  flushes any queued I-frames; on `STOPDT act` it clears the flag and replies `STOPDT con`. A server
-  withholds queued monitor I-frames entirely until data transfer is started.
+  flushes any queued I-frames. On `STOPDT act` it clears the flag, stops outbound I-frames, and
+  acknowledges received I-frames with an S-frame. It waits for acknowledgements of all its sent
+  I-frames before replying `STOPDT con`; the outstanding frames remain subject to `t1`. While
+  waiting, a new `STARTDT act` does not interrupt the stop. A later `STARTDT act`, after confirmation
+  of the stop, releases the queue without resetting sequence numbers.
+
+For example, if the server has sent `I(0, 0)` and then received one client I-frame, its STOPDT
+exchange is `STOPDT act → S(1) → wait for peer S(1) → STOPDT con`. The first S-frame acknowledges
+the received client data; the peer's S-frame acknowledges the previously sent server data.
 
 The high-level facade wires this up: `Iec60870Client.startDataTransfer()` drives the client session, and
 `ClientConfig.startDataTransferOnConnect` (default `true`) makes `connect()` perform the handshake
@@ -109,10 +121,12 @@ scheduled on an injected `ScheduledExecutorService`.
 
 How `ApciSession` runs them:
 
-- **`t1`** is armed whenever an I-frame is sent or a U-frame `act` is sent, and cancelled when the
-  outstanding count returns to zero (and no test frame is awaiting confirmation). If it expires, the
-  connection has stalled: the session closes itself with a `ProtocolTimeoutException` and reports it
-  through `Events.onClosed`.
+- **`t1`** runs separately for each sent I-frame and U-frame `act`, starting when the frame is sent.
+  An I/S-frame's N(R) cancels the deadlines of the I-frames it acknowledges; a matching U-frame `con`
+  cancels only that activation's deadline. New sends and partial acknowledgements do not extend any
+  remaining deadline. The session keeps at most `k` active I-frame deadlines, plus one for each
+  outstanding STARTDT, STOPDT, or TESTFR activation. If any deadline expires, the session closes itself
+  with a `ProtocolTimeoutException` and reports it through `Events.onClosed`.
 - **`t2`** is armed when an I-frame is received and is not yet armed; it is *not* restarted on every
   subsequent frame. On expiry, if any received frames are still unacknowledged, the session sends an
   S-frame. Sending any acknowledgement cancels it. This bounds acknowledgement latency below `t1`
@@ -120,8 +134,8 @@ How `ApciSession` runs them:
 - **`t3`** is a sliding idle timer: any sent or received frame re-arms it. On expiry — meaning the
   connection has been silent — the session sends `TESTFR act` and arms `t1` to await `TESTFR con`. A
   received `TESTFR act` is answered immediately with `TESTFR con`; a received `TESTFR con` clears the
-  outstanding test and cancels `t1`. Together `t3`+`TESTFR`+`t1` detect a dead peer on an otherwise
-  idle link.
+  outstanding test and cancels its `t1` deadline. Together `t3`+`TESTFR`+`t1` detect a dead peer on an
+  otherwise idle link.
 
 ## Lifecycle and threading
 

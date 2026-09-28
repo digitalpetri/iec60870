@@ -25,7 +25,7 @@ positive acknowledgement.
 | `broadcastAddress` | `255` | Unbalanced all-secondaries address (`255` for 1 octet, `65535` for 2); ignored when balanced. |
 | `useSingleCharAck` | `true` | Emit a positive acknowledgement as the single-character `0xE5` frame. |
 | `confirmTimeout` | `200 ms` | Time the primary waits for an acknowledgement before repeating a frame. |
-| `repeatTimeout` | `1000 ms` | Spacing between repeated transmissions of an unacknowledged frame. |
+| `repeatTimeout` | `1000 ms` | Spacing between unacknowledged-frame retries; also the delay between status probes while a balanced peer reports busy. |
 | `maxRetries` | `3` | Maximum repeat transmissions of an unacknowledged frame. |
 | `linkStateTimeout` | `5000 ms` | Idle interval after which the link status is polled. |
 | `pollConfig` | absent (balanced) / empty slave list at `1000 ms` (unbalanced) | The unbalanced master's poll list and cadence. |
@@ -91,6 +91,12 @@ acknowledges. After the reset both ends start their FCB state fresh and the link
 high-level facade `startDataTransfer()` (which `connect()` calls by default) drives this bring-up;
 its completion is the data-transfer-start signal, the FT1.2 analog of 104's STARTDT.
 
+When the peer acknowledges with `DFC=1`, the accepted ASDU advances the transmit FCB, but subsequent
+data waits. A negative acknowledgement (`FC1`) retains the rejected ASDU and its FCB. In both cases
+the primary probes status with `FC9` and resumes data only after `FC11/DFC=0`. Busy status replies
+schedule another probe after `repeatTimeout`; they do not consume the retry budget for missing
+replies. Bring-up likewise waits for a ready status before sending the link reset.
+
 ### Unbalanced
 
 An **unbalanced** link is an asymmetric master/secondary bus: a single primary station owns the line
@@ -137,6 +143,10 @@ The spacing between successive repeated transmissions of a still-unacknowledged 
 positive; default `1000 ms`. Together with `maxRetries` it bounds how long the link spends retrying
 before giving up.
 
+In balanced mode it also sets the delay before another status request after a busy status reply.
+These responsive-busy probes do not consume `maxRetries`; the limit still applies when a probe goes
+unanswered.
+
 ### maxRetries
 
 The maximum number of repeat transmissions of an unacknowledged frame before the transaction fails.
@@ -152,7 +162,7 @@ the peer is still alive on an otherwise quiet line — the FT1.2 keep-alive, ana
 | Timer | Default | Bounds | On expiry |
 |---|---|---|---|
 | `confirmTimeout` | `200 ms` | The wait for an acknowledgement of one sent frame | The frame is repeated (subject to `maxRetries`) |
-| `repeatTimeout` | `1000 ms` | The spacing between repeated transmissions | The next repeat is sent |
+| `repeatTimeout` | `1000 ms` | The spacing between retries or balanced busy-status probes | The next retry or status request is sent |
 | `linkStateTimeout` | `5000 ms` | The idle interval before a link-status probe | A *request-status-of-link* probe is sent |
 
 The unbalanced master additionally polls on `pollConfig.pollInterval()` (default `1000 ms`),
