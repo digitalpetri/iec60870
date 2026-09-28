@@ -159,7 +159,10 @@ its DFC flag).
 
 - **Per-slave bring-up.** Each configured slave is brought up independently with `FC9 → FC11 → FC0 →
   ack`; the reset's acknowledgement transitions that slave to `AVAILABLE` and restarts its FCB at
-  `1`.
+  `1`. A status reply with `DFC=1` defers that slave's next status request until the next poll tick
+  and releases the bus for other slaves. Only a status reply with `DFC=0` advances to reset. Busy
+  replies refresh the unanswered-probe budget; a slave that stops replying still exhausts its
+  configured retries.
 - **Poll scheduler.** Once available, slaves are polled for class-2 data with request-class-2
   (`FC11`, `FCV=1`) frames, round-robin across the available slaves, on the configured
   `PollConfig.pollInterval` cadence. The `pump()` bus loop runs only while data transfer is started

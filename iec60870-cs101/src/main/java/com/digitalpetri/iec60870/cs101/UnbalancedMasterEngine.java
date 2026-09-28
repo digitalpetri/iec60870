@@ -35,15 +35,16 @@ import org.slf4j.LoggerFactory;
  * and its data-flow-control (DFC) back-pressure flag.
  *
  * <p><b>Per-slave bring-up.</b> Each configured slave is brought up independently with a
- * request-status-of-link (FC9) followed, on a status-of-link (FC11) reply, by a
+ * request-status-of-link (FC9) followed, on a status-of-link (FC11) reply with DFC=0, by a
  * reset-of-remote-link (FC0); the positive acknowledgement of the reset transitions that slave to
- * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}. Bring-up is scheduled
- * <em>fairly</em>: bus turns rotate among commands, due polls, and bring-up. Bring-up round-robins
- * across the not-yet-reset slaves, and the request-status retransmissions of an unresponsive slave
- * <em>release the bus</em> between probes whenever other work could run, so a single dead slave
- * cannot monopolize the shared bus for its whole retransmit budget while polls and commands to
- * healthy slaves wait. The dead slave is still degraded to {@link LinkState#ERROR error} once its
- * per-slave probe budget is exhausted.
+ * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}. A busy status (DFC=1)
+ * releases the bus for other slaves and defers this slave's next status request until the next poll
+ * tick. Bring-up is scheduled <em>fairly</em>: bus turns rotate among commands, due polls, and
+ * bring-up. Bring-up round-robins across the not-yet-reset slaves, and the request-status
+ * retransmissions of an unresponsive slave <em>release the bus</em> between probes whenever other
+ * work could run, so a single dead slave cannot monopolize the shared bus for its whole retransmit
+ * budget while polls and commands to healthy slaves wait. The dead slave is still degraded to {@link
+ * LinkState#ERROR error} once its per-slave probe budget is exhausted.
  *
  * <p><b>Polling.</b> Once available, slaves are polled for class-2 data on the configured
  * {@linkplain LinkSettings.PollConfig#pollInterval() cadence} with request-class-2 (FC11, FCV=1)
@@ -152,6 +153,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     private LinkState linkState = LinkState.UNRESET;
     private boolean nextFcb = true; // FCB for this slave's next FCV=1 frame; true after a reset
     private boolean dfc; // the slave's last-reported data-flow-control (receive-buffer-full) bit
+    private boolean statusDeferred; // a busy startup reply defers the next FC9 until a poll tick
 
     // Unanswered request-status-of-link (FC9) bring-up transmissions accumulated for this slave.
     // Counted per slave (not on the shared retryCount) so that bring-up can yield the bus between
@@ -632,8 +634,8 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * #onRequestStatusTimeout(Pending)} yields the bus after a dead slave's probe times out, the next
    * bring-up turn lands on a different slave instead of immediately re-probing the dead one.
    *
-   * @return the link address of the next slave awaiting bring-up, or {@code null} if every
-   *     configured slave is already available or has been degraded to error.
+   * @return the link address of the next slave eligible for bring-up, or {@code null} if every
+   *     configured slave is available, failed, or deferred after a busy status reply.
    */
   private @Nullable Integer nextSlaveToBringUp() {
     int n = slaveAddresses.size();
@@ -641,7 +643,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       int index = (bringUpCursor + i) % n;
       int address = slaveAddresses.get(index);
       SlaveState slave = slaves.get(address);
-      if (slave != null && slave.linkState == LinkState.UNRESET) {
+      if (slave != null && slave.linkState == LinkState.UNRESET && !slave.statusDeferred) {
         bringUpCursor = (index + 1) % n;
         return address;
       }
@@ -664,7 +666,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
         continue;
       }
       SlaveState slave = slaves.get(address);
-      if (slave != null && slave.linkState == LinkState.UNRESET) {
+      if (slave != null && slave.linkState == LinkState.UNRESET && !slave.statusDeferred) {
         return true;
       }
     }
@@ -792,7 +794,17 @@ final class UnbalancedMasterEngine implements Ft12Engine {
             slave.dfc = dfc;
             slave.bringUpRetries = 0; // the slave answered: the FC9 retransmission budget resets
           }
-          sendReset(p.slaveAddress()); // proceed to the reset-of-remote-link, same slave
+          if (dfc) {
+            // The secondary answered but cannot accept reset yet (IEC 101 Figure 5). Retry status
+            // on the poll cadence without occupying the bus or spending the silent-peer budget.
+            if (slave != null) {
+              slave.statusDeferred = true;
+            }
+            pending = null;
+            pump();
+          } else {
+            sendReset(p.slaveAddress());
+          }
         } else {
           LOGGER.debug(
               "unexpected response FC{} to request-status-of-link from slave {}",
@@ -1188,6 +1200,9 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       }
       armPollTimer(); // keep the cadence ticking
       pollPending = true;
+      for (SlaveState slave : slaves.values()) {
+        slave.statusDeferred = false;
+      }
       pump();
     } finally {
       lock.unlock();
