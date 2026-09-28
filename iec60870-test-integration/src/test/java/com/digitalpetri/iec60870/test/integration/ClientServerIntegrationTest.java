@@ -142,6 +142,30 @@ class ClientServerIntegrationTest {
   }
 
   @Test
+  void repeatedConnectPreservesSequenceNumbersOnTheExistingSocket() throws Exception {
+    EventCollector events = startServerAndClient();
+    Iec60870Client client = requireNonNull(this.client);
+    client.connect();
+    InterrogationResult before = client.interrogate(STATION);
+
+    client.connectAsync().toCompletableFuture().join();
+    InterrogationResult after = client.interrogate(STATION);
+
+    assertEquals(
+        before.pointValues().stream().map(InterrogationResult.PointEntry::address).toList(),
+        after.pointValues().stream().map(InterrogationResult.PointEntry::address).toList());
+    assertEquals(
+        before.pointValues().stream().map(entry -> entry.value().value()).toList(),
+        after.pointValues().stream().map(entry -> entry.value().value()).toList());
+    assertTrue(after.terminated());
+    assertTrue(client.isConnected());
+    Await.until("connection-opened event", () -> events.hasAny(ClientEvent.ConnectionOpened.class));
+    assertEquals(
+        1, events.events().stream().filter(ClientEvent.ConnectionOpened.class::isInstance).count());
+    assertFalse(events.hasAny(ClientEvent.ConnectionClosed.class));
+  }
+
+  @Test
   void generalInterrogationReturnsConfiguredStationPoints() throws Exception {
     startServerAndClient();
     Iec60870Client client = requireNonNull(this.client);
