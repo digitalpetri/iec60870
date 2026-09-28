@@ -8,8 +8,10 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -17,7 +19,10 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
-/** Defers monitor publications while an interrogation snapshot is being sent. */
+/**
+ * Defers monitor publications while an interrogation snapshot is being sent, and keeps solicited
+ * replies behind the deferred backlog until it drains.
+ */
 final class MonitorPublicationQueue {
   private final int capacity;
   private final OutboundQueuePolicy policy;
@@ -31,6 +36,7 @@ final class MonitorPublicationQueue {
   private final Deque<Pending> queue = new ArrayDeque<>();
   private final AtomicInteger work = new AtomicInteger();
   private int eventCount;
+  private int replyCount;
   private int directSubmissions;
   private boolean paused;
   private boolean draining;
@@ -62,14 +68,7 @@ final class MonitorPublicationQueue {
           return;
         }
         if (policy == OutboundQueuePolicy.DROP_OLDEST) {
-          var iterator = queue.iterator();
-          while (iterator.hasNext()) {
-            if (iterator.next() instanceof Event) {
-              iterator.remove();
-              eventCount--;
-              break;
-            }
-          }
+          evictOldestEvent();
           break;
         }
         if (remaining <= 0) {
@@ -105,6 +104,40 @@ final class MonitorPublicationQueue {
       }
       drain();
     }
+  }
+
+  /**
+   * Queues a solicited reply behind deferred and in-progress publications so it cannot overtake an
+   * older event. Queued replies are capped at the buffer bound. Below the cap, a reply that finds
+   * the buffer full evicts the oldest deferred event, as a protected session entry does; otherwise
+   * the reply is rejected and the connection fails.
+   *
+   * @param asdu the reply.
+   * @return {@code false} if nothing is deferred and the caller should send the reply directly.
+   */
+  boolean deferReply(Asdu asdu) {
+    lock.lock();
+    try {
+      if (closed) {
+        return true;
+      }
+      // The interrogation in progress owns the connection; its handler's sends go out directly.
+      if (paused || (!draining && directSubmissions == 0 && queue.isEmpty())) {
+        return false;
+      }
+      if (capacity == 0
+          || eventCount + replyCount < capacity
+          || (replyCount < capacity && evictOldestEvent())) {
+        queue.addLast(new Reply(asdu));
+        replyCount++;
+        return true;
+      }
+    } finally {
+      lock.unlock();
+    }
+    close();
+    onFailure.accept(new RejectedExecutionException("outbound ASDU queue is full"));
+    return true;
   }
 
   CompletionStage<Void> hold() {
@@ -147,12 +180,26 @@ final class MonitorPublicationQueue {
       }
       queue.clear();
       eventCount = 0;
+      replyCount = 0;
       capacityAvailable.signalAll();
     } finally {
       lock.unlock();
     }
     barriers.forEach(
         future -> future.completeExceptionally(new ConnectionClosedException("connection closed")));
+  }
+
+  private boolean evictOldestEvent() {
+    var iterator = queue.iterator();
+    while (iterator.hasNext()) {
+      if (iterator.next() instanceof Event) {
+        iterator.remove();
+        eventCount--;
+        capacityAvailable.signalAll();
+        return true;
+      }
+    }
+    return false;
   }
 
   private void drain() {
@@ -186,16 +233,20 @@ final class MonitorPublicationQueue {
               draining = false;
             } else {
               draining = true;
-              eventCount--;
-              capacityAvailable.signalAll();
+              if (pending instanceof Event) {
+                eventCount--;
+                capacityAvailable.signalAll();
+              } else {
+                replyCount--;
+              }
             }
           } finally {
             lock.unlock();
           }
           if (pending instanceof Barrier barrier) {
             barrier.ready().complete(null);
-          } else if (pending instanceof Event event) {
-            write = deferredSend.apply(event.asdu()).toCompletableFuture();
+          } else if (pending instanceof Write next) {
+            write = deferredSend.apply(next.asdu()).toCompletableFuture();
             if (!write.isDone()) {
               write.whenComplete((ignored, error) -> executor.execute(this::drain));
               break;
@@ -205,14 +256,22 @@ final class MonitorPublicationQueue {
       } catch (RuntimeException error) {
         write = null;
         close();
-        onFailure.accept(error);
+        // join() wraps a failed write; report the write's own cause, as a direct send does.
+        Throwable cause = error instanceof CompletionException ? error.getCause() : error;
+        onFailure.accept(cause != null ? cause : error);
       }
     } while (work.decrementAndGet() != 0);
   }
 
-  private sealed interface Pending permits Event, Barrier {}
+  private sealed interface Pending permits Write, Barrier {}
 
-  private record Event(Asdu asdu) implements Pending {}
+  private sealed interface Write extends Pending permits Event, Reply {
+    Asdu asdu();
+  }
+
+  private record Event(Asdu asdu) implements Write {}
+
+  private record Reply(Asdu asdu) implements Write {}
 
   private record Barrier(CompletableFuture<Void> ready) implements Pending {}
 }

@@ -172,9 +172,17 @@ failure releases the pause too.
 Each connection has a separate deferred-event buffer bounded by `maxOutboundQueue`, in addition to
 the session's queue; zero leaves both unbounded. The deferred buffer uses the configured event drop
 policy or BLOCK timeout. Only publishing threads may wait for capacity. After the response, deferred
-events drain one tracked write at a time, without blocking the callback executor. A subsequent
-interrogation waits only for the finite event prefix ahead of its snapshot marker; later publications
-cannot indefinitely postpone it. Close discards the deferred backlog and wakes blocked publishers.
+events drain one tracked write at a time, without blocking the callback executor. Solicited replies
+sent while that backlog drains or while a publication is being submitted, such as a later command's
+confirmation and return information, queue behind them. A reply therefore cannot overtake an older
+event still waiting in the backlog. Queued replies are capped at `maxOutboundQueue`. Below that cap,
+a reply that finds the buffer full evicts the oldest deferred event, as a protected session entry
+does. Once replies alone reach the cap, the next reply is rejected and the connection closes. Events
+never evict replies, so the buffer holds at most `maxOutboundQueue` events and as many replies.
+Replies that a custom interrogation handler sends during its own response still go out directly. A
+subsequent interrogation waits only for the finite prefix ahead of its snapshot marker; later
+publications cannot indefinitely postpone it. Close discards the deferred backlog and wakes blocked
+publishers.
 
 Direct callers of the `Session` SPI must dispatch dependent work before blocking or re-entering a
 session: its completion callbacks can run under the session lock. Facade `sendAsync` relays success

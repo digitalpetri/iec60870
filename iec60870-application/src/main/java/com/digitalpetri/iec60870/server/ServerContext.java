@@ -68,9 +68,10 @@ public interface ServerContext {
   /**
    * Sends an arbitrary ASDU on this connection.
    *
-   * <p>This is an escape hatch for behavior the typed responses do not cover; the ASDU is queued on
-   * the connection's APCI session and transmitted subject to the data-transfer state and
-   * flow-control window. The send is fire-and-forget.
+   * <p>This is an escape hatch for behavior the typed responses do not cover. The ASDU follows any
+   * publications an interrogation deferred, is queued on the connection's session, and is
+   * transmitted subject to the data-transfer state and flow-control window. The send is
+   * fire-and-forget; if the ASDU cannot be queued or written, the connection closes.
    *
    * @param asdu the ASDU to send.
    * @throws NullPointerException if {@code asdu} is null.

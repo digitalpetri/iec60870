@@ -2,7 +2,9 @@ package com.digitalpetri.iec60870.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -19,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -108,6 +111,131 @@ class MonitorPublicationQueueTest {
   }
 
   @Test
+  void repliesFollowTheDeferredBacklogButNotAnInterrogationInProgress() {
+    try (var harness = new Harness(4, OutboundQueuePolicy.DROP_OLDEST, ignored -> {})) {
+      assertFalse(harness.queue.deferReply(asdu(1)), "an idle queue sends replies directly");
+      assertTrue(harness.queue.hold().toCompletableFuture().isDone());
+      harness.queue.submit(asdu(2));
+      assertFalse(harness.queue.deferReply(asdu(3)), "the interrogation owns the connection");
+      harness.queue.resume(() -> {});
+      assertTrue(harness.queue.deferReply(asdu(4)));
+      harness.queue.submit(asdu(5));
+      assertEquals(List.of(2), harness.sent);
+      harness.writes.get(0).complete(null);
+      harness.writes.get(1).complete(null);
+      assertEquals(List.of(2, 4, 5), harness.sent);
+      harness.writes.get(2).complete(null);
+      assertFalse(harness.queue.deferReply(asdu(6)), "a drained queue sends replies directly");
+    }
+  }
+
+  @Test
+  void eventsNeverEvictDeferredReplies() {
+    try (var harness = new Harness(1, OutboundQueuePolicy.DROP_OLDEST, ignored -> {})) {
+      harness.queue.hold();
+      harness.queue.submit(asdu(1));
+      harness.queue.resume(() -> {});
+      assertTrue(harness.queue.deferReply(asdu(2)));
+      harness.queue.submit(asdu(3));
+      harness.queue.submit(asdu(4));
+      harness.writes.get(0).complete(null);
+      harness.writes.get(1).complete(null);
+      assertEquals(List.of(1, 2, 4), harness.sent);
+    }
+  }
+
+  @Test
+  void aReplyAtTheBoundEvictsTheOldestEventOrFailsTheConnection() {
+    for (OutboundQueuePolicy policy : OutboundQueuePolicy.values()) {
+      try (var harness = new Harness(2, policy, ignored -> {})) {
+        harness.queue.hold();
+        harness.queue.submit(asdu(1));
+        harness.queue.submit(asdu(2));
+        harness.queue.resume(() -> {});
+        assertTrue(harness.queue.deferReply(asdu(3)));
+        assertTrue(harness.queue.deferReply(asdu(4)), "a reply evicts the oldest deferred event");
+        assertNull(harness.failure.get());
+        assertTrue(harness.queue.deferReply(asdu(5)));
+        assertInstanceOf(RejectedExecutionException.class, harness.failure.get());
+        harness.writes.get(0).complete(null);
+        assertEquals(List.of(1), harness.sent, "a rejected reply closes the queue");
+      }
+    }
+  }
+
+  @Test
+  void eventsBetweenRepliesDoNotLiftTheReplyCap() {
+    for (OutboundQueuePolicy policy : OutboundQueuePolicy.values()) {
+      try (var harness = new Harness(2, policy, ignored -> {})) {
+        harness.queue.hold();
+        harness.queue.submit(asdu(1));
+        harness.queue.resume(() -> {});
+        int accepted = 0;
+        for (int i = 0; i < 10 && harness.failure.get() == null; i++) {
+          harness.queue.submit(asdu(100 + i));
+          harness.queue.deferReply(asdu(200 + i));
+          if (harness.failure.get() == null) accepted++;
+        }
+        assertEquals(2, accepted, "replies must stop at the bound");
+        assertInstanceOf(RejectedExecutionException.class, harness.failure.get());
+      }
+    }
+  }
+
+  @Test
+  void aReplyThatEvictsAnEventWakesABlockedPublisher() throws Exception {
+    try (var harness = new Harness(1, OutboundQueuePolicy.BLOCK, ignored -> {})) {
+      harness.queue.hold();
+      harness.queue.submit(asdu(1));
+      harness.queue.resume(() -> {});
+      harness.queue.submit(asdu(2));
+      var publishing = new Thread(() -> harness.queue.submit(asdu(3)));
+      publishing.start();
+      try {
+        waitForBlocked(publishing);
+        assertTrue(harness.queue.deferReply(asdu(4)));
+        publishing.join(5000);
+        assertFalse(publishing.isAlive(), "the eviction must wake the blocked publisher");
+        harness.writes.get(0).complete(null);
+        harness.writes.get(1).complete(null);
+        assertEquals(List.of(1, 4, 3), harness.sent);
+      } finally {
+        harness.queue.close();
+        publishing.join(5000);
+      }
+    }
+  }
+
+  @Test
+  void aReplyWaitsForAnInProgressDirectPublication() throws Exception {
+    var entered = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    try (var harness =
+        new Harness(
+            4,
+            OutboundQueuePolicy.BLOCK,
+            asdu -> {
+              entered.countDown();
+              await(release);
+            })) {
+      var publishing = new Thread(() -> harness.queue.submit(asdu(1)));
+      publishing.start();
+      try {
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertTrue(harness.queue.deferReply(asdu(2)));
+        assertTrue(harness.sent.isEmpty(), "the reply must follow the older publication");
+        release.countDown();
+        publishing.join(5000);
+        assertFalse(publishing.isAlive());
+        assertEquals(List.of(2), harness.sent);
+      } finally {
+        release.countDown();
+        publishing.join(5000);
+      }
+    }
+  }
+
+  @Test
   void deferredOverflowUsesTheConfiguredDropPolicy() {
     for (OutboundQueuePolicy policy :
         List.of(OutboundQueuePolicy.DROP_OLDEST, OutboundQueuePolicy.DROP_NEWEST)) {
@@ -183,10 +311,11 @@ class MonitorPublicationQueueTest {
       publishing.start();
       try {
         waitForBlocked(publishing);
-        harness.writes.get(0).completeExceptionally(new IllegalStateException("write failed"));
+        var failure = new IllegalStateException("write failed");
+        harness.writes.get(0).completeExceptionally(failure);
         publishing.join(5000);
         assertFalse(publishing.isAlive());
-        assertNotNull(harness.failure.get());
+        assertSame(failure, harness.failure.get());
       } finally {
         harness.queue.close();
         publishing.join(5000);

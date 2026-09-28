@@ -443,9 +443,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
       session.sendAsdu(asdu);
     }
 
-    /** Sends an ASDU on behalf of a handler (the ServerContext escape hatch). */
+    /**
+     * Sends a solicited reply or a handler's ASDU (the ServerContext escape hatch), behind any
+     * publications an interrogation deferred.
+     */
     private void send(Asdu asdu) {
-      if (!closed.get()) {
+      if (!closed.get() && !monitors.deferReply(asdu)) {
         session
             .sendAsduAsync(asdu)
             .whenCompleteAsync(

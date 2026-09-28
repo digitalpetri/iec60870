@@ -19,12 +19,14 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec60870.asdu.element.FreezeMode;
 import com.digitalpetri.iec60870.asdu.element.Qds;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.IntegratedTotals;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
+import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.asdu.object.SinglePointInformation;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
@@ -41,12 +43,15 @@ import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
+import com.digitalpetri.iec60870.server.CommandDecision;
+import com.digitalpetri.iec60870.server.CommandRequest;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.InterrogationRequest;
 import com.digitalpetri.iec60870.server.InterrogationResponse;
 import com.digitalpetri.iec60870.server.PointDefinition;
 import com.digitalpetri.iec60870.server.ServerConfig;
 import com.digitalpetri.iec60870.server.ServerContext;
+import com.digitalpetri.iec60870.server.ServerEvent;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
 import com.digitalpetri.iec60870.test.common.ManualScheduler;
@@ -65,6 +70,8 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Flow;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -98,6 +105,72 @@ class SessionFeedbackIntegrationTest {
       } else {
         assertFalse(((SinglePointInformation) point.get(1).objects().get(0)).on());
       }
+    }
+  }
+
+  @Test
+  void commandReturnCannotOvertakeAnEventDeferredByInterrogation() {
+    ServerHandler handler =
+        new ServerHandler() {
+          @Override
+          public CompletionStage<CommandDecision> onCommandAsync(
+              ServerContext context, CommandRequest request) {
+            return CompletableFuture.completedFuture(
+                CommandDecision.acceptAndUpdate(PointValue.single(true)));
+          }
+        };
+    try (var harness = new ServerHarness(false, handler)) {
+      harness.request(false);
+      harness.callbacks.runAll();
+      harness.server.publish(PointAddress.of(1, 19), PointValue.single(false), Cause.SPONTANEOUS);
+      harness.server.publish(PointAddress.of(1, 20), PointValue.single(false), Cause.SPONTANEOUS);
+      // Acknowledge enough for the rest of the snapshot; the window fills again before the events.
+      harness.session.onApdu(new Apdu(new ControlField.TypeS(10), null));
+      harness.callbacks.runAll();
+      harness.session.onApdu(new Apdu(new ControlField.TypeI(1, 10), command(20, true)));
+      harness.drain();
+      List<Asdu> point =
+          harness.asdus().stream()
+              .filter(a -> a.objects().get(0).address().value().intValue() == 20)
+              .toList();
+      assertEquals(
+          List.of(
+              Cause.INTERROGATED_BY_STATION,
+              Cause.SPONTANEOUS,
+              Cause.ACTIVATION_CONFIRMATION,
+              Cause.RETURN_REMOTE,
+              Cause.ACTIVATION_TERMINATION),
+          point.stream().map(Asdu::cause).toList());
+      assertTrue(
+          ((SinglePointInformation) point.get(3).objects().get(0)).on(),
+          "the command's return information must be the peer's last value");
+    }
+  }
+
+  @Test
+  void repliesQueuedBehindADeferredEventShareTheQueueBound() {
+    try (var harness = new ServerHarness(false, new ServerHandler() {}, 4)) {
+      var events = new ArrayList<ServerEvent>();
+      harness.server.events().subscribe(recorder(events));
+      harness.request(false);
+      harness.callbacks.runAll();
+      harness.server.publish(PointAddress.of(1, 20), PointValue.single(false), Cause.SPONTANEOUS);
+      // The event waits behind the snapshot, and the window is full again when it is released.
+      harness.session.onApdu(new Apdu(new ControlField.TypeS(10), null));
+      harness.callbacks.runAll();
+      // Events published between requests must not let the replies exceed the bound.
+      for (int i = 1; i <= 4; i++) {
+        harness.server.publish(PointAddress.of(1, i), PointValue.single(false), Cause.SPONTANEOUS);
+        harness.session.onApdu(new Apdu(new ControlField.TypeI(i, 10), read(1)));
+        harness.callbacks.runAll();
+      }
+      assertTrue(closedCauses(events).isEmpty(), "four queued replies fit the bound");
+      harness.server.publish(PointAddress.of(1, 5), PointValue.single(false), Cause.SPONTANEOUS);
+      harness.session.onApdu(new Apdu(new ControlField.TypeI(5, 10), read(1)));
+      harness.callbacks.runAll();
+      List<Throwable> causes = closedCauses(events);
+      assertEquals(1, causes.size(), "a fifth queued reply closes the connection");
+      assertInstanceOf(RejectedExecutionException.class, causes.get(0));
     }
   }
 
@@ -302,6 +375,47 @@ class SessionFeedbackIntegrationTest {
         List.of(new ReadCommand(InformationObjectAddress.of(10))));
   }
 
+  private static Flow.Subscriber<ServerEvent> recorder(List<ServerEvent> events) {
+    return new Flow.Subscriber<>() {
+      @Override
+      public void onSubscribe(Flow.Subscription subscription) {
+        subscription.request(Long.MAX_VALUE);
+      }
+
+      @Override
+      public void onNext(ServerEvent event) {
+        events.add(event);
+      }
+
+      @Override
+      public void onError(Throwable error) {}
+
+      @Override
+      public void onComplete() {}
+    };
+  }
+
+  private static List<Throwable> closedCauses(List<ServerEvent> events) {
+    return events.stream()
+        .filter(ServerEvent.ConnectionClosed.class::isInstance)
+        .map(event -> Objects.requireNonNull(((ServerEvent.ConnectionClosed) event).cause()))
+        .toList();
+  }
+
+  private static Asdu command(int address, boolean on) {
+    return new Asdu(
+        AsduType.C_SC_NA_1,
+        false,
+        Cause.ACTIVATION,
+        false,
+        false,
+        OriginatorAddress.none(),
+        CommonAddress.of(1),
+        List.of(
+            new SingleCommand(
+                InformationObjectAddress.of(address), on, new QualifierOfCommand(0, false))));
+  }
+
   private static PointValue<BinaryCounterReading> counter(int value) {
     return PointValue.counter(new BinaryCounterReading(value, 0, false, false, false));
   }
@@ -326,6 +440,10 @@ class SessionFeedbackIntegrationTest {
     final ApciSession session;
 
     ServerHarness(boolean counters, ServerHandler handler) {
+      this(counters, handler, ServerConfig.builder().build().maxOutboundQueue());
+    }
+
+    ServerHarness(boolean counters, ServerHandler handler, int maxOutboundQueue) {
       var station = Station.builder(CommonAddress.of(1));
       for (int i = 1; i <= 20; i++) {
         if (counters)
@@ -352,6 +470,7 @@ class SessionFeedbackIntegrationTest {
               .station(station.build())
               .handler(handler)
               .timeTagStyle(TimeTagStyle.NONE)
+              .maxOutboundQueue(maxOutboundQueue)
               .callbackExecutor(callbacks)
               .build();
       server =
