@@ -996,7 +996,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
         for (Station.InterrogatedPoint point : station.get().select(request.qualifier())) {
           objects.add(
               MonitorMapping.toMonitorObject(
-                  point.type(), point.address(), point.value(), config.timeTagStyle()));
+                  point.type(), point.address(), point.value(), TimeTagStyle.NONE));
         }
         return InterrogationResponse.of(objects);
       }
