@@ -1,13 +1,20 @@
 package com.digitalpetri.iec60870.transport.serial;
 
+import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.fazecast.jSerialComm.SerialPort;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -61,8 +68,14 @@ class Ft12SerialChannel {
   private final AtomicBoolean lossSignaled = new AtomicBoolean(false);
 
   /** Outbound frames awaiting the writer thread; each carried buffer is owned by this channel. */
-  private final BlockingQueue<ByteBuf> writeQueue =
+  private final BlockingQueue<PendingWrite> writeQueue =
       new LinkedBlockingQueue<>(OUTBOUND_QUEUE_CAPACITY);
+
+  // Guarded by this. Includes the request removed by the writer so teardown can fail it even if
+  // the driver has not returned. Remove a future only after its completion is visible.
+  private final Set<CompletableFuture<Void>> pendingWrites = new LinkedHashSet<>();
+  private boolean teardownStarted;
+  private @Nullable Throwable teardownCause;
 
   private volatile boolean running = false;
   private volatile @Nullable SerialLine line;
@@ -176,34 +189,36 @@ class Ft12SerialChannel {
    * <p>The frame is enqueued (not written) on the caller's thread, so this method does not block on
    * the underlying serial write even when the OS write buffer is full or the adapter has wedged.
    * The dedicated writer thread drains the queue in order and performs the actual (potentially
-   * blocking) serial write off the caller's thread; a failed write there is surfaced as connection
-   * loss through {@code onLoss} rather than thrown back here. This matters because the FT1.2 link
-   * layer calls {@code send} while holding its engine lock, whose callbacks must not block.
+   * blocking) serial write off the caller's thread. The returned stage reflects that write's
+   * outcome; a failed write also surfaces as connection loss through {@code onLoss}. This matters
+   * because the FT1.2 link layer calls {@code send} while holding its engine lock, whose callbacks
+   * must not block.
    *
    * <p>The caller must not release {@code frame}; ownership transfers to this channel, which
    * releases it whether it is written, dropped on a full queue, or discarded during teardown.
    *
    * @param frame the whole frame to send; ownership transfers to this channel.
+   * @return a stage that completes after the complete frame is written, or fails if the write fails
+   *     or the channel closes before it finishes.
    * @throws IOException if the port is not open or the outbound queue is full.
    */
-  void write(ByteBuf frame) throws IOException {
+  synchronized CompletionStage<Void> write(ByteBuf frame) throws IOException {
     SerialLine serialLine = line;
     if (!running || serialLine == null || !serialLine.isOpen()) {
       frame.release();
       throw new IOException("serial port is not open");
     }
 
-    if (!writeQueue.offer(frame)) {
+    CompletableFuture<Void> result = new CompletableFuture<>();
+    pendingWrites.add(result);
+    if (!writeQueue.offer(new PendingWrite(frame, result))) {
+      pendingWrites.remove(result);
       frame.release();
       throw new IOException("serial outbound queue is full");
     }
 
-    // Guard against a teardown that raced in after the open() check above: if the writer thread has
-    // already drained and exited, the frame we just enqueued would leak. Draining here is safe
-    // because the queue's poll() is atomic, so each frame is released by exactly one drainer.
-    if (!running) {
-      drainAndReleaseQueue();
-    }
+    // Caller cancellation must not remove the completion tracked by teardown.
+    return result.copy();
   }
 
   /**
@@ -233,7 +248,18 @@ class Ft12SerialChannel {
    * @param cause the failure cause, or {@code null} for an orderly close.
    */
   private void teardown(@Nullable Throwable cause) {
-    running = false;
+    List<CompletableFuture<Void>> writes;
+    synchronized (this) {
+      // A failed-send callback can close or reconnect synchronously. Preserve the first teardown's
+      // cause when that re-enters this method before the loss callback has been delivered.
+      if (!teardownStarted) {
+        teardownStarted = true;
+        teardownCause = cause;
+      }
+      cause = teardownCause;
+      running = false;
+      writes = new ArrayList<>(pendingWrites);
+    }
 
     SerialLine serialLine = line;
     if (serialLine != null) {
@@ -242,6 +268,14 @@ class Ft12SerialChannel {
       } catch (RuntimeException e) {
         LOGGER.debug("error closing serial port", e);
       }
+    }
+
+    Throwable writeFailure =
+        cause != null
+            ? cause
+            : new ConnectionClosedException("serial channel closed before write completed");
+    for (CompletableFuture<Void> write : writes) {
+      completeWrite(write, writeFailure);
     }
 
     Thread writer = writerThread;
@@ -282,34 +316,42 @@ class Ft12SerialChannel {
   private void writeLoop(SerialLine serialLine) {
     try {
       while (running) {
-        ByteBuf frame;
+        PendingWrite write;
         try {
-          frame = writeQueue.take();
+          write = writeQueue.take();
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           return;
         }
 
+        ByteBuf frame = write.frame();
+        Throwable failure = null;
         try {
+          if (!running) {
+            throw new ConnectionClosedException("serial channel closed before write started");
+          }
           int length = frame.readableBytes();
           byte[] bytes = new byte[length];
           frame.getBytes(frame.readerIndex(), bytes);
 
           int written = serialLine.write(bytes, length);
           if (written != length) {
-            if (running) {
-              teardown(new IOException("serial write incomplete (" + written + "/" + length + ")"));
-            }
-            return;
+            failure = new IOException("serial write incomplete (" + written + "/" + length + ")");
           }
         } catch (RuntimeException e) {
-          if (running) {
-            teardown(e);
-          }
-          return;
+          failure = e;
         } finally {
           frame.release();
         }
+
+        if (failure != null) {
+          if (running) {
+            teardown(failure);
+          }
+          completeWrite(write.result(), failure);
+          return;
+        }
+        completeWrite(write.result(), null);
       }
     } finally {
       drainAndReleaseQueue();
@@ -318,11 +360,29 @@ class Ft12SerialChannel {
 
   /** Removes and releases every queued outbound frame; safe to call from any thread. */
   private void drainAndReleaseQueue() {
-    ByteBuf frame;
-    while ((frame = writeQueue.poll()) != null) {
-      frame.release();
+    PendingWrite write;
+    while ((write = writeQueue.poll()) != null) {
+      write.frame().release();
+      completeWrite(
+          write.result(),
+          new ConnectionClosedException("serial channel closed before write started"));
     }
   }
+
+  private void completeWrite(CompletableFuture<Void> result, @Nullable Throwable failure) {
+    if (failure == null) {
+      // null is the only completion value for CompletableFuture<Void>.
+      //noinspection DataFlowIssue
+      result.complete(null);
+    } else {
+      result.completeExceptionally(failure);
+    }
+    synchronized (this) {
+      pendingWrites.remove(result);
+    }
+  }
+
+  private record PendingWrite(ByteBuf frame, CompletableFuture<Void> result) {}
 
   private void readLoop(SerialLine serialLine, Ft12Deframer deframer) {
     byte[] buffer = new byte[READ_BUFFER_SIZE];

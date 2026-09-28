@@ -17,9 +17,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>This is the serial peer of the Netty-backed TCP client transport. {@link #connect()} opens the
  * configured serial port and starts a reader thread that delivers complete FT1.2 frames to the
- * registered {@link TransportListener}; {@link #send(ByteBuf)} writes one whole frame on the
- * calling thread. Register a listener with {@link #setListener(TransportListener)} before
- * connecting so no inbound frame is missed.
+ * registered {@link TransportListener}. {@link #send(ByteBuf)} enqueues a whole frame for the
+ * dedicated writer thread and returns a stage that completes after the frame is written, or fails
+ * if the write fails or the connection closes first. Register a listener with {@link
+ * #setListener(TransportListener)} before connecting so no inbound frame is missed.
  *
  * <p>Per the transport SPI, {@link #isConnected()} reflects whether the serial port is open, not
  * whether the FT1.2 link has been established; link availability is surfaced by the protocol layer
@@ -103,8 +104,7 @@ public final class SerialClientTransport implements ClientTransport {
     }
 
     try {
-      current.write(frame);
-      return CompletableFuture.completedFuture(null);
+      return current.write(frame);
     } catch (IOException e) {
       return CompletableFuture.failedFuture(e);
     }

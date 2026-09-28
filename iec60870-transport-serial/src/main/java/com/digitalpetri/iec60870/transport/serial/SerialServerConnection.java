@@ -21,8 +21,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A point-to-point serial outstation has exactly one peer, so one instance represents the whole
  * link. The owning {@link SerialServerTransport} delivers it to the registered connection handler,
- * which installs a {@link TransportListener} to receive inbound FT1.2 frames. Outbound frames are
- * written on the calling thread by {@link #send(ByteBuf)}.
+ * which installs a {@link TransportListener} to receive inbound FT1.2 frames. {@link
+ * #send(ByteBuf)} enqueues outbound frames for a dedicated writer thread and returns a stage that
+ * completes after the frame is written, or fails if the write fails or the connection closes first.
  *
  * <p>Because a serial line carries no network peer or TLS context, {@link #remoteAddress()} returns
  * a synthetic address whose string form is the serial port name, and {@link #peerCertificate()} is
@@ -61,8 +62,7 @@ public final class SerialServerConnection implements ServerTransportConnection {
     }
 
     try {
-      channel.write(frame);
-      return CompletableFuture.completedFuture(null);
+      return channel.write(frame);
     } catch (IOException e) {
       return CompletableFuture.failedFuture(e);
     }
