@@ -133,6 +133,10 @@ station initiates the link-reset bring-up, and which station may drive
   peer's reset-of-remote-link, which sets the link available, fires the same data-transfer-state
   event, acknowledges, and flushes its own queued data. `isDataTransferStarted()` returns whether the
   link is available.
+- **A received reset affects the secondary direction.** It clears the received-frame FCB and cached
+  response. The independent primary retains its next FCB, any outstanding data or keep-alive
+  transaction, and its confirmation deadline. A peer's primary reset does not imply that its
+  secondary has restarted; outstanding data can still be acknowledged or retried with the same FCB.
 - **There is no stop-data service.** `stopDataTransfer()` (CLIENT only) completes immediately and
   leaves the link available; it exists only to satisfy the `Session` contract symmetrically with
   `startDataTransfer()`. Both methods throw `IllegalStateException` on a `SERVER` station.
