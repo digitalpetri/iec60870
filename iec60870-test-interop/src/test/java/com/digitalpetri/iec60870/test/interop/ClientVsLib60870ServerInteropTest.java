@@ -318,15 +318,17 @@ class ClientVsLib60870ServerInteropTest {
   }
 
   @Test
-  @DisplayName("Station and group interrogation replies echo the requesting originator")
-  void interrogationRepliesEchoOriginator() {
+  @DisplayName("Station and group interrogations collect OA0 data for the requesting originator")
+  void interrogationCollectsDefaultOriginatorData() {
     for (QualifierOfInterrogation qoi :
         List.of(
             QualifierOfInterrogation.STATION,
             QualifierOfInterrogation.GROUP_1,
             QualifierOfInterrogation.GROUP_2)) {
       events().clear();
-      assertTrue(client().interrogate(STATION, qoi).terminated());
+      InterrogationResult result = client().interrogate(STATION, qoi);
+      assertTrue(result.terminated());
+      assertEquals(7, result.objects().size(), "all OA0 points must be collected for " + qoi);
       for (Cause cause :
           List.of(
               Cause.ACTIVATION_CONFIRMATION,
@@ -336,9 +338,11 @@ class ClientVsLib60870ServerInteropTest {
         assertNotNull(response, "interrogation response must carry " + cause);
         assertFalse(response.test());
         assertEquals(
-            OriginatorAddress.of(3),
+            cause == Cause.fromValue(qoi.value().intValue())
+                ? OriginatorAddress.none()
+                : OriginatorAddress.of(3),
             response.originatorAddress(),
-            "request OA3 must be echoed in " + cause + " reply: " + response);
+            "OA3 request receives OA3 controls and OA0 data: " + response);
       }
     }
   }

@@ -124,7 +124,10 @@ CommandResult sbo = client.commands()
 `InterrogationResult(station, objects, terminated)`. Confirmations and terminations must echo the
 requested qualifier and IOA; termination is accepted only after confirmation. Collected data must
 carry the cause for the requested station or group (20..36), and all replies must match the request's
-originator and test flag. A late reply for another group cannot complete or add data to the request.
+test flag. With a two-octet cause of transmission, replies may carry the requested originator or the
+default originator (OA 0); another nonzero originator is ignored. With a one-octet cause of
+transmission, no originator field is transmitted or compared. A late reply for another group cannot
+complete or add data to the request.
 `result.pointValues()` projects the monitor objects onto `PointEntry(PointAddress, PointValue<?>)`
 entries, skipping non-monitor objects.
 

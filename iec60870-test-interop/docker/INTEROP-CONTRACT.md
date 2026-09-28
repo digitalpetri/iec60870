@@ -82,9 +82,11 @@ For every accepted interrogation the server emits, in order:
    ASDU),
 3. `ACT_TERM` echoing the interrogation command.
 
-The confirmations, each interrogation data ASDU, and termination echo the request's originator
-address (IEC 60870-5-101 section 7.2.3). The CS104 Java client uses OA 3, so all replies to its
-interrogations carry OA 3. Unsolicited monitor traffic retains OA 0.
+Confirmations and termination mirror the request's originator address. Interrogation data uses the
+default originator (OA 0), as in the lib60870-C reference CS104 server. The Java client uses OA 3;
+the tests verify that it collects this OA 0 data between OA 3 confirmation and termination. IEC
+60870-5-101 section 7.2.3 defines OA 0 as the default and recommends echoing an originator when used
+for routing; an exact echo is not required for accepting this peer's process data.
 
 > **One ASDU per point (lib60870-C packing constraint).** An IEC 60870-5-104 ASDU carries a single
 > TypeID for all of its information objects, and lib60870-C's `CS101_ASDU_addInformationObject`

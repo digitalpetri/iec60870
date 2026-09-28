@@ -1178,6 +1178,72 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
+  void interrogationCollectsDataWithDefaultOrRequestedOriginator() {
+    AtomicReference<@Nullable FakeSession> peerRef = new AtomicReference<>();
+    ClientConfig originatorConfig =
+        ClientConfig.builder()
+            .originatorAddress(OriginatorAddress.of(3))
+            .callbackExecutor(Runnable::run)
+            .build();
+    try (var originatorClient =
+        new DefaultIec60870Client(
+            new FakeClientTransport(), originatorConfig, clientSessionFactory(peerRef))) {
+      originatorClient.connect();
+      FakeSession peer = requireNonNull(peerRef.get());
+      CompletionStage<InterrogationResult> stage = originatorClient.interrogateAsync(STATION);
+      peer.deliverAsdu(withOriginator(control(Cause.ACTIVATION_CONFIRMATION, false), 3));
+      peer.deliverAsdu(withOriginator(measured(Cause.INTERROGATED_BY_STATION, (short) 27), 27));
+      Asdu defaultResponse = measured(Cause.INTERROGATED_BY_STATION, (short) 0);
+      Asdu directedResponse = withOriginator(measured(Cause.INTERROGATED_BY_STATION, (short) 3), 3);
+      peer.deliverAsdu(defaultResponse);
+      peer.deliverAsdu(directedResponse);
+      peer.deliverAsdu(withOriginator(control(Cause.ACTIVATION_TERMINATION, false), 3));
+      assertEquals(
+          List.of(defaultResponse.objects().get(0), directedResponse.objects().get(0)),
+          stage.toCompletableFuture().join().objects());
+    }
+  }
+
+  @Test
+  void interrogationAcceptsDefaultOriginatorControls() {
+    AtomicReference<@Nullable FakeSession> peerRef = new AtomicReference<>();
+    ClientConfig originatorConfig =
+        ClientConfig.builder()
+            .originatorAddress(OriginatorAddress.of(3))
+            .callbackExecutor(Runnable::run)
+            .build();
+    try (var originatorClient =
+        new DefaultIec60870Client(
+            new FakeClientTransport(), originatorConfig, clientSessionFactory(peerRef))) {
+      originatorClient.connect();
+      FakeSession peer = requireNonNull(peerRef.get());
+      CompletionStage<InterrogationResult> stage = originatorClient.interrogateAsync(STATION);
+      peer.deliverAsdu(withOriginator(control(Cause.ACTIVATION_CONFIRMATION, false), 27));
+      peer.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+      assertFalse(stage.toCompletableFuture().isDone(), "another originator cannot confirm");
+      peer.deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+      Asdu response = withOriginator(measured(Cause.INTERROGATED_BY_STATION, (short) 3), 3);
+      peer.deliverAsdu(response);
+      peer.deliverAsdu(withOriginator(control(Cause.UNKNOWN_COMMON_ADDRESS, true), 27));
+      peer.deliverAsdu(withOriginator(control(Cause.ACTIVATION_TERMINATION, false), 27));
+      assertFalse(
+          stage.toCompletableFuture().isDone(), "another originator cannot end the request");
+      peer.deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+      assertTrue(stage.toCompletableFuture().isDone(), "OA0 controls must complete the request");
+      assertEquals(response.objects(), stage.toCompletableFuture().join().objects());
+
+      CompletionStage<InterrogationResult> rejected = originatorClient.interrogateAsync(STATION);
+      Asdu rejection = control(Cause.UNKNOWN_COMMON_ADDRESS, true);
+      peer.deliverAsdu(rejection);
+      assertTrue(rejected.toCompletableFuture().isCompletedExceptionally());
+      var ex = assertThrows(CompletionException.class, () -> rejected.toCompletableFuture().join());
+      NegativeConfirmationException failure =
+          assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
+      assertSame(rejection, failure.asdu().orElseThrow());
+    }
+  }
+
+  @Test
   void interrogationControlRepliesMustMirrorTheRequestedIdentity() {
     client.connect();
     CompletionStage<InterrogationResult> stage =
@@ -1471,6 +1537,18 @@ class DefaultIec60870ClientTest {
 
   private Asdu control(Cause cause, boolean negative) {
     return control(cause, negative, QualifierOfInterrogation.STATION);
+  }
+
+  private static Asdu withOriginator(Asdu asdu, int originator) {
+    return new Asdu(
+        asdu.type(),
+        asdu.sequence(),
+        asdu.cause(),
+        asdu.negative(),
+        asdu.test(),
+        OriginatorAddress.of(originator),
+        asdu.commonAddress(),
+        asdu.objects());
   }
 
   private Asdu control(Cause cause, boolean negative, QualifierOfInterrogation qoi) {

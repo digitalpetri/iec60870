@@ -175,16 +175,15 @@ createServerTlsConfiguration(void)
  * ASDU therefore collapses on the wire to just the first point. To deliver every
  * distinct-type point at its correct TypeID we emit one ASDU per object, per the
  * interrogation contract (INTEROP-CONTRACT.md section 3): each as a non-sequence
- * ASDU with the supplied response COT and originator address. Interrogation
- * data retains the requesting originator, as do its mirrored confirmations.
+ * ASDU with the supplied response COT.
  *
  * Ownership: this takes the caller-allocated `io`, adds it, sends the ASDU, then
  * destroys both `io` and the ASDU.
  */
 static void
-sendOnePointAsdu(IMasterConnection con, CS101_CauseOfTransmission cot, int oa, InformationObject io)
+sendOnePointAsdu(IMasterConnection con, CS101_CauseOfTransmission cot, InformationObject io)
 {
-    CS101_ASDU asdu = CS101_ASDU_create(alParams, false, cot, oa, g_ca, false, false);
+    CS101_ASDU asdu = CS101_ASDU_create(alParams, false, cot, 0, g_ca, false, false);
     CS101_ASDU_addInformationObject(asdu, io);
     InformationObject_destroy(io);
     IMasterConnection_sendASDU(con, asdu);
@@ -196,21 +195,21 @@ sendOnePointAsdu(IMasterConnection con, CS101_CauseOfTransmission cot, int oa, I
  * (with a different COT) group 1. Time-tagged points are not included here; they
  * are reported with their non-time TypeID per the CS101 spec by group 2 below. */
 static void
-sendAllMonitorNonTime(IMasterConnection con, CS101_CauseOfTransmission cot, int oa)
+sendAllMonitorNonTime(IMasterConnection con, CS101_CauseOfTransmission cot)
 {
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) SinglePointInformation_create(NULL, IOA_SP_NA, VAL_SP, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) DoublePointInformation_create(NULL, IOA_DP_NA, VAL_DP, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) StepPositionInformation_create(NULL, IOA_ST_NA, VAL_ST, VAL_ST_TRANS, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) BitString32_create(NULL, IOA_BO_NA, VAL_BO));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueNormalized_create(NULL, IOA_ME_NA, VAL_NORM, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueScaled_create(NULL, IOA_ME_NB, VAL_SCALED, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueShort_create(NULL, IOA_ME_NC, VAL_SHORT, IEC60870_QUALITY_GOOD));
 }
 
@@ -218,21 +217,21 @@ sendAllMonitorNonTime(IMasterConnection con, CS101_CauseOfTransmission cot, int 
  * TypeIDs but at the *time-tagged* IOAs so the client can tell which logical
  * point it is. ONE ASDU PER POINT so every distinct TypeID reaches the client. */
 static void
-sendGroup2AtTimeIoas(IMasterConnection con, CS101_CauseOfTransmission cot, int oa)
+sendGroup2AtTimeIoas(IMasterConnection con, CS101_CauseOfTransmission cot)
 {
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) SinglePointInformation_create(NULL, IOA_SP_TB, VAL_SP, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) DoublePointInformation_create(NULL, IOA_DP_TB, VAL_DP, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) StepPositionInformation_create(NULL, IOA_ST_TB, VAL_ST, VAL_ST_TRANS, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) BitString32_create(NULL, IOA_BO_TB, VAL_BO));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueNormalized_create(NULL, IOA_ME_TD, VAL_NORM, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueScaled_create(NULL, IOA_ME_TE, VAL_SCALED, IEC60870_QUALITY_GOOD));
-    sendOnePointAsdu(con, cot, oa,
+    sendOnePointAsdu(con, cot,
             (InformationObject) MeasuredValueShort_create(NULL, IOA_ME_TF, VAL_SHORT, IEC60870_QUALITY_GOOD));
 }
 
@@ -252,14 +251,14 @@ interrogationHandler(void* parameter, IMasterConnection con, CS101_ASDU asdu, ui
         printf("IC station\n");
         IMasterConnection_sendACT_CON(con, asdu, false);
         /* All non-counter monitor points, one ASDU per point (section 3). */
-        sendAllMonitorNonTime(con, CS101_COT_INTERROGATED_BY_STATION, CS101_ASDU_getOA(asdu));
+        sendAllMonitorNonTime(con, CS101_COT_INTERROGATED_BY_STATION);
         IMasterConnection_sendACT_TERM(con, asdu);
     }
     else if (qoi == IEC60870_QOI_GROUP_1) {
         printf("IC group=1\n");
         IMasterConnection_sendACT_CON(con, asdu, false);
         /* Group 1 = all non-time points, one ASDU per point. */
-        sendAllMonitorNonTime(con, CS101_COT_INTERROGATED_BY_GROUP_1, CS101_ASDU_getOA(asdu));
+        sendAllMonitorNonTime(con, CS101_COT_INTERROGATED_BY_GROUP_1);
         IMasterConnection_sendACT_TERM(con, asdu);
     }
     else if (qoi == IEC60870_QOI_GROUP_2) {
@@ -267,7 +266,7 @@ interrogationHandler(void* parameter, IMasterConnection con, CS101_ASDU asdu, ui
         IMasterConnection_sendACT_CON(con, asdu, false);
         /* Group 2 = time-tagged points (reported via non-time TypeIDs at their
          * time-tagged IOAs), one ASDU per point. */
-        sendGroup2AtTimeIoas(con, CS101_COT_INTERROGATED_BY_GROUP_2, CS101_ASDU_getOA(asdu));
+        sendGroup2AtTimeIoas(con, CS101_COT_INTERROGATED_BY_GROUP_2);
         IMasterConnection_sendACT_TERM(con, asdu);
     }
     else {
@@ -288,8 +287,8 @@ sendIntegratedTotals(IMasterConnection con, CS101_CauseOfTransmission cot)
     struct sBinaryCounterReading bcr;
     BinaryCounterReading_create(&bcr, VAL_COUNTER, 0, false, false, false);
 
-    sendOnePointAsdu(con, cot, 0, (InformationObject) IntegratedTotals_create(NULL, IOA_IT_NA, &bcr));
-    sendOnePointAsdu(con, cot, 0, (InformationObject) IntegratedTotals_create(NULL, IOA_IT_TB, &bcr));
+    sendOnePointAsdu(con, cot, (InformationObject) IntegratedTotals_create(NULL, IOA_IT_NA, &bcr));
+    sendOnePointAsdu(con, cot, (InformationObject) IntegratedTotals_create(NULL, IOA_IT_TB, &bcr));
 }
 
 static bool

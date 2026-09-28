@@ -7,6 +7,7 @@ import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
@@ -408,7 +409,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
     PendingInterrogation request =
-        new PendingInterrogation(asdu, qoi, future, maxInterrogationResponseObjects);
+        new PendingInterrogation(
+            asdu,
+            qoi,
+            config.protocolProfile().cotLength() == 2,
+            future,
+            maxInterrogationResponseObjects);
     if (!register(request)) {
       future.completeExceptionally(
           alreadyInFlight("interrogation of common address " + station.value()));
@@ -1060,6 +1066,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     private final Asdu activation;
     private final int responseCause;
+    private final boolean hasOriginatorAddress;
     private final CompletableFuture<InterrogationResult> future;
     private final int maxObjects;
     private final List<InformationObject> collected = new ArrayList<>();
@@ -1070,10 +1077,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
     PendingInterrogation(
         Asdu activation,
         QualifierOfInterrogation qoi,
+        boolean hasOriginatorAddress,
         CompletableFuture<InterrogationResult> future,
         int maxObjects) {
       this.activation = activation;
       this.responseCause = qoi.value().intValue();
+      this.hasOriginatorAddress = hasOriginatorAddress;
       this.future = future;
       this.maxObjects = maxObjects;
     }
@@ -1088,8 +1097,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
     @Override
     Outcome accept(Asdu asdu) {
       if (!asdu.commonAddress().equals(activation.commonAddress())
-          || !asdu.originatorAddress().equals(activation.originatorAddress())
           || asdu.test() != activation.test()) {
+        return Outcome.IGNORED;
+      }
+      // A one-octet COT carries no originator. Peers using a two-octet COT may still leave OA
+      // unused (zero); reject only replies directed to a different nonzero originator.
+      if (hasOriginatorAddress
+          && !asdu.originatorAddress().equals(OriginatorAddress.none())
+          && !asdu.originatorAddress().equals(activation.originatorAddress())) {
         return Outcome.IGNORED;
       }
       if (asdu.type() == AsduType.C_IC_NA_1) {
