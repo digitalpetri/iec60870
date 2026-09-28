@@ -936,6 +936,64 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
+  void negativeReadFailsOnlyTheAddressedPendingRead() {
+    client.connect();
+    PointAddress firstPoint = new PointAddress(STATION, InformationObjectAddress.of(110));
+    PointAddress secondPoint = new PointAddress(STATION, InformationObjectAddress.of(111));
+    CompletionStage<List<InformationObject>> first = client.readAsync(firstPoint);
+    CompletionStage<List<InformationObject>> second = client.readAsync(secondPoint);
+    Asdu rejection = negativeRead(secondPoint, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS);
+
+    session().deliverAsdu(rejection);
+
+    assertFalse(
+        first.toCompletableFuture().isDone(), "another point's rejection must not fail this read");
+    var ex = assertThrows(CompletionException.class, () -> second.toCompletableFuture().join());
+    NegativeConfirmationException failure =
+        assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
+    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, failure.cause());
+    assertSame(rejection, failure.asdu().orElseThrow());
+    assertEquals(1, client.pendingRequestCount());
+
+    Asdu response = measured(Cause.REQUEST, (short) 42);
+    session().deliverAsdu(response);
+    assertEquals(response.objects(), first.toCompletableFuture().join());
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
+  void unrelatedOrEmptyNegativeReadDoesNotCompletePendingRead() {
+    client.connect();
+    PointAddress point = new PointAddress(STATION, InformationObjectAddress.of(110));
+    CompletionStage<List<InformationObject>> stage = client.readAsync(point);
+    Asdu unrelated =
+        negativeRead(
+            new PointAddress(STATION, InformationObjectAddress.of(111)),
+            Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS);
+    Asdu empty =
+        new Asdu(
+            AsduType.C_RD_NA_1,
+            false,
+            Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS,
+            true,
+            false,
+            config.originatorAddress(),
+            STATION,
+            List.of());
+
+    for (Asdu response : List.of(unrelated, empty)) {
+      session().deliverAsdu(response);
+      assertFalse(stage.toCompletableFuture().isDone());
+      assertEquals(1, client.pendingRequestCount());
+    }
+
+    Asdu response = measured(Cause.REQUEST, (short) 42);
+    session().deliverAsdu(response);
+    assertEquals(response.objects(), stage.toCompletableFuture().join());
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
   void interrogationActConWithoutTerminationTimesOut() {
     ManualScheduler clock = new ManualScheduler();
     FakeClientTransport quietTransport = new FakeClientTransport();

@@ -23,7 +23,7 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code confirmTimeout} — how long the primary waits for an acknowledgement of a sent frame
  *       before repeating it.
  *   <li>{@code repeatTimeout} — the spacing between repeated transmissions of an unacknowledged
- *       frame.
+ *       frame, also used to pace status probes while a balanced peer reports busy.
  *   <li>{@code linkStateTimeout} — the idle interval after which the link status is polled.
  * </ul>
  *
@@ -42,8 +42,8 @@ import org.jspecify.annotations.Nullable;
  *     single-character frame.
  * @param confirmTimeout the time to wait for an acknowledgement before repeating a frame; must be
  *     positive.
- * @param repeatTimeout the spacing between repeated transmissions of an unacknowledged frame; must
- *     be positive.
+ * @param repeatTimeout the spacing between unacknowledged-frame retries and between status probes
+ *     while a balanced peer reports busy; must be positive.
  * @param maxRetries the maximum number of repeat transmissions of an unacknowledged frame; must be
  *     {@code >= 0}.
  * @param linkStateTimeout the idle interval after which the link status is polled; must be
@@ -120,8 +120,8 @@ public record LinkSettings(
    *     single-character frame.
    * @param confirmTimeout the time to wait for an acknowledgement before repeating a frame; must be
    *     positive.
-   * @param repeatTimeout the spacing between repeated transmissions of an unacknowledged frame;
-   *     must be positive.
+   * @param repeatTimeout the spacing between unacknowledged-frame retries and between status probes
+   *     while a balanced peer reports busy; must be positive.
    * @param maxRetries the maximum number of repeat transmissions of an unacknowledged frame; must
    *     be {@code >= 0}.
    * @param linkStateTimeout the idle interval after which the link status is polled; must be
@@ -363,6 +363,8 @@ public record LinkSettings(
     /**
      * Sets the spacing between repeated transmissions of an unacknowledged frame. Defaults to
      * {@code 1000 ms}.
+     *
+     * <p>Also sets the delay before requesting status again when a balanced peer reports busy.
      *
      * @param repeatTimeout the repeat timeout; must be positive.
      * @return this builder.

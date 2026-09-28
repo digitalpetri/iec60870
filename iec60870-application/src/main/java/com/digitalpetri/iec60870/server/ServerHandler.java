@@ -19,6 +19,17 @@ import java.util.concurrent.CompletionStage;
  * the same connection concurrently. Callbacks are invoked on the server's callback executor, off
  * any transport I/O thread, so a blocking implementation is permitted.
  *
+ * <p>After the raw hook declines an ASDU, standard dispatch accepts only activation requests (or
+ * {@link Cause#REQUEST} for reads), with P/N clear, SQ=0, and exactly one information object.
+ * Station-level controls must use information object address zero. Unsupported causes, including
+ * deactivation, receive a negative {@link Cause#UNKNOWN_CAUSE} reply. Malformed object counts,
+ * sequence addressing, and negative confirmations are discarded without invoking typed callbacks.
+ *
+ * <p>Typed callbacks operate on the live process and do not implement test mode. Test-marked
+ * activations receive a negative activation confirmation with the test bit preserved; test-marked
+ * reads are discarded. Applications implementing deactivation or test procedures must claim them in
+ * {@link #onRawAsdu} or {@link #onRawAsduAsync}, which receive the original ASDU before validation.
+ *
  * <p>Default behavior:
  *
  * <ul>
