@@ -34,6 +34,11 @@ import org.slf4j.LoggerFactory;
  * connection handler. Accepted channels are tracked in a {@link ChannelGroup} so {@link #unbind()}
  * can close the listening channel and every child channel.
  *
+ * <p>If {@link #unbind()} is called while binding, shutdown waits for that bind to finish before
+ * closing the endpoint. Repeated bind or unbind calls share the pending transition. A bind
+ * attempted during shutdown fails; a new bind may be attempted after shutdown when both event loop
+ * groups are shared and still running.
+ *
  * <p>The {@code maxConnections} cap is enforced at accept time: when the cap is already reached the
  * newly accepted channel is closed before the connection handler sees it.
  *
@@ -49,6 +54,10 @@ public class NettyServerTransport implements ServerTransport {
   private final AtomicReference<@Nullable Consumer<ServerTransportConnection>> connectionHandler =
       new AtomicReference<>();
   private final AtomicReference<@Nullable Channel> listenChannel = new AtomicReference<>();
+
+  // Guarded by this. Keep the bind visible until shutdown has closed its endpoint.
+  private @Nullable CompletableFuture<Void> bindResult;
+  private @Nullable CompletableFuture<Void> unbindResult;
 
   private final ChannelGroup childChannels =
       new DefaultChannelGroup("iec60870-server-children", GlobalEventExecutor.INSTANCE);
@@ -94,9 +103,25 @@ public class NettyServerTransport implements ServerTransport {
   }
 
   @Override
-  public CompletionStage<Void> bind() {
-    CompletableFuture<Void> result = new CompletableFuture<>();
+  public synchronized CompletionStage<Void> bind() {
+    if (unbindResult != null && !unbindResult.isDone()) {
+      return CompletableFuture.failedFuture(new IllegalStateException("server is unbinding"));
+    }
+    if (bindResult != null && !bindResult.isCompletedExceptionally()) {
+      return bindResult.copy();
+    }
 
+    CompletableFuture<Void> result = new CompletableFuture<>();
+    bindResult = result;
+    try {
+      startBind(result);
+    } catch (RuntimeException e) {
+      result.completeExceptionally(e);
+    }
+    return result.copy();
+  }
+
+  private void startBind(CompletableFuture<Void> result) {
     ServerBootstrap bootstrap =
         new ServerBootstrap()
             .group(bossGroup, workerGroup)
@@ -131,14 +156,26 @@ public class NettyServerTransport implements ServerTransport {
                 result.completeExceptionally(future.cause());
               }
             });
-
-    return result;
   }
 
   @Override
-  public CompletionStage<Void> unbind() {
-    CompletableFuture<Void> result = new CompletableFuture<>();
+  public synchronized CompletionStage<Void> unbind() {
+    if (unbindResult != null && !unbindResult.isDone()) {
+      return unbindResult.copy();
+    }
 
+    CompletableFuture<Void> result = new CompletableFuture<>();
+    unbindResult = result;
+    if (bindResult != null) {
+      // A failed bind also finishes the transition and must not prevent shutdown.
+      bindResult.whenComplete((v, ex) -> closeEndpoint(result));
+    } else {
+      closeEndpoint(result);
+    }
+    return result.copy();
+  }
+
+  private void closeEndpoint(CompletableFuture<Void> result) {
     Channel channel = listenChannel.getAndSet(null);
 
     Runnable closeChildrenAndGroups =
@@ -150,6 +187,9 @@ public class NettyServerTransport implements ServerTransport {
                         shutdownGroups()
                             .whenComplete(
                                 (v, ex) -> {
+                                  synchronized (this) {
+                                    bindResult = null;
+                                  }
                                   // CompletableFuture<Void> only accepts null as a completion
                                   // value.
                                   //noinspection DataFlowIssue
@@ -161,8 +201,6 @@ public class NettyServerTransport implements ServerTransport {
     } else {
       closeChildrenAndGroups.run();
     }
-
-    return result;
   }
 
   @Override
