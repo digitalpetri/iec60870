@@ -74,7 +74,7 @@ final class BalancedEngine implements Ft12Engine {
   private static final int FC_LINK_NOT_FUNCTIONING = 14;
   private static final int FC_LINK_NOT_IMPLEMENTED = 15;
 
-  /** The primary frame the link layer is currently awaiting a secondary confirmation for. */
+  /** The primary transaction occupying the stop-and-wait window. */
   private enum PendingPrimary {
 
     /** A request-status-of-link (FC9) sent during bring-up, awaiting status-of-link (FC11). */
@@ -85,6 +85,9 @@ final class BalancedEngine implements Ft12Engine {
 
     /** A user-data (FC3) frame sent, awaiting the positive acknowledgement. */
     USER_DATA,
+
+    /** Status probes waiting for a busy secondary to become ready for user data. */
+    BUSY_STATUS,
 
     /** An idle request-status-of-link (FC9) keep-alive probe, awaiting status-of-link (FC11). */
     KEEPALIVE
@@ -127,6 +130,8 @@ final class BalancedEngine implements Ft12Engine {
       pendingDataAsdu; // the in-flight FC3 ASDU, kept for verbatim retransmission
   private boolean pendingFcb; // the FCB stamped on the in-flight FCV=1 frame
   private int retryCount;
+  // A responsive busy secondary is probed after a delay; this is not an unanswered-frame retry.
+  private boolean statusProbeScheduled;
   private final OutboundAsduQueue sendQueue;
   private @Nullable CompletableFuture<Void> pendingStart;
 
@@ -478,9 +483,10 @@ final class BalancedEngine implements Ft12Engine {
     armConfirmTimer(confirmTimeoutMillis);
   }
 
-  private void bringUpComplete() {
+  private void bringUpComplete(boolean busy) {
     cancelConfirmTimer();
-    pending = null;
+    // Start completion callbacks can send inline, so establish the busy gate before notifying them.
+    pending = busy ? PendingPrimary.BUSY_STATUS : null;
     retryCount = 0;
     // A fresh reset: the primary FCB starts at 1 and the secondary expects 0, on both ends.
     nextFcb = true;
@@ -492,7 +498,14 @@ final class BalancedEngine implements Ft12Engine {
       events.onDataTransferStateChanged(true);
     }
     completePendingStart();
-    flushSendQueue();
+    if (closed) {
+      return;
+    }
+    if (busy) {
+      beginBusyWait();
+    } else {
+      flushSendQueue();
+    }
   }
 
   // --- Inbound dispatch (lock held) -----------------------------------------------------------
@@ -516,9 +529,9 @@ final class BalancedEngine implements Ft12Engine {
       return; // stale acknowledgement; nothing outstanding
     }
     switch (current) {
-      case BRING_UP_RESET -> bringUpComplete();
-      case USER_DATA -> dataAcked();
-      case BRING_UP_STATUS, KEEPALIVE -> {
+      case BRING_UP_RESET -> bringUpComplete(false);
+      case USER_DATA -> dataAcked(false);
+      case BRING_UP_STATUS, KEEPALIVE, BUSY_STATUS -> {
         // 0xE5 is not a valid status-of-link reply; ignore and let the confirm timer retry.
       }
     }
@@ -533,9 +546,14 @@ final class BalancedEngine implements Ft12Engine {
     switch (current) {
       case BRING_UP_STATUS -> {
         if (fc == FC_STATUS_OF_LINK) {
+          if (control.dfc()) {
+            scheduleStatusProbe();
+            return;
+          }
           // The peer's link is reachable: reset it, then await the positive acknowledgement.
           pending = PendingPrimary.BRING_UP_RESET;
           retryCount = 0;
+          statusProbeScheduled = false;
           sendPrimaryNoData(FC_RESET_REMOTE_LINK);
           if (closed) {
             return;
@@ -549,7 +567,7 @@ final class BalancedEngine implements Ft12Engine {
       }
       case BRING_UP_RESET -> {
         if (fc == FC_ACK) {
-          bringUpComplete();
+          bringUpComplete(control.dfc());
         } else if (isLinkServiceFailure(fc)) {
           closeWithError(linkServiceFailure(fc));
         } else {
@@ -558,40 +576,80 @@ final class BalancedEngine implements Ft12Engine {
       }
       case USER_DATA -> {
         if (fc == FC_ACK) {
-          dataAcked();
+          dataAcked(control.dfc());
         } else if (fc == FC_NACK) {
-          // The secondary is busy or did not accept the data; let the confirm timer retransmit.
-          LOGGER.debug("secondary NACK (FC1) for user data; will retransmit on confirm timeout");
+          // FC1 rejects this ASDU. Keep its FCB and retry it only after the secondary is ready.
+          beginBusyWait();
         } else if (isLinkServiceFailure(fc)) {
           closeWithError(linkServiceFailure(fc));
         } else {
           LOGGER.debug("unexpected response to user-data: FC{}", fc);
         }
       }
-      case KEEPALIVE -> {
+      case KEEPALIVE, BUSY_STATUS -> {
         if (fc == FC_STATUS_OF_LINK) {
-          cancelConfirmTimer();
-          pending = null;
-          retryCount = 0;
-          // The keep-alive occupied the single-frame window; an ASDU submitted while it was
-          // outstanding is now eligible to drain, so resume the send queue.
-          flushSendQueue();
+          if (control.dfc()) {
+            pending = PendingPrimary.BUSY_STATUS;
+            scheduleStatusProbe();
+          } else {
+            secondaryReady();
+          }
         } else if (isLinkServiceFailure(fc)) {
           closeWithError(linkServiceFailure(fc));
         } else {
-          LOGGER.debug("unexpected response to keep-alive request-status-of-link: FC{}", fc);
+          LOGGER.debug("unexpected response to request-status-of-link: FC{}", fc);
         }
       }
     }
   }
 
-  private void dataAcked() {
+  private void dataAcked(boolean busy) {
     cancelConfirmTimer();
     pending = null;
     pendingDataAsdu = null;
     nextFcb = !nextFcb;
     retryCount = 0;
-    flushSendQueue();
+    if (busy) {
+      beginBusyWait();
+    } else {
+      flushSendQueue();
+    }
+  }
+
+  private void beginBusyWait() {
+    // FC0/DFC=1 and FC1 enter the secondary-busy status procedure (IEC 101 Figure 8).
+    pending = PendingPrimary.BUSY_STATUS;
+    retryCount = 0;
+    statusProbeScheduled = false;
+    sendPrimaryNoData(FC_REQUEST_STATUS_OF_LINK);
+    if (!closed) {
+      armConfirmTimer(confirmTimeoutMillis);
+    }
+  }
+
+  private void scheduleStatusProbe() {
+    // A busy status reply confirms liveness. Pace the next request without consuming retries
+    // reserved for missing replies, including when maxRetries is zero.
+    retryCount = 0;
+    statusProbeScheduled = true;
+    armConfirmTimer(repeatTimeoutMillis);
+  }
+
+  private void secondaryReady() {
+    cancelConfirmTimer();
+    retryCount = 0;
+    statusProbeScheduled = false;
+    if (pendingDataAsdu != null) {
+      // A NACK left an unaccepted ASDU in flight. Resume it before draining newer queued data.
+      pending = PendingPrimary.USER_DATA;
+      retransmitPending();
+      if (!closed) {
+        armConfirmTimer(confirmTimeoutMillis);
+      }
+    } else {
+      pending = null;
+      flushSendQueue();
+    }
   }
 
   private void handlePrimaryFromPeer(LinkControlField control, @Nullable Asdu asdu) {
@@ -813,7 +871,7 @@ final class BalancedEngine implements Ft12Engine {
       return;
     }
     switch (current) {
-      case BRING_UP_STATUS, KEEPALIVE -> sendPrimaryNoData(FC_REQUEST_STATUS_OF_LINK);
+      case BRING_UP_STATUS, KEEPALIVE, BUSY_STATUS -> sendPrimaryNoData(FC_REQUEST_STATUS_OF_LINK);
       case BRING_UP_RESET -> sendPrimaryNoData(FC_RESET_REMOTE_LINK);
       case USER_DATA -> {
         Asdu asdu = Objects.requireNonNull(pendingDataAsdu, "pendingDataAsdu");
@@ -873,6 +931,14 @@ final class BalancedEngine implements Ft12Engine {
       if (pending == null) {
         // The outstanding frame was confirmed synchronously after this timer was armed; nothing to
         // do.
+        return;
+      }
+      if (statusProbeScheduled) {
+        statusProbeScheduled = false;
+        retransmitPending();
+        if (!closed) {
+          armConfirmTimer(confirmTimeoutMillis);
+        }
         return;
       }
       if (retryCount < maxRetries) {
@@ -964,6 +1030,7 @@ final class BalancedEngine implements Ft12Engine {
     pendingDataAsdu = null;
     pendingFcb = false;
     retryCount = 0;
+    statusProbeScheduled = false;
     sendQueue.failAll(new ConnectionClosedException("session reset"));
     secondaryReset = false;
     expectedFcb = false;

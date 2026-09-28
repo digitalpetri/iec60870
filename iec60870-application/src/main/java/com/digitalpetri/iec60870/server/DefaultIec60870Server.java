@@ -11,16 +11,12 @@ import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.InformationObject;
-import com.digitalpetri.iec60870.asdu.element.FixedTestBitPattern;
+import com.digitalpetri.iec60870.asdu.element.FreezeMode;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
-import com.digitalpetri.iec60870.asdu.element.QualifierOfResetProcess;
 import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
 import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.ResetProcessCommand;
-import com.digitalpetri.iec60870.asdu.object.TestCommand;
-import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
-import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
@@ -30,8 +26,6 @@ import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import java.net.SocketAddress;
-import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -52,7 +46,6 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
-import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,9 +76,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
    * Conventional information object address for station-level confirmations (interrogation etc.).
    */
   private static final InformationObjectAddress ZERO_ADDRESS = InformationObjectAddress.of(0);
-
-  /** A fixed instant within the CP56Time2a 2000..2099 century, for synthesized timed echoes. */
-  private static final Instant EPOCH_2000 = Instant.parse("2000-01-01T00:00:00Z");
 
   private final ServerTransport transport;
   private final ServerConfig config;
@@ -274,8 +264,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               .orElseThrow(() -> new IllegalArgumentException("no point defined at: " + point))
               .type();
 
-      // Update the station image, then build the monitor ASDU from the chosen time-tag style.
-      station.updateValue(point.objectAddress(), value);
+      // Validate and build the monitor ASDU before changing the station image.
       InformationObject object =
           MonitorMapping.toMonitorObject(type, point.objectAddress(), value, config.timeTagStyle());
       Asdu asdu =
@@ -288,6 +277,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               OriginatorAddress.none(),
               point.commonAddress(),
               List.of(object));
+      station.updateValue(point.objectAddress(), value);
 
       for (ServerConnection connection : connections) {
         connection.enqueueMonitor(asdu);
@@ -564,18 +554,51 @@ public final class DefaultIec60870Server implements Iec60870Server {
       return config
           .handler()
           .onRawAsduAsync(context, asdu)
-          .thenCompose(
+          .thenComposeAsync(
               consumed -> {
                 if (consumed) {
                   return done();
                 }
                 return dispatchByType(context, asdu);
-              });
+              },
+              callbackExecutor);
     }
 
     /** Routes an ASDU to the per-type handling once the raw hook has declined it. */
     private CompletionStage<Void> dispatchByType(ServerContext context, Asdu asdu) {
       AsduType type = asdu.type();
+      Cause expectedCause =
+          switch (type) {
+            case C_RD_NA_1 -> Cause.REQUEST;
+            case C_IC_NA_1,
+                C_CI_NA_1,
+                C_CS_NA_1,
+                C_TS_NA_1,
+                C_TS_TA_1,
+                C_RP_NA_1,
+                C_SC_NA_1,
+                C_DC_NA_1,
+                C_RC_NA_1,
+                C_SE_NA_1,
+                C_SE_NB_1,
+                C_SE_NC_1,
+                C_BO_NA_1,
+                C_SC_TA_1,
+                C_DC_TA_1,
+                C_RC_TA_1,
+                C_SE_TA_1,
+                C_SE_TB_1,
+                C_SE_TC_1,
+                C_BO_TA_1 ->
+                Cause.ACTIVATION;
+            default -> null;
+          };
+      if (expectedCause == null) {
+        return handleUnknown(asdu);
+      }
+      if (!validateControl(asdu, expectedCause)) {
+        return done();
+      }
       return switch (type) {
         case C_IC_NA_1 -> handleInterrogation(context, asdu);
         case C_CI_NA_1 -> handleCounterInterrogation(asdu);
@@ -602,14 +625,48 @@ public final class DefaultIec60870Server implements Iec60870Server {
       };
     }
 
+    /** Validates fields that typed requests cannot represent before any application action. */
+    private boolean validateControl(Asdu asdu, Cause expectedCause) {
+      // Every supported control type has SQ=0 and exactly one object. Malformed VSQs have no
+      // defined unknown-field reply (IEC 60870-5-101 7.2.3); never fabricate an object or execute
+      // only the first of several. P/N denotes a confirmation, not a new request.
+      if (asdu.sequence() || asdu.objects().size() != 1 || asdu.negative()) {
+        return false;
+      }
+      if (asdu.cause() != expectedCause) {
+        // In particular, DEACT is a break/cancel procedure, not SELECT or EXECUTE.
+        send(mirror(asdu, Cause.UNKNOWN_CAUSE));
+        return false;
+      }
+      boolean stationControl =
+          switch (asdu.type()) {
+            case C_IC_NA_1, C_CI_NA_1, C_CS_NA_1, C_TS_NA_1, C_TS_TA_1, C_RP_NA_1 -> true;
+            default -> false;
+          };
+      if (stationControl && !asdu.objects().get(0).address().equals(ZERO_ADDRESS)) {
+        send(mirror(asdu, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return false;
+      }
+      if (asdu.test()) {
+        // Typed handlers have no test-mode contract and may operate real equipment. Applications
+        // implementing test procedures must claim them in the raw hook. A read has no ACT_CON.
+        if (expectedCause == Cause.ACTIVATION) {
+          send(mirror(asdu, Cause.ACTIVATION_CONFIRMATION));
+        }
+        return false;
+      }
+      return true;
+    }
+
     // --- Interrogation ------------------------------------------------------------------------
 
     private CompletionStage<Void> handleInterrogation(ServerContext context, Asdu asdu) {
       Optional<Station> station = registry.station(asdu.commonAddress());
-      QualifierOfInterrogation qoi =
-          asdu.objects().isEmpty() || !(asdu.objects().get(0) instanceof InterrogationCommand cmd)
-              ? QualifierOfInterrogation.STATION
-              : cmd.qualifier();
+      if (!(asdu.objects().get(0) instanceof InterrogationCommand command)) {
+        send(mirror(asdu, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return done();
+      }
+      QualifierOfInterrogation qoi = command.qualifier();
 
       if (station.isEmpty()) {
         send(activationConfirmation(asdu, true, Cause.UNKNOWN_COMMON_ADDRESS));
@@ -643,7 +700,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                           monitorCause,
                           false,
                           false,
-                          OriginatorAddress.none(),
+                          request.originatorAddress(),
                           request.commonAddress(),
                           List.of(object)));
       return sendResponse(
@@ -663,6 +720,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
       if (asdu.objects().isEmpty()
           || !(asdu.objects().get(0) instanceof CounterInterrogationCommand command)) {
         send(activationConfirmation(asdu, true, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return done();
+      }
+
+      // The station image supplies reported totals, not a live counter freeze/reset operation.
+      if (command.qualifier().freeze() != FreezeMode.READ) {
+        send(activationConfirmation(asdu, true, Cause.ACTIVATION_CONFIRMATION));
         return done();
       }
 
@@ -690,7 +753,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                         monitorCause,
                         false,
                         false,
-                        OriginatorAddress.none(),
+                        asdu.originatorAddress(),
                         asdu.commonAddress(),
                         List.of(object));
                   });
@@ -731,7 +794,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                         Cause.REQUEST,
                         false,
                         false,
-                        OriginatorAddress.none(),
+                        asdu.originatorAddress(),
                         asdu.commonAddress(),
                         List.of(object)));
               });
@@ -760,7 +823,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                           Cause.ACTIVATION_CONFIRMATION,
                           false,
                           false,
-                          OriginatorAddress.none(),
+                          asdu.originatorAddress(),
                           asdu.commonAddress(),
                           List.of(command)));
                 } else {
@@ -775,21 +838,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
     // --- Test command -------------------------------------------------------------------------
 
     private CompletionStage<Void> handleTest(Asdu asdu) {
-      // Echo the test object in the activation confirmation. When the request carried no object,
-      // synthesize one whose concrete record matches the type identification so the codec does not
-      // fail at encode: C_TS_TA_1 expects a TestCommandWithCp56Time, C_TS_NA_1 a plain TestCommand.
-      InformationObject echo;
-      if (!asdu.objects().isEmpty()) {
-        echo = asdu.objects().get(0);
-      } else if (asdu.type() == AsduType.C_TS_TA_1) {
-        // CP56Time2a carries a two-digit year mapped to 2000..2099, so synthesize a time within
-        // that century (the epoch year 1970 is out of range and would throw at construction).
-        echo =
-            new TestCommandWithCp56Time(
-                ZERO_ADDRESS, UShort.valueOf(0), Cp56Time2a.from(EPOCH_2000, ZoneOffset.UTC));
-      } else {
-        echo = new TestCommand(ZERO_ADDRESS, FixedTestBitPattern.DEFAULT);
-      }
       send(
           new Asdu(
               asdu.type(),
@@ -797,9 +845,9 @@ public final class DefaultIec60870Server implements Iec60870Server {
               Cause.ACTIVATION_CONFIRMATION,
               false,
               false,
-              OriginatorAddress.none(),
+              asdu.originatorAddress(),
               asdu.commonAddress(),
-              List.of(echo)));
+              asdu.objects()));
       return done();
     }
 
@@ -811,12 +859,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
         send(activationConfirmation(asdu, true, Cause.UNKNOWN_COMMON_ADDRESS));
         return done();
       }
-      QualifierOfResetProcess qrp =
-          asdu.objects().isEmpty()
-                  || !(asdu.objects().get(0) instanceof ResetProcessCommand command)
-              ? QualifierOfResetProcess.GENERAL
-              : command.qualifier();
-      ResetRequest request = new ResetRequest(asdu.commonAddress(), qrp);
+      if (!(asdu.objects().get(0) instanceof ResetProcessCommand command)) {
+        send(mirror(asdu, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return done();
+      }
+      ResetRequest request = new ResetRequest(asdu.commonAddress(), command.qualifier());
       return config
           .handler()
           .onResetAsync(context, request)
@@ -877,7 +924,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               Cause.ACTIVATION_CONFIRMATION,
               false,
               false,
-              OriginatorAddress.none(),
+              request.originatorAddress(),
               request.commonAddress(),
               request.objects()));
 
@@ -947,7 +994,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           cause,
           negative,
           false,
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           request.objects());
     }
@@ -965,7 +1012,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           Cause.ACTIVATION_TERMINATION,
           false,
           false,
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           objects);
     }
@@ -978,7 +1025,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           cause,
           true,
           request.test(),
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           request.objects());
     }
@@ -1066,7 +1113,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
         for (Station.InterrogatedPoint point : station.get().select(request.qualifier())) {
           objects.add(
               MonitorMapping.toMonitorObject(
-                  point.type(), point.address(), point.value(), config.timeTagStyle()));
+                  point.type(), point.address(), point.value(), TimeTagStyle.NONE));
         }
         return InterrogationResponse.of(objects);
       }
