@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.transport.serial;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,6 +75,8 @@ class SerialSendCompletionTest {
       fixture.line.awaitWrite();
       ByteBuf queued = frame();
       CompletableFuture<Void> second = fixture.send(queued);
+      CompletableFuture<Throwable> firstCallbackError = callbackError(first);
+      CompletableFuture<Throwable> secondCallbackError = callbackError(second);
       assertFalse(first.isDone());
       assertFalse(second.isDone());
 
@@ -86,6 +89,9 @@ class SerialSendCompletionTest {
       }
       failure(second);
       fixture.awaitLoss();
+      assertSame(failure, firstCallbackError.get(5, TimeUnit.SECONDS));
+      assertSame(failure, secondCallbackError.get(5, TimeUnit.SECONDS));
+      assertSame(failure, fixture.lossCause.get());
       assertEquals(1, fixture.line.writeCount.get());
       assertEquals(0, current.refCnt());
       assertEquals(0, queued.refCnt());
@@ -109,10 +115,12 @@ class SerialSendCompletionTest {
       fixture.line.awaitWrite();
       ByteBuf queued = frame();
       CompletableFuture<Void> second = fixture.send(queued);
+      CompletableFuture<Throwable> firstCallbackError = callbackError(first);
+      CompletableFuture<Throwable> secondCallbackError = callbackError(second);
 
       fixture.close();
-      failure(first);
-      failure(second);
+      assertSame(failure(first), firstCallbackError.get(5, TimeUnit.SECONDS));
+      assertSame(failure(second), secondCallbackError.get(5, TimeUnit.SECONDS));
       assertEquals(0, current.refCnt());
       assertEquals(0, queued.refCnt());
       assertEquals(1, fixture.line.writeCount.get());
@@ -138,6 +146,8 @@ class SerialSendCompletionTest {
       fixture.line.awaitWrite();
       ByteBuf queued = frame();
       CompletableFuture<Void> second = fixture.send(queued);
+      CompletableFuture<Throwable> firstCallbackError = callbackError(first);
+      CompletableFuture<Throwable> secondCallbackError = callbackError(second);
       AtomicBoolean failedBeforeLoss = new AtomicBoolean();
       fixture.onLoss =
           () ->
@@ -150,6 +160,9 @@ class SerialSendCompletionTest {
           failedBeforeLoss.get(), "old writes must finish before a loss callback can reconnect");
       failure(first);
       failure(second);
+      assertInstanceOf(IOException.class, fixture.lossCause.get());
+      assertSame(fixture.lossCause.get(), firstCallbackError.get(5, TimeUnit.SECONDS));
+      assertSame(fixture.lossCause.get(), secondCallbackError.get(5, TimeUnit.SECONDS));
       assertEquals(0, current.refCnt());
       assertEquals(0, queued.refCnt());
       assertEquals(1, fixture.lossCount.get());
@@ -184,6 +197,7 @@ class SerialSendCompletionTest {
                 // close returns.
                 fixture.close();
                 assertTrue(second.isCompletedExceptionally());
+                assertSame(fixture.lossCause.get(), error);
                 return null;
               });
 
@@ -194,6 +208,37 @@ class SerialSendCompletionTest {
       assertEquals(0, current.refCnt());
       assertEquals(0, queued.refCnt());
       assertEquals(1, fixture.lossCount.get());
+    }
+  }
+
+  @TestFactory
+  Stream<DynamicTest> cancellingTheReturnedStageDoesNotCancelTheWrite() {
+    return Stream.of(Endpoint.values())
+        .map(
+            endpoint ->
+                DynamicTest.dynamicTest(
+                    endpoint.name(),
+                    () -> cancellingTheReturnedStageDoesNotCancelTheWrite(endpoint)));
+  }
+
+  private void cancellingTheReturnedStageDoesNotCancelTheWrite(Endpoint endpoint) throws Exception {
+    try (Fixture fixture = new Fixture(endpoint, Outcome.SUCCESS)) {
+      ByteBuf current = frame();
+      CompletableFuture<Void> first = fixture.send(current);
+      fixture.line.awaitWrite();
+      ByteBuf queued = frame();
+      CompletableFuture<Void> second = fixture.send(queued);
+
+      assertTrue(first.cancel(false));
+      assertFalse(second.isDone());
+      fixture.line.gate.countDown();
+      second.get(5, TimeUnit.SECONDS);
+
+      assertTrue(first.isCancelled());
+      assertEquals(2, fixture.line.writeCount.get());
+      assertEquals(0, current.refCnt());
+      assertEquals(0, queued.refCnt());
+      assertEquals(0, fixture.lossCount.get());
     }
   }
 
@@ -240,6 +285,19 @@ class SerialSendCompletionTest {
 
   private static Throwable failure(CompletableFuture<Void> future) {
     return assertThrows(ExecutionException.class, () -> future.get(5, TimeUnit.SECONDS)).getCause();
+  }
+
+  private static CompletableFuture<Throwable> callbackError(CompletableFuture<Void> future) {
+    CompletableFuture<Throwable> observed = new CompletableFuture<>();
+    future.whenComplete(
+        (ignored, error) -> {
+          if (error != null) {
+            observed.complete(error);
+          } else {
+            observed.completeExceptionally(new AssertionError("expected the send to fail"));
+          }
+        });
+    return observed;
   }
 
   private enum Endpoint {

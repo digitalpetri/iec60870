@@ -217,8 +217,19 @@ class Ft12SerialChannel {
       throw new IOException("serial outbound queue is full");
     }
 
-    // Caller cancellation must not remove the completion tracked by teardown.
-    return result.copy();
+    // Isolate caller cancellation without wrapping the cause seen by completion callbacks.
+    CompletableFuture<Void> view = new CompletableFuture<>();
+    result.whenComplete(
+        (ignored, error) -> {
+          if (error != null) {
+            view.completeExceptionally(error);
+          } else {
+            // null is the only completion value for CompletableFuture<Void>.
+            //noinspection DataFlowIssue
+            view.complete(null);
+          }
+        });
+    return view;
   }
 
   /**
