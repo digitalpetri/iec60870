@@ -3,7 +3,6 @@ package com.digitalpetri.iec60870.server;
 import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -54,6 +53,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -602,34 +602,26 @@ class DefaultIec60870ServerTest {
     server.close();
   }
 
-  // --- F19: empty C_TS_TA_1 echo must encode cleanly -------------------------------------------
-
   @Test
-  void emptyTimedTestCommandReplyEchoesTimedCommand() {
+  void timedTestCommandEchoesSequenceAndTime() {
     DefaultIec60870Server server = server(new ServerHandler() {});
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    // C_TS_TA_1 with no information objects: the synthesized echo must be a TestCommandWithCp56Time
-    // so the codec does not throw a ClassCastException at encode time.
-    Asdu request =
-        new Asdu(
-            AsduType.C_TS_TA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            OriginatorAddress.none(),
-            CA,
-            List.of());
+    TestCommandWithCp56Time command =
+        new TestCommandWithCp56Time(
+            ZERO,
+            UShort.valueOf(123),
+            Cp56Time2a.from(Instant.parse("2026-09-28T12:00:00Z"), ZoneOffset.UTC));
+    Asdu request = control(AsduType.C_TS_TA_1, Cause.ACTIVATION, command);
     connection.deliverAsdu(request);
 
     List<Asdu> sent = connection.sentAsdus();
     assertEquals(1, sent.size());
     Asdu reply = sent.get(0);
     assertEquals(AsduType.C_TS_TA_1, reply.type());
-    assertInstanceOf(TestCommandWithCp56Time.class, reply.objects().get(0));
+    assertEquals(command, reply.objects().get(0));
 
     server.close();
   }
@@ -707,14 +699,13 @@ class DefaultIec60870ServerTest {
   }
 
   @Test
-  void counterInterrogationWithEmptyObjectsIsRejected() {
+  void counterInterrogationWithEmptyObjectsIsDiscarded() {
     DefaultIec60870Server server = server(new ServerHandler() {});
     server.start();
     FakeServerTransport.FakeConnection connection = transport.accept("client");
     connection.startDataTransfer();
 
-    // A C_CI_NA_1 carrying no information object cannot select a counter group; the server replies
-    // with a single negative confirmation (UNKNOWN_INFORMATION_OBJECT_ADDRESS) and nothing else.
+    // An invalid object count is discarded; no counter request can be inferred from it.
     Asdu request =
         new Asdu(
             AsduType.C_CI_NA_1,
@@ -727,10 +718,7 @@ class DefaultIec60870ServerTest {
             List.of());
     connection.deliverAsdu(request);
 
-    List<Asdu> sent = connection.sentAsdus();
-    assertEquals(1, sent.size());
-    assertTrue(sent.get(0).negative());
-    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, sent.get(0).cause());
+    assertTrue(connection.sentAsdus().isEmpty());
 
     server.close();
   }
