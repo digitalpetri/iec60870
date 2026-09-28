@@ -8,16 +8,29 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -196,6 +209,74 @@ class ClientConnectTest {
     assertEquals(1, session().initializations);
     client.connectAsync().toCompletableFuture().join();
     assertEquals(1, session().initializations);
+  }
+
+  @Test
+  void connectionLossDetachesRequestsBeforeAdmittingReconnect() throws Exception {
+    var lossLock = new PausingLossLock();
+    // Pause precisely after the loss handler releases its first client-lock critical section.
+    // A transport/session hook cannot expose the gap between the two old registry mutations.
+    Field clientLock = DefaultIec60870Client.class.getDeclaredField("lock");
+    clientLock.setAccessible(true);
+    clientLock.set(client, lossLock);
+    CompletionStage<Void> connected = client.connectAsync();
+    transport.result.complete(null);
+    session().startResult.complete(null);
+    connected.toCompletableFuture().join();
+    PointAddress point = new PointAddress(CommonAddress.of(1), InformationObjectAddress.of(100));
+    CompletionStage<List<InformationObject>> oldRead = client.readAsync(point);
+    assertEquals(1, client.pendingRequestCount());
+
+    ExecutorService worker = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> loss =
+          worker.submit(
+              () -> {
+                lossLock.lossThread = Thread.currentThread();
+                session().events.onConnectionLost(null);
+              });
+      assertTrue(lossLock.detached.await(5, TimeUnit.SECONDS));
+      client.connectAsync().toCompletableFuture().get(5, TimeUnit.SECONDS);
+      assertEquals(2, session().initializations);
+      assertEquals(
+          0, client.pendingRequestCount(), "old requests must be detached before reconnect");
+      CompletionStage<List<InformationObject>> newRead = client.readAsync(point);
+      assertFalse(
+          newRead.toCompletableFuture().isDone(), "the replacement can use the same target");
+      lossLock.proceed.countDown();
+      loss.get(5, TimeUnit.SECONDS);
+      CompletionException error =
+          assertThrows(CompletionException.class, () -> oldRead.toCompletableFuture().join());
+      assertInstanceOf(ConnectionClosedException.class, error.getCause());
+      assertFalse(
+          newRead.toCompletableFuture().isDone(), "old cleanup must not fail the new request");
+      assertEquals(1, client.pendingRequestCount());
+    } finally {
+      lossLock.proceed.countDown();
+      worker.shutdownNow();
+      assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+    }
+  }
+
+  private static final class PausingLossLock extends ReentrantLock {
+    private volatile @Nullable Thread lossThread;
+    private final AtomicBoolean paused = new AtomicBoolean();
+    private final CountDownLatch detached = new CountDownLatch(1);
+    private final CountDownLatch proceed = new CountDownLatch(1);
+
+    @Override
+    public void unlock() {
+      super.unlock();
+      if (Thread.currentThread() == lossThread && paused.compareAndSet(false, true)) {
+        detached.countDown();
+        try {
+          assertTrue(proceed.await(5, TimeUnit.SECONDS));
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError(e);
+        }
+      }
+    }
   }
 
   private static final class PendingTransport implements ClientTransport {

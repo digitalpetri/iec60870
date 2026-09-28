@@ -274,17 +274,24 @@ public final class DefaultIec60870Client implements Iec60870Client {
     future.completeExceptionally(cause);
   }
 
-  private @Nullable CompletableFuture<Void> detachConnect(boolean closing) {
+  private DetachedConnection detachConnect(boolean closing) {
     lock.lock();
     try {
       closed |= closing;
       CompletableFuture<Void> future = connectFuture;
       connectFuture = null;
-      return future;
+      // Reconnect becomes admissible when connectFuture is cleared. Remove the old requests in
+      // the same critical section, before another connection can reuse their registrations.
+      List<PendingRequest> requests = new ArrayList<>(pending);
+      pending.clear();
+      return new DetachedConnection(future, requests);
     } finally {
       lock.unlock();
     }
   }
+
+  private record DetachedConnection(
+      @Nullable CompletableFuture<Void> future, List<PendingRequest> requests) {}
 
   /**
    * Runs CompletableFuture tasks in order without blocking callers that re-enter from a callback.
@@ -344,9 +351,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   @Override
   public void close() {
-    CompletableFuture<Void> connection = detachConnect(true);
+    DetachedConnection detached = detachConnect(true);
+    CompletableFuture<Void> connection = detached.future();
     var failure = new ConnectionClosedException("client closed");
-    failAllPending(failure);
+    failPending(detached.requests(), failure);
     session.close();
     try {
       transport.disconnect();
@@ -726,20 +734,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
   }
 
   /**
-   * Fails every pending request with the given cause.
+   * Fails requests detached from a closed connection, outside the client lock.
    *
+   * @param requests the requests removed with their connection.
    * @param cause the failure to deliver.
    */
-  private void failAllPending(Throwable cause) {
-    List<PendingRequest> snapshot;
-    lock.lock();
-    try {
-      snapshot = new ArrayList<>(pending);
-      pending.clear();
-    } finally {
-      lock.unlock();
-    }
-    for (PendingRequest request : snapshot) {
+  private void failPending(List<PendingRequest> requests, Throwable cause) {
+    for (PendingRequest request : requests) {
       request.cancelTimeout();
       callbackExecutor.execute(() -> request.fail(cause));
     }
@@ -1252,12 +1253,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     public void onClosed(@Nullable Throwable cause) {
-      CompletableFuture<Void> connection = detachConnect(false);
+      DetachedConnection detached = detachConnect(false);
+      CompletableFuture<Void> connection = detached.future();
       ConnectionClosedException failure =
           cause != null
               ? new ConnectionClosedException("session closed", cause)
               : new ConnectionClosedException("session closed");
-      failAllPending(failure);
+      failPending(detached.requests(), failure);
       publishConnectionClosed(cause);
       // The session self-closed on a protocol error or timeout: tear the transport down so a
       // persistent transport stops reconnecting, matching the protocol layer giving up.
@@ -1273,7 +1275,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     public void onConnectionLost(@Nullable Throwable cause) {
-      CompletableFuture<Void> connection = detachConnect(false);
+      DetachedConnection detached = detachConnect(false);
+      CompletableFuture<Void> connection = detached.future();
       // Transport-level loss (peer drop, send failure, I/O error): fail pending work and publish
       // the closed event, but do NOT call transport.disconnect(). Disconnecting would fire
       // Event.Disconnect on the persistent ChannelFsm and stop its automatic reconnection; the old
@@ -1282,7 +1285,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
           cause != null
               ? new ConnectionClosedException("connection lost", cause)
               : new ConnectionClosedException("connection lost");
-      failAllPending(failure);
+      failPending(detached.requests(), failure);
       publishConnectionClosed(cause);
       // A caller can retry from this completion, so finish the old connection's cleanup first.
       if (connection != null) {
