@@ -139,6 +139,13 @@ station initiates the link-reset bring-up, and which station may drive
 - **User data is one frame at a time.** `sendAsdu(asdu)` queues the ASDU and flushes the queue; the
   flush sends a send/confirm user-data frame (`FC3`, `FCV=1`) only while the link is available and no
   primary frame is outstanding. Queued ASDUs go out in submission order.
+- **DFC back-pressure.** An acknowledgement with `DFC=1` confirms the current ASDU and advances its
+  FCB, but suspends further data sends. A negative acknowledgement (`FC1`) retains the rejected ASDU
+  and its FCB. Both start request-status (`FC9`) probes; only a ready status (`FC11`, `DFC=0`) resumes
+  data, retrying any rejected ASDU before queued data. A busy status reply proves liveness and
+  schedules another probe after `repeatTimeout` without consuming `maxRetries`. Unanswered probes
+  still use the normal confirmation/retry limit. Busy status during initial bring-up defers the
+  reset, and busy status from an idle probe also suspends data.
 - **Idle keep-alive and liveness.** The link-state timer probes an idle but available link with a
   request-status-of-link (`FC9`) keep-alive; a received test-function (`FC2`) or status request is
   answered from the secondary process. If a primary frame goes unconfirmed after the configured
@@ -232,7 +239,7 @@ an injected `ScheduledExecutorService` and run under the engine lock.
 | Timer | Default | Meaning | Where applied |
 |---|---|---|---|
 | `confirmTimeout` | 200 ms | Time to wait for the acknowledgement of a sent primary frame before the first retransmission | `BalancedEngine`, `UnbalancedMasterEngine` |
-| `repeatTimeout` | 1000 ms | Spacing between repeated transmissions of an unacknowledged primary frame | `BalancedEngine`, `UnbalancedMasterEngine` |
+| `repeatTimeout` | 1000 ms | Spacing between unacknowledged-frame retries; also the delay before probing a responsive busy balanced peer again | `BalancedEngine`, `UnbalancedMasterEngine` |
 | `linkStateTimeout` | 5000 ms | Idle interval after which an available link is probed with a request-status-of-link keep-alive | `BalancedEngine` |
 | `pollInterval` | 1000 ms | Cadence between class-2 poll cycles across the available slaves | `UnbalancedMasterEngine` |
 
