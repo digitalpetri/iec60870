@@ -100,6 +100,8 @@ class SlaveLinkAddressFilteringTest {
   void pollForADifferentSlaveIsIgnoredEvenWithBufferedData() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, OWN_ADDRESS, false, false));
+    output.clear();
 
     // Buffer a class-2 ASDU, then poll a DIFFERENT secondary: the buffered data must not be sent
     // and must stay queued (the wrong outstation must not answer the poll).
@@ -173,6 +175,8 @@ class SlaveLinkAddressFilteringTest {
   void broadcastPollIsNotAnswered() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, OWN_ADDRESS, false, false));
+    output.clear();
 
     // A confirmed service (here a class-2 poll) addressed to the broadcast address is meaningless
     // and must elicit no response, even with buffered data, so no reply collides on the bus.
