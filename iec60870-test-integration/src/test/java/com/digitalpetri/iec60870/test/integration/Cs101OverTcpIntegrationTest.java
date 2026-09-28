@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
@@ -29,6 +30,7 @@ import com.digitalpetri.iec60870.tcp.TcpIec101Server;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -113,6 +115,34 @@ class Cs101OverTcpIntegrationTest {
         "the reported monitor point should be returned by general interrogation");
   }
 
+  @Test
+  void interrogationOmitsConfiguredOriginatorWithOneOctetCot() throws Exception {
+    EventCollector events = startAndConnect(new ServerHandler() {}, OriginatorAddress.of(5));
+    Iec60870Client client = requireNonNull(this.client);
+
+    InterrogationResult result =
+        client.interrogateAsync(STATION).toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+    assertTrue(result.terminated());
+    assertEquals(
+        List.of(MONITOR_POINT),
+        result.pointValues().stream().map(InterrogationResult.PointEntry::address).toList());
+    for (Cause cause :
+        List.of(
+            Cause.ACTIVATION_CONFIRMATION,
+            Cause.INTERROGATED_BY_STATION,
+            Cause.ACTIVATION_TERMINATION)) {
+      Await.until(
+          "decoded interrogation reply with no originator for " + cause,
+          () ->
+              events.hasMatch(
+                  ClientEvent.AsduReceived.class,
+                  event ->
+                      event.asdu().cause() == cause
+                          && event.asdu().originatorAddress().equals(OriginatorAddress.none())));
+    }
+  }
+
   /**
    * A single command over the 101-over-TCP balanced link is confirmed positively and the server
    * handler observes the command.
@@ -177,6 +207,11 @@ class Cs101OverTcpIntegrationTest {
    * @throws IOException if an ephemeral loopback port cannot be reserved.
    */
   private EventCollector startAndConnect(ServerHandler handler) throws IOException {
+    return startAndConnect(handler, OriginatorAddress.none());
+  }
+
+  private EventCollector startAndConnect(ServerHandler handler, OriginatorAddress originator)
+      throws IOException {
     int port = reserveEphemeralPort();
 
     Station station =
@@ -212,6 +247,7 @@ class Cs101OverTcpIntegrationTest {
             .host("127.0.0.1")
             .port(port)
             .profile(PROFILE)
+            .originatorAddress(originator)
             .linkSettings(LinkSettings.balanced().build())
             .startDataTransferOnConnect(true)
             .build();

@@ -121,8 +121,15 @@ CommandResult sbo = client.commands()
 
 **Interrogation.** `interrogate` sends `C_IC_NA_1 ACT`, awaits the positive `ACT_CON` (else a
 `NegativeConfirmationException`), collects the reported objects until `ACT_TERM`, and returns an
-`InterrogationResult(station, objects, terminated)`. `result.pointValues()` projects the monitor
-objects onto `PointEntry(PointAddress, PointValue<?>)` entries, skipping non-monitor objects.
+`InterrogationResult(station, objects, terminated)`. Confirmations and terminations must echo the
+requested qualifier and IOA; termination is accepted only after confirmation. Collected data must
+carry the cause for the requested station or group (20..36), and all replies must match the request's
+test flag. With a two-octet cause of transmission, replies may carry the requested originator or the
+default originator (OA 0); another nonzero originator is ignored. With a one-octet cause of
+transmission, no originator field is transmitted or compared. A late reply for another group cannot
+complete or add data to the request.
+`result.pointValues()` projects the monitor objects onto `PointEntry(PointAddress, PointValue<?>)`
+entries, skipping non-monitor objects.
 
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,
