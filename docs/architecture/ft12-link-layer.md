@@ -72,8 +72,7 @@ are:
 - **Secondary (PRM=0):** `FC0` positive acknowledgement (ACK), `FC1` negative acknowledgement
   (NACK), `FC8` respond-user-data (unbalanced), `FC9` respond/data-not-available (unbalanced),
   `FC11` status-of-link, `FC14` link-service-not-functioning and `FC15` link-service-not-implemented
-  (balanced; the unbalanced outstation also returns `FC14` to reject user data sent before a link
-  reset).
+  (balanced).
 
 **FCV gates the FCB.** Only a primary frame with `FCV=1` carries a meaningful frame count bit and is
 FCB-checked by the secondary: user data (`FC3`) and the class polls (`FC10`/`FC11`). The bring-up and
