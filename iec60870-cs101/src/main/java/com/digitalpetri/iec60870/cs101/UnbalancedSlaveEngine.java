@@ -1,11 +1,14 @@
 package com.digitalpetri.iec60870.cs101;
 
+import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
-import java.util.ArrayDeque;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -111,7 +114,6 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
   // Outbound queue bound and overflow policy (0 == unbounded), applied to each class queue.
   private final int maxOutboundQueue;
-  private final OutboundQueuePolicy queuePolicy;
 
   private boolean closed;
 
@@ -136,8 +138,8 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
 
   // Event/spontaneous ASDUs (class 1) and cyclic/periodic ASDUs (class 2), each bounded by
   // maxOutboundQueue. A class-1/2 poll dequeues one ASDU from the matching queue.
-  private final ArrayDeque<Asdu> class1Queue = new ArrayDeque<>();
-  private final ArrayDeque<Asdu> class2Queue = new ArrayDeque<>();
+  private final OutboundAsduQueue class1Queue;
+  private final OutboundAsduQueue class2Queue;
 
   /**
    * Creates an unbalanced outstation engine with a bounded outbound queue per data class and an
@@ -175,7 +177,8 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     this.maxOutboundQueue = maxOutboundQueue;
-    this.queuePolicy = Objects.requireNonNull(queuePolicy, "queuePolicy");
+    this.class1Queue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
+    this.class2Queue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
 
     this.useSingleCharAck = settings.useSingleCharAck();
     this.linkAddress = settings.linkAddress();
@@ -258,15 +261,23 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    */
   @Override
   public void sendAsdu(Asdu asdu) {
+    submitAsdu(asdu, false);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return submitAsdu(asdu, true);
+  }
+
+  private CompletionStage<Void> submitAsdu(Asdu asdu, boolean reliable) {
     Objects.requireNonNull(asdu, "asdu");
     lock.lock();
     try {
       if (closed) {
-        return;
+        return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
-      // Frozen class-assignment heuristic: spontaneous events are class 1, everything else class 2.
-      ArrayDeque<Asdu> queue = asdu.cause() == Cause.SPONTANEOUS ? class1Queue : class2Queue;
-      enqueueBounded(queue, asdu);
+      OutboundAsduQueue queue = asdu.cause() == Cause.SPONTANEOUS ? class1Queue : class2Queue;
+      return queue.offer(asdu, reliable).completion();
     } finally {
       lock.unlock();
     }
@@ -338,6 +349,8 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
         return;
       }
       closed = true;
+      class1Queue.failAll(new ConnectionClosedException("session closed"));
+      class2Queue.failAll(new ConnectionClosedException("session closed"));
       queueDrained.signalAll();
     } finally {
       lock.unlock();
@@ -504,7 +517,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       return;
     }
     expectedFcb = fcb;
-    Asdu data = class2Queue.pollFirst();
+    Entry data = class2Queue.pollFirst();
     if (data == null) {
       data = class1Queue.pollFirst();
     }
@@ -536,7 +549,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    *
    * @param data the dequeued ASDU, or {@code null} when no data was available.
    */
-  private void respondToDataRequest(@Nullable Asdu data) {
+  private void respondToDataRequest(@Nullable Entry data) {
     Ft12Frame response;
     if (data != null) {
       // A buffered ASDU was removed; wake any publisher parked on capacity.
@@ -544,13 +557,24 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       boolean acd = !class1Queue.isEmpty();
       response =
           new Ft12Frame.Variable(
-              LinkControlField.secondary(false, acd, DFC, FC_RESPOND_USER_DATA), linkAddress, data);
+              LinkControlField.secondary(false, acd, DFC, FC_RESPOND_USER_DATA),
+              linkAddress,
+              data.asdu());
     } else {
       boolean acd = !class1Queue.isEmpty();
       response = e5OrFixed(FC_RESPOND_DATA_NOT_AVAILABLE, acd);
     }
     lastResponse = response;
-    output.send(response);
+    if (data == null) {
+      output.send(response);
+    } else {
+      try {
+        data.completeFrom(output.sendAsync(response));
+      } catch (RuntimeException error) {
+        data.fail(error);
+        throw error;
+      }
+    }
   }
 
   /**
@@ -655,31 +679,12 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     }
   }
 
-  private void enqueueBounded(ArrayDeque<Asdu> queue, Asdu asdu) {
-    if (maxOutboundQueue > 0 && queue.size() >= maxOutboundQueue) {
-      switch (queuePolicy) {
-        case DROP_OLDEST -> {
-          queue.pollFirst();
-          queue.addLast(asdu);
-        }
-        case DROP_NEWEST, BLOCK -> {
-          // Drop the newly offered ASDU; keep the already buffered history. BLOCK is never honored
-          // by parking here (that would block under the lock); the publisher is expected to have
-          // awaited capacity via awaitSendCapacity(...) first, so a full BLOCK queue drops the
-          // newest as a last-resort guard that keeps the bound.
-        }
-      }
-    } else {
-      queue.addLast(asdu);
-    }
-  }
-
   private void resetState() {
     linkReset = false;
     linkAvailable = false;
     expectedFcb = false;
     lastResponse = null;
-    class1Queue.clear();
-    class2Queue.clear();
+    class1Queue.failAll(new ConnectionClosedException("session reset"));
+    class2Queue.failAll(new ConnectionClosedException("session reset"));
   }
 }

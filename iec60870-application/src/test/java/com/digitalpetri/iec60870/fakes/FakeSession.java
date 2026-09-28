@@ -1,11 +1,12 @@
 package com.digitalpetri.iec60870.fakes;
 
+import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -37,11 +38,10 @@ public final class FakeSession implements Session {
 
   private final Session.Events events;
   private final int maxOutboundQueue;
-  private final OutboundQueuePolicy queuePolicy;
   private final boolean serverRole;
 
   private final List<Asdu> sent = new ArrayList<>();
-  private final Deque<Asdu> queued = new ArrayDeque<>();
+  private final OutboundAsduQueue queued;
 
   private boolean dataTransferStarted;
   private boolean closed;
@@ -53,7 +53,7 @@ public final class FakeSession implements Session {
       boolean serverRole) {
     this.events = events;
     this.maxOutboundQueue = maxOutboundQueue;
-    this.queuePolicy = queuePolicy;
+    this.queued = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
     this.serverRole = serverRole;
   }
 
@@ -86,7 +86,7 @@ public final class FakeSession implements Session {
   public void onConnected() {
     dataTransferStarted = false;
     closed = false;
-    queued.clear();
+    queued.failAll(new ConnectionClosedException("session closed or reset"));
   }
 
   @Override
@@ -114,27 +114,29 @@ public final class FakeSession implements Session {
 
   @Override
   public void sendAsdu(Asdu asdu) {
+    submit(asdu, false);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return submit(asdu, true);
+  }
+
+  private CompletionStage<Void> submit(Asdu asdu, boolean reliable) {
     if (closed) {
-      return;
+      return CompletableFuture.failedFuture(new ConnectionClosedException("session closed"));
     }
-    // For a CLIENT-role session data transfer is started on connect, so ASDUs transmit immediately.
-    // For a SERVER-role session, ASDUs are withheld until data transfer starts (mirroring STARTDT
-    // gating) and the bounded queue enforces the overflow policy.
-    if (dataTransferStarted) {
-      sent.add(asdu);
-      return;
+    Entry entry = queued.offer(asdu, reliable);
+    flush();
+    return entry.completion();
+  }
+
+  private void flush() {
+    while (dataTransferStarted && !queued.isEmpty()) {
+      Entry entry = queued.removeFirst();
+      sent.add(entry.asdu());
+      entry.completeFrom(CompletableFuture.completedFuture(null));
     }
-    if (maxOutboundQueue > 0 && queued.size() >= maxOutboundQueue) {
-      // DROP_OLDEST evicts the head to make room; every other policy drops the incoming ASDU so the
-      // bound is never exceeded. For BLOCK this is a last-resort guard mirroring the real session
-      // (the publisher is expected to have awaited capacity first).
-      if (queuePolicy == OutboundQueuePolicy.DROP_OLDEST) {
-        queued.pollFirst();
-        queued.addLast(asdu);
-      }
-      return;
-    }
-    queued.addLast(asdu);
   }
 
   @Override
@@ -151,7 +153,7 @@ public final class FakeSession implements Session {
   @Override
   public void close() {
     closed = true;
-    queued.clear();
+    queued.failAll(new ConnectionClosedException("session closed or reset"));
   }
 
   // --- Test affordances ------------------------------------------------------------------------
@@ -185,6 +187,7 @@ public final class FakeSession implements Session {
       return;
     }
     closed = true;
+    queued.failAll(new ConnectionClosedException("session closed"));
     events.onClosed(cause);
   }
 
@@ -201,6 +204,7 @@ public final class FakeSession implements Session {
       return;
     }
     closed = true;
+    queued.failAll(new ConnectionClosedException("session closed"));
     events.onConnectionLost(cause);
   }
 
@@ -221,9 +225,7 @@ public final class FakeSession implements Session {
     events.onDataTransferStateChanged(started);
     if (started) {
       // Flush whatever queued while stopped, honoring the original submission order.
-      while (!queued.isEmpty()) {
-        sent.add(queued.pollFirst());
-      }
+      flush();
     }
   }
 }

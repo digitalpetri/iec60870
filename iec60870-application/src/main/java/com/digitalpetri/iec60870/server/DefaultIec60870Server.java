@@ -33,6 +33,7 @@ import java.net.SocketAddress;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -50,6 +51,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -445,7 +447,69 @@ public final class DefaultIec60870Server implements Iec60870Server {
     /** Sends an ASDU on behalf of a handler (the ServerContext escape hatch). */
     private void send(Asdu asdu) {
       if (!closed.get()) {
-        session.sendAsdu(asdu);
+        session
+            .sendAsduAsync(asdu)
+            .whenCompleteAsync(
+                (ignored, error) -> {
+                  if (error != null) {
+                    close(error);
+                  }
+                },
+                callbackExecutor);
+      }
+    }
+
+    /** Writes one response at a time, keeping large replies out of the lossy event queue. */
+    private CompletionStage<Void> sendResponse(Stream<Asdu> response) {
+      var sender = new ResponseSender(response.iterator());
+      sender.run();
+      return sender.result;
+    }
+
+    private final class ResponseSender implements Runnable {
+      private final Iterator<Asdu> response;
+      private final CompletableFuture<Void> result = new CompletableFuture<>();
+      private final AtomicInteger draining = new AtomicInteger();
+      private @Nullable CompletableFuture<Void> write;
+
+      ResponseSender(Iterator<Asdu> response) {
+        this.response = response;
+      }
+
+      @Override
+      public void run() {
+        // Direct executors and already-completed writes must not recurse once per response item.
+        if (draining.getAndIncrement() != 0) {
+          return;
+        }
+        do {
+          try {
+            while (!result.isDone()) {
+              CompletableFuture<Void> current = write;
+              if (current != null) {
+                if (!current.isDone()) {
+                  break;
+                }
+                current.join();
+              }
+              if (closed.get()) {
+                throw new ConnectionClosedException("connection closed");
+              }
+              if (!response.hasNext()) {
+                result.complete(null);
+                break;
+              }
+              write = session.sendAsduAsync(response.next()).toCompletableFuture();
+              if (!write.isDone()) {
+                write.whenComplete((ignored, error) -> callbackExecutor.execute(this));
+                break;
+              }
+            }
+          } catch (RuntimeException error) {
+            result.completeExceptionally(error);
+            close(error);
+          }
+        } while (draining.decrementAndGet() != 0);
       }
     }
 
@@ -556,34 +620,36 @@ public final class DefaultIec60870Server implements Iec60870Server {
       return config
           .handler()
           .onInterrogationAsync(context, request)
-          .thenAccept(response -> emitInterrogation(asdu, qoi, response));
+          .thenCompose(response -> emitInterrogation(asdu, qoi, response));
     }
 
-    private void emitInterrogation(
+    private CompletionStage<Void> emitInterrogation(
         Asdu request, QualifierOfInterrogation qoi, InterrogationResponse response) {
       if (!response.accepted()) {
         Cause cause = response.rejectCause();
-        send(activationConfirmation(request, true, cause != null ? cause : Cause.UNKNOWN_CAUSE));
-        return;
+        return sendResponse(
+            Stream.of(
+                activationConfirmation(
+                    request, true, cause != null ? cause : Cause.UNKNOWN_CAUSE)));
       }
-
-      send(activationConfirmation(request, false, Cause.ACTIVATION_CONFIRMATION));
-
       Cause monitorCause = interrogationCause(qoi);
-      for (InformationObject object : response.objects()) {
-        send(
-            new Asdu(
-                MonitorTypes.of(MonitorMapping.typeOf(object), styleOf(object)),
-                false,
-                monitorCause,
-                false,
-                false,
-                OriginatorAddress.none(),
-                request.commonAddress(),
-                List.of(object)));
-      }
-
-      send(activationTermination(request, AsduType.C_IC_NA_1));
+      Stream<Asdu> data =
+          response.objects().stream()
+              .map(
+                  object ->
+                      new Asdu(
+                          MonitorTypes.of(MonitorMapping.typeOf(object), styleOf(object)),
+                          false,
+                          monitorCause,
+                          false,
+                          false,
+                          OriginatorAddress.none(),
+                          request.commonAddress(),
+                          List.of(object)));
+      return sendResponse(
+          Stream.concat(
+              Stream.of(activationConfirmation(request, false, Cause.ACTIVATION_CONFIRMATION)),
+              Stream.concat(data, Stream.of(activationTermination(request, AsduType.C_IC_NA_1)))));
     }
 
     // --- Counter interrogation ----------------------------------------------------------------
@@ -600,8 +666,6 @@ public final class DefaultIec60870Server implements Iec60870Server {
         return done();
       }
 
-      send(activationConfirmation(asdu, false, Cause.ACTIVATION_CONFIRMATION));
-
       // RQT selects the requested counter group: 1..4 a specific group, 5 (or any other value) a
       // general counter request reporting every integrated-totals point.
       int rqt = command.qualifier().request();
@@ -610,24 +674,30 @@ public final class DefaultIec60870Server implements Iec60870Server {
           rqt >= 1 && rqt <= 4
               ? station.get().selectCounterGroup(rqt)
               : station.get().selectCounterGroup(0);
-      for (Station.InterrogatedPoint point : points) {
-        InformationObject object =
-            MonitorMapping.toMonitorObject(
-                PointType.INTEGRATED_TOTALS, point.address(), point.value(), config.timeTagStyle());
-        send(
-            new Asdu(
-                MonitorTypes.of(PointType.INTEGRATED_TOTALS, config.timeTagStyle()),
-                false,
-                monitorCause,
-                false,
-                false,
-                OriginatorAddress.none(),
-                asdu.commonAddress(),
-                List.of(object)));
-      }
-
-      send(activationTermination(asdu, AsduType.C_CI_NA_1));
-      return done();
+      Stream<Asdu> data =
+          points.stream()
+              .map(
+                  point -> {
+                    InformationObject object =
+                        MonitorMapping.toMonitorObject(
+                            PointType.INTEGRATED_TOTALS,
+                            point.address(),
+                            point.value(),
+                            config.timeTagStyle());
+                    return new Asdu(
+                        MonitorTypes.of(PointType.INTEGRATED_TOTALS, config.timeTagStyle()),
+                        false,
+                        monitorCause,
+                        false,
+                        false,
+                        OriginatorAddress.none(),
+                        asdu.commonAddress(),
+                        List.of(object));
+                  });
+      return sendResponse(
+          Stream.concat(
+              Stream.of(activationConfirmation(asdu, false, Cause.ACTIVATION_CONFIRMATION)),
+              Stream.concat(data, Stream.of(activationTermination(asdu, AsduType.C_CI_NA_1)))));
     }
 
     // --- Read ---------------------------------------------------------------------------------

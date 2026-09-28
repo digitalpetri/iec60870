@@ -138,3 +138,31 @@ The practical rule for application code:
 | One connection's protocol state | `ApciSession` | Single internal lock; callbacks run under it, must not block |
 | Application callback thread | `callbackExecutor` (client/server config) | Serial event delivery; safe to block here |
 | Blocking-call completion | `callbackExecutor` | Blocking facade methods complete on this executor |
+
+## Outbound completion and bounded replies
+
+`Session.sendAsdu` submits discardable traffic such as spontaneous events. Its bounded queue follows
+`OutboundQueuePolicy`. `Session.sendAsduAsync` submits a protected ASDU and returns its first
+transport-write completion. It remains pending while flow control or polling holds the ASDU in the
+queue. It fails if the queue is full, encoding or writing fails, or the session closes or resets
+before completion. Success does not mean that the peer acknowledged or processed the ASDU.
+
+Protected entries cannot be evicted by later event publishing. `DROP_OLDEST` evicts the oldest
+remaining discardable entry; if all queued entries are protected, the incoming event is dropped.
+A full queue rejects a new protected submission. Both submission modes share the configured queue
+bound. Session implementations use `OutboundAsduQueue` to track entries through transport completion,
+including writes already removed from the pending queue when the connection closes.
+
+The server streams each station or counter interrogation response one ASDU at a time, waiting for
+each transport write before offering the next ASDU. ACT_TERM is offered only after every data write
+succeeds. A rejected or failed solicited write closes that connection. Large responses therefore do
+not overflow the event queue, and the per-connection handler chain stays pending until the response
+finishes. Spontaneous events may interleave with the response.
+
+Session completion callbacks can run under a session lock. Applications should dispatch dependent
+work to their callback executor before blocking or entering the session again. The built-in server
+uses an iterative drain to support direct executors and synchronously completed writes without
+recursion per response item. Custom `Session` implementations must implement `sendAsduAsync` to
+support facade sends; its compatibility default fails without submitting. Custom asynchronous
+`ApciSession.Output` and `Ft12LinkLayer.Output` sinks must override `sendAsync` and return the actual
+write stage. Their default assumes the existing `send` method writes synchronously.

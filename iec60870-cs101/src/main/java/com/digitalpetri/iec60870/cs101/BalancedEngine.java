@@ -6,8 +6,9 @@ import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.Cause;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
-import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -111,7 +112,6 @@ final class BalancedEngine implements Ft12Engine {
 
   // Outbound send-queue bound and overflow policy (0 == unbounded, the client default).
   private final int maxOutboundQueue;
-  private final OutboundQueuePolicy queuePolicy;
 
   private boolean closed;
 
@@ -127,7 +127,7 @@ final class BalancedEngine implements Ft12Engine {
       pendingDataAsdu; // the in-flight FC3 ASDU, kept for verbatim retransmission
   private boolean pendingFcb; // the FCB stamped on the in-flight FCV=1 frame
   private int retryCount;
-  private final ArrayDeque<Asdu> sendQueue = new ArrayDeque<>();
+  private final OutboundAsduQueue sendQueue;
   private @Nullable CompletableFuture<Void> pendingStart;
 
   // Secondary process: the FCB this station expects on the peer's FCV=1 primary frames.
@@ -202,7 +202,7 @@ final class BalancedEngine implements Ft12Engine {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     this.maxOutboundQueue = maxOutboundQueue;
-    this.queuePolicy = Objects.requireNonNull(queuePolicy, "queuePolicy");
+    this.sendQueue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
 
     this.dir = role == Ft12LinkLayer.Role.CLIENT;
     this.useSingleCharAck = settings.useSingleCharAck();
@@ -362,31 +362,24 @@ final class BalancedEngine implements Ft12Engine {
    */
   @Override
   public void sendAsdu(Asdu asdu) {
+    submitAsdu(asdu, false);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return submitAsdu(asdu, true);
+  }
+
+  private CompletionStage<Void> submitAsdu(Asdu asdu, boolean reliable) {
     Objects.requireNonNull(asdu, "asdu");
     lock.lock();
     try {
       if (closed) {
-        return;
+        return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
-      // Enforce the configured outbound queue bound (0 == unbounded). The bound applies to ASDUs
-      // that cannot be transmitted immediately; flushSendQueue below sends one if the window is
-      // open. BLOCK is never honored by parking here because that would block the caller under the
-      // lock; the publisher is expected to have awaited capacity via awaitSendCapacity(...) first.
-      // As a last-resort guard, a full BLOCK queue drops the newest so the bound is never exceeded.
-      if (maxOutboundQueue > 0 && sendQueue.size() >= maxOutboundQueue) {
-        switch (queuePolicy) {
-          case DROP_OLDEST -> {
-            sendQueue.pollFirst();
-            sendQueue.addLast(asdu);
-          }
-          case DROP_NEWEST, BLOCK -> {
-            // Drop the newly offered ASDU; keep the already accepted history.
-          }
-        }
-      } else {
-        sendQueue.addLast(asdu);
-      }
+      Entry entry = sendQueue.offer(asdu, reliable);
       flushSendQueue();
+      return entry.completion();
     } finally {
       lock.unlock();
     }
@@ -460,6 +453,7 @@ final class BalancedEngine implements Ft12Engine {
         return;
       }
       closed = true;
+      sendQueue.failAll(new ConnectionClosedException("session closed"));
       cancelAllTimers();
       queueDrained.signalAll();
       failPendingStart(new ConnectionClosedException("session closed"));
@@ -744,18 +738,24 @@ final class BalancedEngine implements Ft12Engine {
     // available. Loop so an ASDU whose framing fails (see the catch below) does not stall the
     // queue: its transaction is rolled back and the next queued ASDU is attempted on the same turn.
     while (linkAvailable && pending == null && !sendQueue.isEmpty()) {
-      Asdu asdu = sendQueue.removeFirst();
+      Entry entry = sendQueue.removeFirst();
+      Asdu asdu = entry.asdu();
       // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
       queueDrained.signalAll();
       pendingDataAsdu = asdu;
       pendingFcb = nextFcb;
       pending = PendingPrimary.USER_DATA;
       retryCount = 0;
+      CompletionStage<Void> write;
       try {
-        output.send(
-            new Ft12Frame.Variable(
-                LinkControlField.primary(dir, pendingFcb, true, FC_USER_DATA), linkAddress, asdu));
+        write =
+            output.sendAsync(
+                new Ft12Frame.Variable(
+                    LinkControlField.primary(dir, pendingFcb, true, FC_USER_DATA),
+                    linkAddress,
+                    asdu));
       } catch (RuntimeException e) {
+        entry.fail(e);
         // Framing failed before anything reached the wire: the FT1.2 framer behind output.send
         // rejects user data longer than 255 octets, so one oversized ASDU makes the send throw.
         // Roll back the transaction this iteration just opened — leaving it pending with no confirm
@@ -783,6 +783,7 @@ final class BalancedEngine implements Ft12Engine {
       }
       armConfirmTimer(confirmTimeoutMillis);
       armLinkStateTimer();
+      entry.completeFrom(write);
       return; // a user-data frame is now outstanding; the window is closed
     }
   }
@@ -929,6 +930,7 @@ final class BalancedEngine implements Ft12Engine {
       return;
     }
     closed = true;
+    sendQueue.failAll(cause);
     cancelAllTimers();
     queueDrained.signalAll();
     failPendingStart(cause);
@@ -962,7 +964,7 @@ final class BalancedEngine implements Ft12Engine {
     pendingDataAsdu = null;
     pendingFcb = false;
     retryCount = 0;
-    sendQueue.clear();
+    sendQueue.failAll(new ConnectionClosedException("session reset"));
     secondaryReset = false;
     expectedFcb = false;
     lastSecondaryResponse = null;

@@ -6,8 +6,9 @@ import com.digitalpetri.iec60870.ProtocolStateException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue;
+import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
-import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -92,6 +93,20 @@ public final class ApciSession implements Session {
      * @param apdu the APDU to send.
      */
     void send(Apdu apdu);
+
+    /**
+     * Writes a frame and returns its transport completion.
+     *
+     * <p>The default treats {@link #send(Apdu)} as a synchronous write. Asynchronous sinks must
+     * override this method and return their actual write stage.
+     *
+     * @param apdu the frame to send.
+     * @return the write completion.
+     */
+    default CompletionStage<Void> sendAsync(Apdu apdu) {
+      send(apdu);
+      return CompletableFuture.completedFuture(null);
+    }
   }
 
   private final ReentrantLock lock = new ReentrantLock();
@@ -115,7 +130,7 @@ public final class ApciSession implements Session {
   // Send-side state.
   private int sendSequenceNumber; // V(S)
   private int ackSequenceNumber; // lowest unacknowledged send sequence number
-  private final ArrayDeque<Asdu> sendQueue = new ArrayDeque<>();
+  private final OutboundAsduQueue sendQueue;
 
   // Receive-side state.
   private int receiveSequenceNumber; // V(R)
@@ -140,7 +155,6 @@ public final class ApciSession implements Session {
 
   // Outbound send-queue bound and overflow policy (0 == unbounded, the client default).
   private final int maxOutboundQueue;
-  private final OutboundQueuePolicy queuePolicy;
 
   private boolean closed;
 
@@ -195,7 +209,7 @@ public final class ApciSession implements Session {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     this.maxOutboundQueue = maxOutboundQueue;
-    this.queuePolicy = Objects.requireNonNull(queuePolicy, "queuePolicy");
+    this.sendQueue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
 
     this.t1Millis = settings.t1().toMillis();
     this.t2Millis = settings.t2().toMillis();
@@ -236,7 +250,7 @@ public final class ApciSession implements Session {
       unackedReceivedCount = 0;
       dataTransferStarted = false;
       testFrameOutstanding = false;
-      sendQueue.clear();
+      sendQueue.failAll(new ConnectionClosedException("session reset"));
       cancelAllTimers();
       armT3();
     } finally {
@@ -291,32 +305,24 @@ public final class ApciSession implements Session {
    */
   @Override
   public void sendAsdu(Asdu asdu) {
+    submitAsdu(asdu, false);
+  }
+
+  @Override
+  public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+    return submitAsdu(asdu, true);
+  }
+
+  private CompletionStage<Void> submitAsdu(Asdu asdu, boolean reliable) {
     Objects.requireNonNull(asdu, "asdu");
     lock.lock();
     try {
       if (closed) {
-        return;
+        return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
-      // Enforce the configured outbound queue bound (0 == unbounded). The bound applies to ASDUs
-      // that cannot be transmitted immediately; flushSendQueue below drains as many as the window
-      // allows. BLOCK is never honored by parking here because that would block the caller under
-      // the lock; the publisher is expected to have awaited capacity via awaitSendCapacity(...)
-      // first. As a last-resort guard, a full BLOCK queue drops the newest so the bound is never
-      // exceeded.
-      if (maxOutboundQueue > 0 && sendQueue.size() >= maxOutboundQueue) {
-        switch (queuePolicy) {
-          case DROP_OLDEST -> {
-            sendQueue.pollFirst();
-            sendQueue.addLast(asdu);
-          }
-          case DROP_NEWEST, BLOCK -> {
-            // Drop the newly offered ASDU; keep the already accepted history.
-          }
-        }
-      } else {
-        sendQueue.addLast(asdu);
-      }
+      Entry entry = sendQueue.offer(asdu, reliable);
       flushSendQueue();
+      return entry.completion();
     } finally {
       lock.unlock();
     }
@@ -481,6 +487,7 @@ public final class ApciSession implements Session {
         return;
       }
       closed = true;
+      sendQueue.failAll(new ConnectionClosedException("session closed"));
       cancelAllTimers();
       queueDrained.signalAll();
       failPending(new ConnectionClosedException("session closed"));
@@ -684,12 +691,20 @@ public final class ApciSession implements Session {
       if (closed) {
         break;
       }
-      Asdu asdu = sendQueue.removeFirst();
+      Entry entry = sendQueue.removeFirst();
+      Asdu asdu = entry.asdu();
       // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
       queueDrained.signalAll();
       ControlField.TypeI control =
           new ControlField.TypeI(sendSequenceNumber, receiveSequenceNumber);
-      output.send(new Apdu(control, asdu));
+      CompletionStage<Void> write;
+      try {
+        write = output.sendAsync(new Apdu(control, asdu));
+      } catch (RuntimeException error) {
+        entry.fail(error);
+        closeWithError(error);
+        return;
+      }
       // output.send(...) may have synchronously closed the session; if so, do not advance state or
       // arm t1/t3 on a now-closed session.
       if (closed) {
@@ -700,6 +715,7 @@ public final class ApciSession implements Session {
       sendSequenceNumber = increment(sendSequenceNumber);
       armT1();
       armT3();
+      entry.completeFrom(write);
     }
   }
 
@@ -858,6 +874,7 @@ public final class ApciSession implements Session {
       return;
     }
     closed = true;
+    sendQueue.failAll(cause);
     cancelAllTimers();
     queueDrained.signalAll();
     failPending(cause);

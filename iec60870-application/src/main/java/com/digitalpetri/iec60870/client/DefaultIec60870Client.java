@@ -399,13 +399,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * Hands an outbound application ASDU to the session and returns a stage for the write.
    *
    * @param asdu the ASDU to send.
-   * @return a stage that completes once the ASDU has been queued/sent, or completes exceptionally
-   *     if the session is closed.
+   * @return a stage that completes after the transport write, or fails if the ASDU cannot be sent.
    */
   private CompletionStage<Void> submitToSession(Asdu asdu) {
     try {
-      session.sendAsdu(asdu);
-      return CompletableFuture.completedFuture(null);
+      return session.sendAsduAsync(asdu);
     } catch (RuntimeException e) {
       return CompletableFuture.failedFuture(e);
     }
