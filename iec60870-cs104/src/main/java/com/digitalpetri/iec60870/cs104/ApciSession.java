@@ -687,8 +687,16 @@ public final class ApciSession implements Session {
           new ControlField.TypeI(sendSequenceNumber, receiveSequenceNumber);
       // Each sent frame keeps its original deadline, including after partial acknowledgements.
       // Register before output.send so a synchronous send failure can cancel it during close().
-      iFrameTimeouts.addLast(new AcknowledgementTimeout());
-      output.send(new Apdu(control, asdu));
+      AcknowledgementTimeout timeout = new AcknowledgementTimeout();
+      iFrameTimeouts.addLast(timeout);
+      try {
+        output.send(new Apdu(control, asdu));
+      } catch (RuntimeException e) {
+        // Encoding can reject a frame without closing the session or advancing V(S).
+        iFrameTimeouts.removeLastOccurrence(timeout);
+        timeout.cancel();
+        throw e;
+      }
       // output.send(...) may have synchronously closed the session; if so, do not advance state or
       // arm t3 on a now-closed session. close() has already cancelled this frame's t1 deadline.
       if (closed) {
@@ -713,12 +721,23 @@ public final class ApciSession implements Session {
   }
 
   private void sendUFrame(UFunction function) {
+    AcknowledgementTimeout timeout = null;
     switch (function) {
-      case STARTDT_ACT, STOPDT_ACT, TESTFR_ACT ->
-          uFrameTimeouts.put(function, new AcknowledgementTimeout());
+      case STARTDT_ACT, STOPDT_ACT, TESTFR_ACT -> {
+        timeout = new AcknowledgementTimeout();
+        uFrameTimeouts.put(function, timeout);
+      }
       default -> {}
     }
-    output.send(new Apdu(new ControlField.TypeU(function), null));
+    try {
+      output.send(new Apdu(new ControlField.TypeU(function), null));
+    } catch (RuntimeException e) {
+      if (timeout != null) {
+        uFrameTimeouts.remove(function, timeout);
+        timeout.cancel();
+      }
+      throw e;
+    }
     if (!closed) {
       armT3();
     }
