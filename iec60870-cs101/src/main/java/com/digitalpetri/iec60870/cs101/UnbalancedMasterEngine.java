@@ -43,8 +43,8 @@ import org.slf4j.LoggerFactory;
  * bring-up. Bring-up round-robins across the not-yet-reset slaves, and the request-status
  * retransmissions of an unresponsive slave <em>release the bus</em> between probes whenever other
  * work could run, so a single dead slave cannot monopolize the shared bus for its whole retransmit
- * budget while polls and commands to healthy slaves wait. The dead slave is still degraded to {@link
- * LinkState#ERROR error} once its per-slave probe budget is exhausted.
+ * budget while polls and commands to healthy slaves wait. The dead slave is still degraded to
+ * {@link LinkState#ERROR error} once its per-slave probe budget is exhausted.
  *
  * <p><b>Polling.</b> Once available, slaves are polled for class-2 data on the configured
  * {@linkplain LinkSettings.PollConfig#pollInterval() cadence} with request-class-2 (FC11, FCV=1)
