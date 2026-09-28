@@ -315,6 +315,12 @@ Integrated-totals (counter) points are hosted the same way — define them with
 they are delivered spontaneously and by counter interrogation. The counter-interrogation side is
 covered in [connect and interrogate](./connect-and-interrogate.md).
 
+The built-in counter-interrogation procedure supports `FreezeMode.READ` (FRZ=0), reporting the
+counter values held in the station image. Freeze, freeze-with-reset, and reset requests (FRZ=1..3)
+receive a negative activation confirmation with no counter data or activation termination. To
+implement those operations, claim their `C_CI_NA_1` ASDUs in `ServerHandler.onRawAsdu` or
+`onRawAsduAsync`, perform the requested operation, and send the appropriate reply through the context.
+
 ## Observe server events
 
 Subscribe a `java.util.concurrent.Flow.Subscriber<ServerEvent>` to `server.events()` to watch

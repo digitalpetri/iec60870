@@ -41,6 +41,10 @@ public interface Iec60870Client extends AutoCloseable {
   /**
    * Establishes the connection and, when configured, starts data transfer.
    *
+   * <p>Concurrent calls share connection initialization. Calling again on an active connection
+   * preserves its session state; after connection loss, a new call initializes the replacement
+   * connection. A closed client cannot be connected again.
+   *
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection cannot be
    *     established.
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if a {@code STARTDT} handshake does
@@ -50,6 +54,10 @@ public interface Iec60870Client extends AutoCloseable {
 
   /**
    * Establishes the connection and, when configured, starts data transfer.
+   *
+   * <p>Concurrent calls share connection initialization. Calling again on an active connection
+   * preserves its session state; after connection loss, a new call initializes the replacement
+   * connection. A closed client cannot be connected again.
    *
    * @return a stage that completes once the client is connected (and data transfer started, if
    *     configured), or completes exceptionally on failure.

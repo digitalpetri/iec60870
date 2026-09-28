@@ -8,6 +8,7 @@ import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.session.Session;
 import java.util.ArrayDeque;
+import java.util.EnumMap;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -116,6 +117,7 @@ public final class ApciSession implements Session {
   private int sendSequenceNumber; // V(S)
   private int ackSequenceNumber; // lowest unacknowledged send sequence number
   private final ArrayDeque<Asdu> sendQueue = new ArrayDeque<>();
+  private final ArrayDeque<AcknowledgementTimeout> iFrameTimeouts = new ArrayDeque<>();
 
   // Receive-side state.
   private int receiveSequenceNumber; // V(R)
@@ -123,17 +125,21 @@ public final class ApciSession implements Session {
 
   // Data-transfer (STARTDT/STOPDT) state.
   private boolean dataTransferStarted;
+  // STOPDT suppresses outbound I-frames immediately, while a client can still receive in-flight
+  // I-frames until STOPDT con. The gate stays closed until the next STARTDT handshake completes.
+  private boolean outboundTransferStopped;
+  private boolean stopConfirmationPending;
   private @Nullable CompletableFuture<Void> pendingStart;
   private @Nullable CompletableFuture<Void> pendingStop;
 
   // Timer handles.
-  private @Nullable ScheduledFuture<?> t1Future;
+  private final EnumMap<UFunction, AcknowledgementTimeout> uFrameTimeouts =
+      new EnumMap<>(UFunction.class);
   private @Nullable ScheduledFuture<?> t2Future;
   private @Nullable ScheduledFuture<?> t3Future;
   // Generation counters that invalidate timer tasks already dispatched (and possibly blocked on the
   // lock) when the corresponding timer is re-armed or cancelled. A timer callback that finds its
   // captured generation stale must do nothing.
-  private int t1Generation;
   private int t2Generation;
   private int t3Generation;
   private boolean testFrameOutstanding;
@@ -235,6 +241,8 @@ public final class ApciSession implements Session {
       receiveSequenceNumber = 0;
       unackedReceivedCount = 0;
       dataTransferStarted = false;
+      outboundTransferStopped = false;
+      stopConfirmationPending = false;
       testFrameOutstanding = false;
       sendQueue.clear();
       cancelAllTimers();
@@ -283,9 +291,10 @@ public final class ApciSession implements Session {
   /**
    * Sends an application ASDU as an I-format APDU, honoring the {@code k} window.
    *
-   * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, or — for a
-   * {@link Role#SERVER} — data transfer has not been started, the ASDU is queued and transmitted
-   * later when the window opens or data transfer starts. Queued ASDUs are sent in submission order.
+   * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, the ASDU is
+   * queued until the window opens. Once STOPDT begins, the queue is held until STARTDT completes. A
+   * {@link Role#SERVER} also queues ASDUs before the initial STARTDT activation. Queued ASDUs are
+   * sent in submission order.
    *
    * @param asdu the application ASDU to send.
    */
@@ -406,7 +415,6 @@ public final class ApciSession implements Session {
       CompletableFuture<Void> future = new CompletableFuture<>();
       pendingStart = future;
       sendUFrame(UFunction.STARTDT_ACT);
-      armT1();
       return future;
     } finally {
       lock.unlock();
@@ -416,9 +424,12 @@ public final class ApciSession implements Session {
   /**
    * Stops user-data transfer (CLIENT role only).
    *
-   * <p>Sends a {@code STOPDT act} U-frame and returns a stage that completes when the matching
-   * {@code STOPDT con} arrives. If the confirmation does not arrive before {@code t1} elapses the
-   * session closes and the stage completes exceptionally with a {@link ProtocolTimeoutException}.
+   * <p>Stops sending I-frames immediately, acknowledges received I-frames, and sends a {@code
+   * STOPDT act} U-frame. Returns a stage that completes when the matching {@code STOPDT con}
+   * arrives. Queued and newly offered ASDUs wait for the next STARTDT confirmation. In-flight
+   * I-frames from the peer are still delivered and acknowledged while STOPDT is pending. If the
+   * confirmation does not arrive before {@code t1} elapses the session closes and the stage
+   * completes exceptionally with a {@link ProtocolTimeoutException}.
    *
    * @return a stage that completes when data transfer has stopped, or completes exceptionally on
    *     timeout, session close, or misuse.
@@ -442,8 +453,14 @@ public final class ApciSession implements Session {
       }
       CompletableFuture<Void> future = new CompletableFuture<>();
       pendingStop = future;
+      outboundTransferStopped = true;
+      if (unackedReceivedCount > 0) {
+        sendSupervisoryAck();
+      }
+      if (closed) {
+        return future;
+      }
       sendUFrame(UFunction.STOPDT_ACT);
-      armT1();
       return future;
     } finally {
       lock.unlock();
@@ -532,7 +549,7 @@ public final class ApciSession implements Session {
       return;
     }
 
-    if (unackedReceivedCount >= w) {
+    if (unackedReceivedCount >= w || pendingStop != null) {
       sendSupervisoryAck();
     } else {
       armT2();
@@ -541,6 +558,7 @@ public final class ApciSession implements Session {
 
   private void onSFrame(ControlField.TypeS s) {
     processReceiveSequenceNumber(s.receiveSequenceNumber());
+    completeStopIfAcknowledged();
   }
 
   private void onUFrame(UFunction function) {
@@ -551,7 +569,7 @@ public final class ApciSession implements Session {
         // TESTFR con must not touch t1, which may be guarding other outstanding APDUs.
         if (testFrameOutstanding) {
           testFrameOutstanding = false;
-          cancelT1IfIdle();
+          cancelUFrameTimeout(UFunction.TESTFR_ACT);
         } else {
           LOGGER.debug("ignoring unsolicited TESTFR con");
         }
@@ -568,8 +586,13 @@ public final class ApciSession implements Session {
       LOGGER.debug("ignoring STARTDT act received by a CLIENT session");
       return;
     }
+    if (stopConfirmationPending) {
+      LOGGER.debug("ignoring STARTDT act while STOPDT acknowledgements are pending");
+      return;
+    }
     boolean changed = !dataTransferStarted;
     dataTransferStarted = true;
+    outboundTransferStopped = false;
     sendUFrame(UFunction.STARTDT_CON);
     if (changed) {
       events.onDataTransferStateChanged(true);
@@ -584,9 +607,21 @@ public final class ApciSession implements Session {
     }
     boolean changed = dataTransferStarted;
     dataTransferStarted = false;
-    sendUFrame(UFunction.STOPDT_CON);
+    outboundTransferStopped = true;
+    stopConfirmationPending = true;
+    if (unackedReceivedCount > 0) {
+      sendSupervisoryAck();
+    }
+    completeStopIfAcknowledged();
     if (changed) {
       events.onDataTransferStateChanged(false);
+    }
+  }
+
+  private void completeStopIfAcknowledged() {
+    if (!closed && stopConfirmationPending && ackSequenceNumber == sendSequenceNumber) {
+      stopConfirmationPending = false;
+      sendUFrame(UFunction.STOPDT_CON);
     }
   }
 
@@ -603,9 +638,14 @@ public final class ApciSession implements Session {
       return;
     }
     pendingStart = null;
-    cancelT1IfIdle();
+    cancelUFrameTimeout(UFunction.STARTDT_ACT);
     boolean changed = !dataTransferStarted;
     dataTransferStarted = true;
+    // A STARTDT confirmation may cross a subsequently sent STOPDT act. It must not reopen the
+    // outbound queue during that stop exchange.
+    if (pendingStop == null) {
+      outboundTransferStopped = false;
+    }
     if (changed) {
       events.onDataTransferStateChanged(true);
       flushSendQueue();
@@ -628,7 +668,7 @@ public final class ApciSession implements Session {
       return;
     }
     pendingStop = null;
-    cancelT1IfIdle();
+    cancelUFrameTimeout(UFunction.STOPDT_ACT);
     boolean changed = dataTransferStarted;
     dataTransferStarted = false;
     if (changed) {
@@ -641,7 +681,7 @@ public final class ApciSession implements Session {
 
   /**
    * Confirms sent I-frames acknowledged by a received N(R), updating the acknowledgement pointer
-   * and re-arming or cancelling {@code t1} for the remaining outstanding frames.
+   * and cancelling only the deadlines of the acknowledged frames.
    */
   private void processReceiveSequenceNumber(int receivedNr) {
     int outstanding = sequenceDistance(ackSequenceNumber, sendSequenceNumber);
@@ -662,12 +702,8 @@ public final class ApciSession implements Session {
       return;
     }
     ackSequenceNumber = receivedNr;
-    if (ackSequenceNumber == sendSequenceNumber) {
-      // All sent I-frames acknowledged; cancel t1 only if no other sent APDU (a TESTFR/STARTDT/
-      // STOPDT act) is still awaiting its confirmation.
-      cancelT1IfIdle();
-    } else {
-      armT1();
+    for (int i = 0; i < acked; i++) {
+      iFrameTimeouts.removeFirst().cancel();
     }
     flushSendQueue();
   }
@@ -675,7 +711,7 @@ public final class ApciSession implements Session {
   // --- Outbound helpers (lock held) -----------------------------------------------------------
 
   private void flushSendQueue() {
-    if (role == Role.SERVER && !dataTransferStarted) {
+    if (outboundTransferStopped || (role == Role.SERVER && !dataTransferStarted)) {
       return;
     }
     while (!sendQueue.isEmpty() && sequenceDistance(ackSequenceNumber, sendSequenceNumber) < k) {
@@ -689,16 +725,26 @@ public final class ApciSession implements Session {
       queueDrained.signalAll();
       ControlField.TypeI control =
           new ControlField.TypeI(sendSequenceNumber, receiveSequenceNumber);
-      output.send(new Apdu(control, asdu));
+      // Each sent frame keeps its original deadline, including after partial acknowledgements.
+      // Register before output.send so a synchronous send failure can cancel it during close().
+      AcknowledgementTimeout timeout = new AcknowledgementTimeout();
+      iFrameTimeouts.addLast(timeout);
+      try {
+        output.send(new Apdu(control, asdu));
+      } catch (RuntimeException e) {
+        // Encoding can reject a frame without closing the session or advancing V(S).
+        iFrameTimeouts.removeLastOccurrence(timeout);
+        timeout.cancel();
+        throw e;
+      }
       // output.send(...) may have synchronously closed the session; if so, do not advance state or
-      // arm t1/t3 on a now-closed session.
+      // arm t3 on a now-closed session. close() has already cancelled this frame's t1 deadline.
       if (closed) {
         break;
       }
       // Sending an I-frame piggybacks the acknowledgement of received frames.
       onReceiveAcknowledged();
       sendSequenceNumber = increment(sendSequenceNumber);
-      armT1();
       armT3();
     }
   }
@@ -715,50 +761,46 @@ public final class ApciSession implements Session {
   }
 
   private void sendUFrame(UFunction function) {
-    output.send(new Apdu(new ControlField.TypeU(function), null));
-    armT3();
+    AcknowledgementTimeout timeout = null;
+    switch (function) {
+      case STARTDT_ACT, STOPDT_ACT, TESTFR_ACT -> {
+        timeout = new AcknowledgementTimeout();
+        uFrameTimeouts.put(function, timeout);
+      }
+      default -> {}
+    }
+    try {
+      output.send(new Apdu(new ControlField.TypeU(function), null));
+    } catch (RuntimeException e) {
+      if (timeout != null) {
+        uFrameTimeouts.remove(function, timeout);
+        timeout.cancel();
+      }
+      throw e;
+    }
+    if (!closed) {
+      armT3();
+    }
   }
 
   // --- Timers (lock held) ---------------------------------------------------------------------
 
-  private void armT1() {
-    cancelT1();
-    int generation = ++t1Generation;
-    t1Future = schedule(() -> onT1Expired(generation), t1Millis);
-  }
-
-  /**
-   * Reports whether any sent APDU is still awaiting its acknowledgement and therefore still needs
-   * the single shared {@code t1} timer running. That timer guards every outstanding obligation at
-   * once: sent I-frames not yet confirmed by an inbound N(R), a {@code TESTFR act} awaiting its
-   * {@code TESTFR con}, and a {@code STARTDT}/{@code STOPDT act} awaiting its confirmation.
-   */
-  private boolean awaitingAcknowledgement() {
-    return ackSequenceNumber != sendSequenceNumber
-        || testFrameOutstanding
-        || pendingStart != null
-        || pendingStop != null;
-  }
-
-  /**
-   * Cancels {@code t1} only when nothing it guards remains outstanding. A confirmation that clears
-   * one obligation must not stop the timer while another obligation is still pending; otherwise an
-   * unsolicited or mismatched U-frame confirmation could suppress a timeout that should fail a
-   * STARTDT/STOPDT activation or close a session whose I-frames were never acknowledged.
-   */
-  private void cancelT1IfIdle() {
-    if (!awaitingAcknowledgement()) {
-      cancelT1();
+  private void cancelUFrameTimeout(UFunction function) {
+    AcknowledgementTimeout timeout = uFrameTimeouts.remove(function);
+    if (timeout != null) {
+      timeout.cancel();
     }
   }
 
   private void cancelT1() {
-    // Bump the generation so an already-dispatched task (possibly blocked on the lock) is a no-op.
-    t1Generation++;
-    if (t1Future != null) {
-      t1Future.cancel(false);
-      t1Future = null;
+    for (AcknowledgementTimeout timeout : iFrameTimeouts) {
+      timeout.cancel();
     }
+    iFrameTimeouts.clear();
+    for (AcknowledgementTimeout timeout : uFrameTimeouts.values()) {
+      timeout.cancel();
+    }
+    uFrameTimeouts.clear();
   }
 
   private void armT2() {
@@ -797,23 +839,6 @@ public final class ApciSession implements Session {
     cancelT3();
   }
 
-  private void onT1Expired(int generation) {
-    lock.lock();
-    try {
-      // Ignore a stale task: the session closed, or t1 was re-armed/cancelled after this task was
-      // dispatched (it may have been blocked on the lock while a fresh t1 was armed).
-      if (closed || generation != t1Generation) {
-        return;
-      }
-      t1Future = null;
-      closeWithError(
-          new ProtocolTimeoutException(
-              "t1 elapsed awaiting acknowledgement of a sent I-frame or U-frame"));
-    } finally {
-      lock.unlock();
-    }
-  }
-
   private void onT2Expired(int generation) {
     lock.lock();
     try {
@@ -840,7 +865,6 @@ public final class ApciSession implements Session {
       if (!testFrameOutstanding) {
         testFrameOutstanding = true;
         sendUFrame(UFunction.TESTFR_ACT);
-        armT1();
       }
     } finally {
       lock.unlock();
@@ -849,6 +873,35 @@ public final class ApciSession implements Session {
 
   private ScheduledFuture<?> schedule(Runnable task, long delayMillis) {
     return scheduler.schedule(task, delayMillis, TimeUnit.MILLISECONDS);
+  }
+
+  // One deadline per outstanding frame, bounded by k I-frames and the three U activations.
+  // All accesses, including cancellation and expiry, hold the session lock.
+  private final class AcknowledgementTimeout {
+
+    private final ScheduledFuture<?> future = schedule(this::onExpired, t1Millis);
+    private boolean cancelled;
+
+    private void cancel() {
+      // A dispatched task may already be waiting for the lock, so Future.cancel alone is not
+      // enough.
+      cancelled = true;
+      future.cancel(false);
+    }
+
+    private void onExpired() {
+      lock.lock();
+      try {
+        if (closed || cancelled) {
+          return;
+        }
+        closeWithError(
+            new ProtocolTimeoutException(
+                "t1 elapsed awaiting acknowledgement of a sent I-frame or U-frame"));
+      } finally {
+        lock.unlock();
+      }
+    }
   }
 
   // --- Closure (lock held) --------------------------------------------------------------------
