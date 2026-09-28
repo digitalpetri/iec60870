@@ -123,6 +123,10 @@ public final class ApciSession implements Session {
 
   // Data-transfer (STARTDT/STOPDT) state.
   private boolean dataTransferStarted;
+  // STOPDT suppresses outbound I-frames immediately, while a client can still receive in-flight
+  // I-frames until STOPDT con. The gate stays closed until the next STARTDT handshake completes.
+  private boolean outboundTransferStopped;
+  private boolean stopConfirmationPending;
   private @Nullable CompletableFuture<Void> pendingStart;
   private @Nullable CompletableFuture<Void> pendingStop;
 
@@ -235,6 +239,8 @@ public final class ApciSession implements Session {
       receiveSequenceNumber = 0;
       unackedReceivedCount = 0;
       dataTransferStarted = false;
+      outboundTransferStopped = false;
+      stopConfirmationPending = false;
       testFrameOutstanding = false;
       sendQueue.clear();
       cancelAllTimers();
@@ -283,9 +289,10 @@ public final class ApciSession implements Session {
   /**
    * Sends an application ASDU as an I-format APDU, honoring the {@code k} window.
    *
-   * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, or — for a
-   * {@link Role#SERVER} — data transfer has not been started, the ASDU is queued and transmitted
-   * later when the window opens or data transfer starts. Queued ASDUs are sent in submission order.
+   * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, the ASDU is
+   * queued until the window opens. Once STOPDT begins, the queue is held until STARTDT completes. A
+   * {@link Role#SERVER} also queues ASDUs before the initial STARTDT activation. Queued ASDUs are
+   * sent in submission order.
    *
    * @param asdu the application ASDU to send.
    */
@@ -416,9 +423,12 @@ public final class ApciSession implements Session {
   /**
    * Stops user-data transfer (CLIENT role only).
    *
-   * <p>Sends a {@code STOPDT act} U-frame and returns a stage that completes when the matching
-   * {@code STOPDT con} arrives. If the confirmation does not arrive before {@code t1} elapses the
-   * session closes and the stage completes exceptionally with a {@link ProtocolTimeoutException}.
+   * <p>Stops sending I-frames immediately, acknowledges received I-frames, and sends a {@code
+   * STOPDT act} U-frame. Returns a stage that completes when the matching {@code STOPDT con}
+   * arrives. Queued and newly offered ASDUs wait for the next STARTDT confirmation. In-flight
+   * I-frames from the peer are still delivered and acknowledged while STOPDT is pending. If the
+   * confirmation does not arrive before {@code t1} elapses the session closes and the stage
+   * completes exceptionally with a {@link ProtocolTimeoutException}.
    *
    * @return a stage that completes when data transfer has stopped, or completes exceptionally on
    *     timeout, session close, or misuse.
@@ -442,6 +452,13 @@ public final class ApciSession implements Session {
       }
       CompletableFuture<Void> future = new CompletableFuture<>();
       pendingStop = future;
+      outboundTransferStopped = true;
+      if (unackedReceivedCount > 0) {
+        sendSupervisoryAck();
+      }
+      if (closed) {
+        return future;
+      }
       sendUFrame(UFunction.STOPDT_ACT);
       armT1();
       return future;
@@ -532,7 +549,7 @@ public final class ApciSession implements Session {
       return;
     }
 
-    if (unackedReceivedCount >= w) {
+    if (unackedReceivedCount >= w || pendingStop != null) {
       sendSupervisoryAck();
     } else {
       armT2();
@@ -541,6 +558,7 @@ public final class ApciSession implements Session {
 
   private void onSFrame(ControlField.TypeS s) {
     processReceiveSequenceNumber(s.receiveSequenceNumber());
+    completeStopIfAcknowledged();
   }
 
   private void onUFrame(UFunction function) {
@@ -568,8 +586,13 @@ public final class ApciSession implements Session {
       LOGGER.debug("ignoring STARTDT act received by a CLIENT session");
       return;
     }
+    if (stopConfirmationPending) {
+      LOGGER.debug("ignoring STARTDT act while STOPDT acknowledgements are pending");
+      return;
+    }
     boolean changed = !dataTransferStarted;
     dataTransferStarted = true;
+    outboundTransferStopped = false;
     sendUFrame(UFunction.STARTDT_CON);
     if (changed) {
       events.onDataTransferStateChanged(true);
@@ -584,9 +607,21 @@ public final class ApciSession implements Session {
     }
     boolean changed = dataTransferStarted;
     dataTransferStarted = false;
-    sendUFrame(UFunction.STOPDT_CON);
+    outboundTransferStopped = true;
+    stopConfirmationPending = true;
+    if (unackedReceivedCount > 0) {
+      sendSupervisoryAck();
+    }
+    completeStopIfAcknowledged();
     if (changed) {
       events.onDataTransferStateChanged(false);
+    }
+  }
+
+  private void completeStopIfAcknowledged() {
+    if (!closed && stopConfirmationPending && ackSequenceNumber == sendSequenceNumber) {
+      stopConfirmationPending = false;
+      sendUFrame(UFunction.STOPDT_CON);
     }
   }
 
@@ -606,6 +641,11 @@ public final class ApciSession implements Session {
     cancelT1IfIdle();
     boolean changed = !dataTransferStarted;
     dataTransferStarted = true;
+    // A STARTDT confirmation may cross a subsequently sent STOPDT act. It must not reopen the
+    // outbound queue during that stop exchange.
+    if (pendingStop == null) {
+      outboundTransferStopped = false;
+    }
     if (changed) {
       events.onDataTransferStateChanged(true);
       flushSendQueue();
@@ -675,7 +715,7 @@ public final class ApciSession implements Session {
   // --- Outbound helpers (lock held) -----------------------------------------------------------
 
   private void flushSendQueue() {
-    if (role == Role.SERVER && !dataTransferStarted) {
+    if (outboundTransferStopped || (role == Role.SERVER && !dataTransferStarted)) {
       return;
     }
     while (!sendQueue.isEmpty() && sequenceDistance(ackSequenceNumber, sendSequenceNumber) < k) {
