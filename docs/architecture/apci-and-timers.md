@@ -121,10 +121,12 @@ scheduled on an injected `ScheduledExecutorService`.
 
 How `ApciSession` runs them:
 
-- **`t1`** is armed whenever an I-frame is sent or a U-frame `act` is sent, and cancelled when the
-  outstanding count returns to zero (and no test frame is awaiting confirmation). If it expires, the
-  connection has stalled: the session closes itself with a `ProtocolTimeoutException` and reports it
-  through `Events.onClosed`.
+- **`t1`** runs separately for each sent I-frame and U-frame `act`, starting when the frame is sent.
+  An I/S-frame's N(R) cancels the deadlines of the I-frames it acknowledges; a matching U-frame `con`
+  cancels only that activation's deadline. New sends and partial acknowledgements do not extend any
+  remaining deadline. The session keeps at most `k` active I-frame deadlines, plus one for each
+  outstanding STARTDT, STOPDT, or TESTFR activation. If any deadline expires, the session closes itself
+  with a `ProtocolTimeoutException` and reports it through `Events.onClosed`.
 - **`t2`** is armed when an I-frame is received and is not yet armed; it is *not* restarted on every
   subsequent frame. On expiry, if any received frames are still unacknowledged, the session sends an
   S-frame. Sending any acknowledgement cancels it. This bounds acknowledgement latency below `t1`
@@ -132,8 +134,8 @@ How `ApciSession` runs them:
 - **`t3`** is a sliding idle timer: any sent or received frame re-arms it. On expiry — meaning the
   connection has been silent — the session sends `TESTFR act` and arms `t1` to await `TESTFR con`. A
   received `TESTFR act` is answered immediately with `TESTFR con`; a received `TESTFR con` clears the
-  outstanding test and cancels `t1`. Together `t3`+`TESTFR`+`t1` detect a dead peer on an otherwise
-  idle link.
+  outstanding test and cancels its `t1` deadline. Together `t3`+`TESTFR`+`t1` detect a dead peer on an
+  otherwise idle link.
 
 ## Lifecycle and threading
 
