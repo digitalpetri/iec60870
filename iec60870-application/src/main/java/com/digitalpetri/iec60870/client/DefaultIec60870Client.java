@@ -277,7 +277,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
     PendingInterrogation request =
-        new PendingInterrogation(station, future, maxInterrogationResponseObjects);
+        new PendingInterrogation(asdu, qoi, future, maxInterrogationResponseObjects);
     if (!register(request)) {
       future.completeExceptionally(
           alreadyInFlight("interrogation of common address " + station.value()));
@@ -934,7 +934,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
   /** A request awaiting interrogation confirmation then monitor objects until ACT_TERM. */
   private static final class PendingInterrogation extends PendingRequest {
 
-    private final CommonAddress station;
+    private final Asdu activation;
+    private final int responseCause;
     private final CompletableFuture<InterrogationResult> future;
     private final int maxObjects;
     private final List<InformationObject> collected = new ArrayList<>();
@@ -943,28 +944,38 @@ public final class DefaultIec60870Client implements Iec60870Client {
     private @Nullable Asdu negativeConfirmation;
 
     PendingInterrogation(
-        CommonAddress station, CompletableFuture<InterrogationResult> future, int maxObjects) {
-      this.station = station;
+        Asdu activation,
+        QualifierOfInterrogation qoi,
+        CompletableFuture<InterrogationResult> future,
+        int maxObjects) {
+      this.activation = activation;
+      this.responseCause = qoi.value().intValue();
       this.future = future;
       this.maxObjects = maxObjects;
     }
 
     @Override
     boolean conflictsWith(PendingRequest other) {
-      // An interrogation correlates on the common address alone (accept() ignores the qualifier of
-      // interrogation), so two interrogations conflict when they target the same station.
-      return other instanceof PendingInterrogation that && station.equals(that.station);
+      // Preserve one outstanding interrogation per station, including across different groups.
+      return other instanceof PendingInterrogation that
+          && activation.commonAddress().equals(that.activation.commonAddress());
     }
 
     @Override
     Outcome accept(Asdu asdu) {
-      if (!asdu.commonAddress().equals(station)) {
+      if (!asdu.commonAddress().equals(activation.commonAddress())
+          || !asdu.originatorAddress().equals(activation.originatorAddress())
+          || asdu.test() != activation.test()) {
         return Outcome.IGNORED;
       }
       if (asdu.type() == AsduType.C_IC_NA_1) {
+        // Confirmations and terminations echo the single IOA 0 command and its requested QOI.
+        if (!asdu.objects().equals(activation.objects())) {
+          return Outcome.IGNORED;
+        }
         // A negative confirmation may carry an error cause (for example UNKNOWN_COMMON_ADDRESS)
         // rather than ACTIVATION_CONFIRMATION when the controlled station declines the request;
-        // treat any negative C_IC_NA_1 confirmation as the rejection.
+        // a matching negative C_IC_NA_1 confirmation still rejects this request.
         if (asdu.negative()) {
           negativeConfirmation = asdu;
           return Outcome.FAILED;
@@ -974,7 +985,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
             confirmed = true;
             yield Outcome.ACCEPTED;
           }
-          case ACTIVATION_TERMINATION -> Outcome.COMPLETED;
+          case ACTIVATION_TERMINATION -> confirmed ? Outcome.COMPLETED : Outcome.IGNORED;
           default -> Outcome.IGNORED;
         };
       }
@@ -993,7 +1004,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     void deliver() {
-      future.complete(new InterrogationResult(station, collected, true));
+      future.complete(new InterrogationResult(activation.commonAddress(), collected, true));
     }
 
     @Override
@@ -1015,28 +1026,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
       future.completeExceptionally(cause);
     }
 
-    private static boolean isInterrogationResponse(Cause cause) {
-      return switch (cause) {
-        case INTERROGATED_BY_STATION,
-            INTERROGATED_BY_GROUP_1,
-            INTERROGATED_BY_GROUP_2,
-            INTERROGATED_BY_GROUP_3,
-            INTERROGATED_BY_GROUP_4,
-            INTERROGATED_BY_GROUP_5,
-            INTERROGATED_BY_GROUP_6,
-            INTERROGATED_BY_GROUP_7,
-            INTERROGATED_BY_GROUP_8,
-            INTERROGATED_BY_GROUP_9,
-            INTERROGATED_BY_GROUP_10,
-            INTERROGATED_BY_GROUP_11,
-            INTERROGATED_BY_GROUP_12,
-            INTERROGATED_BY_GROUP_13,
-            INTERROGATED_BY_GROUP_14,
-            INTERROGATED_BY_GROUP_15,
-            INTERROGATED_BY_GROUP_16 ->
-            true;
-        default -> false;
-      };
+    private boolean isInterrogationResponse(Cause cause) {
+      // Standard station/group QOI and response COT share values 20..36 (IEC 60870-5-101, 7.4.5).
+      return responseCause >= 20 && responseCause <= 36 && cause.value() == responseCause;
     }
   }
 

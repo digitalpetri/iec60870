@@ -16,6 +16,7 @@ import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
@@ -1000,21 +1001,196 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
-  void strayActTerminationBeforeActConCompletesInterrogationWithEmptyResult() {
-    // NOTE: per PendingInterrogation.accept, a same-CA ACTIVATION_TERMINATION returns COMPLETED
-    // unconditionally (no confirmed-guard), so a stray ACT_TERM arriving before any ACT_CON
-    // completes the interrogation immediately with an empty object list. This pins that observed
-    // behavior; see the blockers note flagging the discrepancy with the plan's "silently ignored".
+  void strayActTerminationBeforeActConDoesNotCompleteInterrogation() {
     client.connect();
-
     CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
 
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    assertFalse(stage.toCompletableFuture().isDone());
+    assertEquals(1, client.pendingRequestCount());
+
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    Asdu response = measured(Cause.INTERROGATED_BY_STATION, (short) 42);
+    session().deliverAsdu(response);
     session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
 
     InterrogationResult result = stage.toCompletableFuture().join();
     assertTrue(result.terminated());
-    assertTrue(result.objects().isEmpty());
-    assertEquals(0, client.pendingRequestCount(), "a completed interrogation must not leak");
+    assertEquals(response.objects(), result.objects());
+    assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
+  void lateInterrogationRepliesForAnotherGroupDoNotCompleteReplacementRequest() {
+    ManualScheduler clock = new ManualScheduler();
+    AtomicReference<@Nullable FakeSession> ref = new AtomicReference<>();
+    try (DefaultIec60870Client timingClient =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .requestTimeout(Duration.ofMillis(50))
+                .build(),
+            clientSessionFactory(ref),
+            clock)) {
+      timingClient.connect();
+      FakeSession peer = requireNonNull(ref.get());
+      CompletionStage<InterrogationResult> first =
+          timingClient.interrogateAsync(STATION, QualifierOfInterrogation.GROUP_1);
+      clock.advance(50, TimeUnit.MILLISECONDS);
+      var ex = assertThrows(CompletionException.class, () -> first.toCompletableFuture().join());
+      assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
+
+      CompletionStage<InterrogationResult> second =
+          timingClient.interrogateAsync(STATION, QualifierOfInterrogation.GROUP_2);
+      peer.deliverAsdu(
+          control(Cause.ACTIVATION_CONFIRMATION, false, QualifierOfInterrogation.GROUP_1));
+      peer.deliverAsdu(measured(Cause.INTERROGATED_BY_GROUP_1, (short) 1));
+      peer.deliverAsdu(
+          control(Cause.ACTIVATION_TERMINATION, false, QualifierOfInterrogation.GROUP_1));
+      assertFalse(second.toCompletableFuture().isDone());
+      assertEquals(1, timingClient.pendingRequestCount());
+
+      peer.deliverAsdu(
+          control(Cause.ACTIVATION_CONFIRMATION, false, QualifierOfInterrogation.GROUP_2));
+      peer.deliverAsdu(measured(Cause.INTERROGATED_BY_GROUP_1, (short) 1));
+      peer.deliverAsdu(
+          control(Cause.ACTIVATION_TERMINATION, false, QualifierOfInterrogation.GROUP_1));
+      assertFalse(second.toCompletableFuture().isDone());
+      Asdu response = measured(Cause.INTERROGATED_BY_GROUP_2, (short) 2);
+      peer.deliverAsdu(response);
+      peer.deliverAsdu(
+          control(Cause.ACTIVATION_TERMINATION, false, QualifierOfInterrogation.GROUP_2));
+      assertEquals(response.objects(), second.toCompletableFuture().join().objects());
+      assertEquals(0, timingClient.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void interrogationCollectsOnlyTheRequestedStationOrGroupCause() {
+    client.connect();
+    for (int qoiValue = 20; qoiValue <= 36; qoiValue++) {
+      QualifierOfInterrogation qoi = QualifierOfInterrogation.of(qoiValue);
+      CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION, qoi);
+      session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false, qoi));
+      for (int other = 20; other <= 36; other++) {
+        if (other != qoiValue) {
+          session().deliverAsdu(measured(Cause.fromValue(other), (short) other));
+        }
+      }
+      Asdu response = measured(Cause.fromValue(qoiValue), (short) 42);
+      session().deliverAsdu(response);
+      session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false, qoi));
+      assertEquals(response.objects(), stage.toCompletableFuture().join().objects());
+      assertEquals(0, client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void interrogationIgnoresDataForAnotherOriginatorOrTestProcedure() {
+    client.connect();
+    CompletionStage<InterrogationResult> stage = client.interrogateAsync(STATION);
+    session().deliverAsdu(control(Cause.ACTIVATION_CONFIRMATION, false));
+    Asdu response = measured(Cause.INTERROGATED_BY_STATION, (short) 42);
+    session()
+        .deliverAsdu(
+            new Asdu(
+                response.type(),
+                false,
+                response.cause(),
+                false,
+                true,
+                response.originatorAddress(),
+                STATION,
+                response.objects()));
+    session()
+        .deliverAsdu(
+            new Asdu(
+                response.type(),
+                false,
+                response.cause(),
+                false,
+                false,
+                OriginatorAddress.of(27),
+                STATION,
+                response.objects()));
+    session().deliverAsdu(response);
+    session().deliverAsdu(control(Cause.ACTIVATION_TERMINATION, false));
+    assertEquals(response.objects(), stage.toCompletableFuture().join().objects());
+  }
+
+  @Test
+  void interrogationControlRepliesMustMirrorTheRequestedIdentity() {
+    client.connect();
+    CompletionStage<InterrogationResult> stage =
+        client.interrogateAsync(STATION, QualifierOfInterrogation.GROUP_2);
+    List<InformationObject> matchingObjects =
+        List.of(
+            new InterrogationCommand(
+                InformationObjectAddress.of(0), QualifierOfInterrogation.GROUP_2));
+    List<List<InformationObject>> mismatchedObjects =
+        List.of(
+            List.of(),
+            List.of(
+                new InterrogationCommand(
+                    InformationObjectAddress.of(1), QualifierOfInterrogation.GROUP_2)),
+            List.of(
+                new InterrogationCommand(
+                    InformationObjectAddress.of(0), QualifierOfInterrogation.GROUP_1)));
+    for (boolean negative : List.of(false, true)) {
+      Cause cause = negative ? Cause.UNKNOWN_COMMON_ADDRESS : Cause.ACTIVATION_CONFIRMATION;
+      for (List<InformationObject> objects : mismatchedObjects) {
+        session()
+            .deliverAsdu(
+                new Asdu(
+                    AsduType.C_IC_NA_1,
+                    false,
+                    cause,
+                    negative,
+                    false,
+                    config.originatorAddress(),
+                    STATION,
+                    objects));
+        assertFalse(stage.toCompletableFuture().isDone());
+      }
+      session()
+          .deliverAsdu(
+              new Asdu(
+                  AsduType.C_IC_NA_1,
+                  false,
+                  cause,
+                  negative,
+                  true,
+                  config.originatorAddress(),
+                  STATION,
+                  matchingObjects));
+      assertFalse(stage.toCompletableFuture().isDone());
+      session()
+          .deliverAsdu(
+              new Asdu(
+                  AsduType.C_IC_NA_1,
+                  false,
+                  cause,
+                  negative,
+                  false,
+                  OriginatorAddress.of(27),
+                  STATION,
+                  matchingObjects));
+      assertFalse(stage.toCompletableFuture().isDone());
+    }
+    // None of the unrelated positive confirmations may enable the termination path.
+    session()
+        .deliverAsdu(
+            control(Cause.ACTIVATION_TERMINATION, false, QualifierOfInterrogation.GROUP_2));
+    assertFalse(stage.toCompletableFuture().isDone());
+
+    Asdu rejection = control(Cause.UNKNOWN_COMMON_ADDRESS, true, QualifierOfInterrogation.GROUP_2);
+    session().deliverAsdu(rejection);
+    var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
+    NegativeConfirmationException failure =
+        assertInstanceOf(NegativeConfirmationException.class, ex.getCause());
+    assertSame(rejection, failure.asdu().orElseThrow());
+    assertEquals(0, client.pendingRequestCount());
   }
 
   @Test
@@ -1236,6 +1412,10 @@ class DefaultIec60870ClientTest {
   }
 
   private Asdu control(Cause cause, boolean negative) {
+    return control(cause, negative, QualifierOfInterrogation.STATION);
+  }
+
+  private Asdu control(Cause cause, boolean negative, QualifierOfInterrogation qoi) {
     return new Asdu(
         AsduType.C_IC_NA_1,
         false,
@@ -1244,9 +1424,7 @@ class DefaultIec60870ClientTest {
         false,
         config.originatorAddress(),
         STATION,
-        List.of(
-            new InterrogationCommand(
-                InformationObjectAddress.of(0), QualifierOfInterrogation.STATION)));
+        List.of(new InterrogationCommand(InformationObjectAddress.of(0), qoi)));
   }
 
   private Asdu measured(Cause cause, short value) {
