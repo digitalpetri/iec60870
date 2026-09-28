@@ -126,13 +126,26 @@ station initiates the link-reset bring-up, and which station may drive
   `startDataTransfer()` drives the handshake **FC9 → FC11 → FC0 → ack**: it sends a
   request-status-of-link (`FC9`), and on the peer's status-of-link (`FC11`) reply it sends a
   reset-of-remote-link (`FC0`); the positive acknowledgement of that reset completes the bring-up.
-  Bring-up makes the link available, fires `Events.onDataTransferStateChanged(true)`, resets the FCB
-  state (primary `nextFcb = true`, secondary `expectedFcb = false` on both ends), completes the stage
-  returned by `startDataTransfer()`, and flushes any queued user data.
+  On the initiating CLIENT, completion sets primary `nextFcb = true` and initializes the local
+  secondary receive state (`expectedFcb = false`, no cached response). It makes the link available,
+  fires `Events.onDataTransferStateChanged(true)`, completes the stage returned by
+  `startDataTransfer()`, and flushes queued user data when the peer is ready.
 - **A `Role.SERVER` station follows the peer.** It reaches the available state by *receiving* the
   peer's reset-of-remote-link, which sets the link available, fires the same data-transfer-state
   event, acknowledges, and flushes its own queued data. `isDataTransferStarted()` returns whether the
   link is available.
+- **A received reset affects the secondary direction.** It clears the received-frame FCB and cached
+  response. The SERVER therefore resets only its secondary during the CLIENT's bring-up. Its
+  independent primary retains its next FCB, any outstanding transaction, and its confirmation
+  deadline. `onConnected()` initializes both local processes with `nextFcb = true` and
+  `expectedFcb = false`; receiving `FC0` does not initialize both directions.
+- **Retries can duplicate delivery after a peer restart.** An outstanding frame is retransmitted
+  with its original FCB across a received reset. If the peer retained its secondary state, it can
+  recognize the retry and replay its ACK without delivering the ASDU again. If the peer actually
+  restarted and cleared that state, it may deliver the ASDU twice when the original ACK was lost.
+  This includes this library's CLIENT after a serial reconnect while the SERVER's port and engine
+  remain open. A received `FC0` alone cannot distinguish a primary-only reset from a peer restart,
+  so applications must not assume at-most-once delivery across that boundary.
 - **There is no stop-data service.** `stopDataTransfer()` (CLIENT only) completes immediately and
   leaves the link available; it exists only to satisfy the `Session` contract symmetrically with
   `startDataTransfer()`. Both methods throw `IllegalStateException` on a `SERVER` station.
