@@ -200,10 +200,11 @@ master, and it simply replays its last response when it sees the same FCB again.
   master can escalate to a class-1 poll) and the **DFC** bit while either bounded class queue is
   saturated (back-pressure).
 - **Availability.** The link becomes available when the master sends its reset-of-remote-link, which
-  fires `Events.onDataTransferStateChanged(true)`. Send/confirm user data (`FC3`) that arrives before
-  that reset is rejected with a link-service-not-functioning (`FC14`) frame and never delivered, so a
-  peer cannot bypass the link-reset gate to inject application data. As a `SERVER`-role station the
-  slave never drives `startDataTransfer()`/`stopDataTransfer()`; both throw `IllegalStateException`.
+  fires `Events.onDataTransferStateChanged(true)`. Before that reset, class polls (`FC10`/`FC11`)
+  receive no reply and leave both class queues untouched. Addressed user data (`FC3`/`FC4`) is also
+  ignored without delivery or a reply. Status requests (`FC9`) remain available so the master can
+  complete initialization. As a `SERVER`-role station the slave never drives
+  `startDataTransfer()`/`stopDataTransfer()`; both throw `IllegalStateException`.
 
 ## Link addressing
 

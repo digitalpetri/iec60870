@@ -45,9 +45,10 @@ import org.slf4j.LoggerFactory;
  * <p><b>Lifecycle.</b> Call {@link #onConnected()} once the serial port is open to reset the link
  * state; then feed every inbound frame to {@link #onFrame(Ft12Frame)}. The link becomes available
  * once the master sends its reset-of-remote-link frame, which is reported through {@link
- * Session.Events#onDataTransferStateChanged(boolean)}. As a SERVER-role station the slave never
- * drives {@link #startDataTransfer()}/{@link #stopDataTransfer()}; both throw {@link
- * IllegalStateException}. Call {@link #close()} when the transport goes away; it is idempotent.
+ * Session.Events#onDataTransferStateChanged(boolean)}. Before reset, class polls receive no reply
+ * and leave buffered data untouched. As a SERVER-role station the slave never drives {@link
+ * #startDataTransfer()}/{@link #stopDataTransfer()}; both throw {@link IllegalStateException}. Call
+ * {@link #close()} when the transport goes away; it is idempotent.
  *
  * <p><b>Threading.</b> All mutable state is guarded by a single internal lock, so a caller may
  * invoke any method from any thread. The {@link Ft12LinkLayer.Output} and {@link Session.Events}
@@ -444,6 +445,12 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       return;
     }
     int fc = control.functionCode();
+    if (!linkReset && (fc == FC_REQUEST_USER_DATA_CLASS_1 || fc == FC_REQUEST_USER_DATA_CLASS_2)) {
+      // IEC 101 Figure 6: a not-reset secondary makes no reply to class polls. Gate them before
+      // either handler can change the FCB, cache a response, or remove application data.
+      LOGGER.debug("ignoring class poll before a link reset on an unbalanced slave: FC{}", fc);
+      return;
+    }
     switch (fc) {
       case FC_REQUEST_STATUS_OF_LINK -> respondStatusOfLink();
       case FC_RESET_REMOTE_LINK -> handleReset();

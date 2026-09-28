@@ -135,6 +135,7 @@ class UnbalancedSlaveEngineTest {
   void requestClass2DequeuesAClass2AsduAsRespondUserData() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    resetLink(slave);
 
     Asdu cyclic = class2Asdu(20);
     slave.sendAsdu(cyclic);
@@ -155,6 +156,7 @@ class UnbalancedSlaveEngineTest {
   void class2PollWithoutClass2DataAnswersWithClass1AndSetsAcd() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    resetLink(slave);
 
     // Two spontaneous (class-1) ASDUs are buffered; the class-2 queue is empty.
     Asdu firstEvent = class1Asdu(30);
@@ -179,6 +181,7 @@ class UnbalancedSlaveEngineTest {
   void requestClass1DrainsAClass1AsduAsRespondUserData() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    resetLink(slave);
 
     Asdu event = class1Asdu(40);
     slave.sendAsdu(event);
@@ -198,6 +201,7 @@ class UnbalancedSlaveEngineTest {
   void acdIsSetWhileClass1RemainsAndClearedWhenDrained() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    resetLink(slave);
 
     slave.sendAsdu(class1Asdu(50));
     slave.sendAsdu(class1Asdu(51));
@@ -220,6 +224,7 @@ class UnbalancedSlaveEngineTest {
   void fullClass2QueueDoesNotAdvertiseDfc() {
     UnbalancedSlaveEngine slave = newSlave(SETTINGS, 1, OutboundQueuePolicy.DROP_OLDEST);
     slave.onConnected();
+    resetLink(slave);
 
     // A single-slot class-2 queue is saturated; the second send drops the oldest and stays full.
     slave.sendAsdu(class2Asdu(60));
@@ -274,6 +279,7 @@ class UnbalancedSlaveEngineTest {
   void retransmittedClass2RequestReplaysLastResponseWithoutDequeue() {
     UnbalancedSlaveEngine slave = newSlave();
     slave.onConnected();
+    resetLink(slave);
 
     Asdu firstCyclic = class2Asdu(70);
     Asdu secondCyclic = class2Asdu(71);
@@ -300,6 +306,144 @@ class UnbalancedSlaveEngineTest {
     slave.onFrame(primaryFixed(FC_REQUEST_USER_DATA_CLASS_2, false, true));
     Ft12Frame.Variable next = assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(2));
     assertEquals(secondCyclic, next.asdu());
+    assertEquals(0, slave.pendingSendCount());
+  }
+
+  // --- FC10/FC11 pre-reset gate ---------------------------------------------------------------
+
+  @Test
+  void class1PollBeforeResetLeavesBothQueuesUntouched() {
+    assertClassPollBeforeResetLeavesBothQueuesUntouched(FC_REQUEST_USER_DATA_CLASS_1);
+  }
+
+  @Test
+  void class2PollBeforeResetLeavesBothQueuesUntouched() {
+    assertClassPollBeforeResetLeavesBothQueuesUntouched(FC_REQUEST_USER_DATA_CLASS_2);
+  }
+
+  private void assertClassPollBeforeResetLeavesBothQueuesUntouched(int functionCode) {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+    Asdu first = pollAsdu(functionCode, 200);
+    Asdu second = pollAsdu(functionCode, 201);
+    slave.sendAsdu(first);
+    slave.sendAsdu(second);
+    slave.sendAsdu(
+        pollAsdu(
+            functionCode == FC_REQUEST_USER_DATA_CLASS_1
+                ? FC_REQUEST_USER_DATA_CLASS_2
+                : FC_REQUEST_USER_DATA_CLASS_1,
+            202));
+
+    // Neither repeated nor toggled FCBs authorize data transfer before reset.
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    slave.onFrame(primaryFixed(functionCode, false, true));
+    assertTrue(output.frames().isEmpty(), "a not-reset secondary makes no reply to class polls");
+    assertEquals(3, slave.pendingSendCount());
+    assertFalse(slave.isDataTransferStarted());
+    assertTrue(events.dataTransferChanges().isEmpty());
+
+    // Status remains available without consuming data or starting transfer.
+    slave.onFrame(primaryFixed(FC_REQUEST_STATUS_OF_LINK, false, false));
+    Ft12Frame.FixedLength status =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
+    assertEquals(FC_STATUS_OF_LINK, status.control().functionCode());
+    assertEquals(3, slave.pendingSendCount());
+    assertFalse(slave.isDataTransferStarted());
+
+    resetLink(slave);
+    assertTrue(slave.isDataTransferStarted());
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    Ft12Frame.Variable response =
+        assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(0));
+    assertEquals(first, response.asdu());
+    assertEquals(2, slave.pendingSendCount());
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    assertSame(response, output.frames().get(1));
+    assertEquals(2, slave.pendingSendCount(), "duplicate polling replays without another dequeue");
+    slave.onFrame(primaryFixed(functionCode, false, true));
+    assertEquals(second, assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(2)).asdu());
+    assertEquals(1, slave.pendingSendCount(), "the other class queue remains intact");
+  }
+
+  @Test
+  void emptyClass1PollBeforeResetDoesNotReplyWithSingleChar() {
+    assertEmptyClassPollBeforeResetDoesNotReply(FC_REQUEST_USER_DATA_CLASS_1, true);
+  }
+
+  @Test
+  void emptyClass1PollBeforeResetDoesNotReplyWithFixedFrame() {
+    assertEmptyClassPollBeforeResetDoesNotReply(FC_REQUEST_USER_DATA_CLASS_1, false);
+  }
+
+  @Test
+  void emptyClass2PollBeforeResetDoesNotReplyWithSingleChar() {
+    assertEmptyClassPollBeforeResetDoesNotReply(FC_REQUEST_USER_DATA_CLASS_2, true);
+  }
+
+  @Test
+  void emptyClass2PollBeforeResetDoesNotReplyWithFixedFrame() {
+    assertEmptyClassPollBeforeResetDoesNotReply(FC_REQUEST_USER_DATA_CLASS_2, false);
+  }
+
+  private void assertEmptyClassPollBeforeResetDoesNotReply(
+      int functionCode, boolean singleCharAck) {
+    UnbalancedSlaveEngine slave =
+        newSlave(
+            LinkSettings.unbalanced()
+                .linkAddress(LINK_ADDRESS)
+                .useSingleCharAck(singleCharAck)
+                .build());
+    slave.onConnected();
+
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    slave.onFrame(primaryFixed(functionCode, false, true));
+    assertTrue(output.frames().isEmpty(), "neither E5 nor FC9 is permitted before reset");
+    assertFalse(slave.isDataTransferStarted());
+
+    resetLink(slave);
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    assertEquals(1, output.frames().size());
+    if (singleCharAck) {
+      assertInstanceOf(Ft12Frame.SingleChar.class, output.frames().get(0));
+    } else {
+      Ft12Frame.FixedLength response =
+          assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
+      assertEquals(9, response.control().functionCode());
+    }
+  }
+
+  @Test
+  void class1PollAfterReconnectRequiresAnotherReset() {
+    assertClassPollAfterReconnectRequiresAnotherReset(FC_REQUEST_USER_DATA_CLASS_1);
+  }
+
+  @Test
+  void class2PollAfterReconnectRequiresAnotherReset() {
+    assertClassPollAfterReconnectRequiresAnotherReset(FC_REQUEST_USER_DATA_CLASS_2);
+  }
+
+  private void assertClassPollAfterReconnectRequiresAnotherReset(int functionCode) {
+    UnbalancedSlaveEngine slave = newSlave();
+    slave.onConnected();
+    resetLink(slave);
+    slave.sendAsdu(pollAsdu(functionCode, 210));
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    assertEquals(1, output.frames().size());
+
+    slave.onConnected();
+    output.clear();
+    Asdu fresh = pollAsdu(functionCode, 211);
+    slave.sendAsdu(fresh);
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    assertTrue(output.frames().isEmpty(), "an old connection's poll cannot resume data transfer");
+    assertEquals(1, slave.pendingSendCount());
+    assertFalse(slave.isDataTransferStarted());
+
+    resetLink(slave);
+    slave.onFrame(primaryFixed(functionCode, true, true));
+    assertEquals(fresh, assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(0)).asdu());
     assertEquals(0, slave.pendingSendCount());
   }
 
@@ -468,6 +612,15 @@ class UnbalancedSlaveEngineTest {
   }
 
   // --- Fixtures --------------------------------------------------------------------------------
+
+  private void resetLink(UnbalancedSlaveEngine slave) {
+    slave.onFrame(primaryFixed(FC_RESET_REMOTE_LINK, false, false));
+    output.clear();
+  }
+
+  private static Asdu pollAsdu(int functionCode, int ioa) {
+    return functionCode == FC_REQUEST_USER_DATA_CLASS_1 ? class1Asdu(ioa) : class2Asdu(ioa);
+  }
 
   /** Unbalanced settings with the single-character ack disabled, so every ack is a full frame. */
   private static LinkSettings unbalancedNoSingleChar() {
