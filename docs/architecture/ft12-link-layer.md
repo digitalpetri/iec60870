@@ -163,9 +163,13 @@ its DFC flag).
 - **Poll scheduler.** Once available, slaves are polled for class-2 data with request-class-2
   (`FC11`, `FCV=1`) frames, round-robin across the available slaves, on the configured
   `PollConfig.pollInterval` cadence. The `pump()` bus loop runs only while data transfer is started
-  and the bus is free, in priority order: (1) bring up any not-yet-reset slave; (2) deliver the head
-  command if its target slave can accept it; (3) on a due poll tick, request class-2 data from the
-  next available slave.
+  and the bus is free. Bus turns rotate among commands, due class-2 polls, and slave bring-up,
+  skipping activities without eligible work. A sustained command backlog therefore cannot starve
+  application responses waiting at a slave or the initialization of another slave. Commands skip
+  blocked targets while preserving submission order for each slave. Polls and bring-up each rotate
+  across their eligible slaves. Outstanding retries and bounded class-1 drains complete before the
+  activity rotation resumes; the poll interval marks work due rather than guaranteeing an exact
+  transmission time on the shared bus.
 - **Class-1/class-2 and ACD escalation.** A poll response carrying the **access-demand bit (ACD)**
   escalates immediately to a request-class-1 (`FC10`) drain of the slave's high-priority data,
   bounded by `MAX_ACD_DRAIN` (16) consecutive drains so a slave that keeps asserting ACD cannot
