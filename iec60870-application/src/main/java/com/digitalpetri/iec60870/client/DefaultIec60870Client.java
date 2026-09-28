@@ -24,7 +24,9 @@ import com.digitalpetri.iec60870.transport.ClientTransport;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -90,10 +92,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final Session session;
   private final CommandService commandService;
 
-  // Serializes command submission with session reset, without holding the request lock while
-  // calling the session. Session callbacks acquire only lock, never commandSendLock: the session
-  // may invoke them under its own lock, so reversing that order would deadlock.
-  private final ReentrantLock commandSendLock = new ReentrantLock();
+  // Serialize command submission with session reset. Enqueueing never waits for a running
+  // operation: an inline callback may hold the session lock that the current sender needs.
+  private final Deque<Runnable> sessionOperations = new ArrayDeque<>();
+  private boolean sessionOperationRunning;
   private final ReentrantLock lock = new ReentrantLock();
   private final List<PendingRequest> pending = new ArrayList<>();
 
@@ -186,21 +188,20 @@ public final class DefaultIec60870Client implements Iec60870Client {
     return transport
         .connect()
         .thenCompose(
-            ignored -> {
-              commandSendLock.lock();
-              try {
-                // Arm the one-shot ConnectionClosed guard for this connection.
-                connectionClosedPublished.set(false);
-                session.onConnected();
-                publish(new ClientEvent.ConnectionOpened());
-                if (config.startDataTransferOnConnect()) {
-                  return session.startDataTransfer();
-                }
-                return CompletableFuture.completedFuture(null);
-              } finally {
-                commandSendLock.unlock();
-              }
-            });
+            ignored ->
+                CompletableFuture.supplyAsync(
+                        () -> {
+                          // Arm the one-shot ConnectionClosed guard for this connection.
+                          connectionClosedPublished.set(false);
+                          session.onConnected();
+                          publish(new ClientEvent.ConnectionOpened());
+                          if (config.startDataTransferOnConnect()) {
+                            return session.startDataTransfer();
+                          }
+                          return CompletableFuture.<Void>completedFuture(null);
+                        },
+                        this::executeSessionOperation)
+                    .thenCompose(started -> started));
   }
 
   @Override
@@ -1282,44 +1283,67 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   /** Submits a command phase only while its original transaction is still registered. */
   private void sendCommandActivation(PendingCommand request) {
-    commandSendLock.lock();
+    CompletableFuture.supplyAsync(
+            () -> prepareAndSendCommand(request), this::executeSessionOperation)
+        .thenCompose(write -> write)
+        .whenComplete(
+            (ignored, error) -> {
+              if (error != null && removePending(request)) {
+                callbackExecutor.execute(() -> request.fail(error));
+              }
+            });
+  }
+
+  private CompletionStage<Void> prepareAndSendCommand(PendingCommand request) {
+    Asdu activation;
+    lock.lock();
     try {
-      Asdu activation;
-      lock.lock();
-      try {
-        if (!pending.contains(request)) {
-          return;
-        }
-        if (request.future.isCancelled()) {
-          pending.remove(request);
-          request.cancelTimeout();
-          return;
-        }
-        if (request.executeQueued) {
-          request.activation = request.execute;
-          request.executeQueued = false;
-        }
-        activation = request.activation;
-        request.setTimeoutHandle(
-            scheduler.schedule(
-                () -> timeoutCommand(request, activation),
-                config.commandTimeout().toMillis(),
-                TimeUnit.MILLISECONDS));
-      } finally {
-        lock.unlock();
+      if (!pending.contains(request)) {
+        return CompletableFuture.completedFuture(null);
       }
-      // A connection loss can remove the registration and close the old session concurrently.
-      // A reconnect cannot reset that session until this submission returns, so an old SELECT
-      // can never authorize EXECUTE on the replacement session.
-      submitToSession(activation)
-          .whenComplete(
-              (ignored, error) -> {
-                if (error != null && removePending(request)) {
-                  callbackExecutor.execute(() -> request.fail(error));
-                }
-              });
+      if (request.future.isCancelled()) {
+        pending.remove(request);
+        request.cancelTimeout();
+        return CompletableFuture.completedFuture(null);
+      }
+      if (request.executeQueued) {
+        request.activation = request.execute;
+        request.executeQueued = false;
+      }
+      activation = request.activation;
+      request.setTimeoutHandle(
+          scheduler.schedule(
+              () -> timeoutCommand(request, activation),
+              config.commandTimeout().toMillis(),
+              TimeUnit.MILLISECONDS));
     } finally {
-      commandSendLock.unlock();
+      lock.unlock();
+    }
+    // Loss can invalidate the request and close the old session concurrently. Session reset is
+    // queued behind this submission, so the ASDU cannot cross into the replacement session.
+    return submitToSession(activation);
+  }
+
+  private void executeSessionOperation(Runnable operation) {
+    synchronized (sessionOperations) {
+      sessionOperations.addLast(operation);
+      if (sessionOperationRunning) {
+        return;
+      }
+      sessionOperationRunning = true;
+    }
+    while (true) {
+      Runnable next;
+      synchronized (sessionOperations) {
+        next = sessionOperations.pollFirst();
+        if (next == null) {
+          sessionOperationRunning = false;
+          return;
+        }
+      }
+      // Only CompletableFuture tasks enter this queue. They capture operation failures and allow
+      // this drain to continue; their completion handlers can enqueue more work without blocking.
+      next.run();
     }
   }
 

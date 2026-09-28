@@ -24,6 +24,7 @@ import com.digitalpetri.iec60870.asdu.object.SingleCommandWithCp56Time;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec60870.fakes.FakeClientTransport;
 import com.digitalpetri.iec60870.fakes.FakeSession;
+import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.test.common.ManualScheduler;
 import java.time.Duration;
 import java.time.Instant;
@@ -34,9 +35,15 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DynamicTest;
@@ -192,12 +199,18 @@ class CommandTransactionTest {
     var callbacks = new QueuedExecutor();
     try (Harness h = new Harness(callbacks)) {
       CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
+      Runnable selectTimeout = h.clock.lastRunnableWithDelay(50);
       h.clock.advance(49, TimeUnit.MILLISECONDS);
       h.session().deliverAsdu(reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false));
+      // A timer already dispatched before cancellation can still run after SELECT was confirmed.
+      selectTimeout.run();
       h.clock.advance(100, TimeUnit.MILLISECONDS);
       callbacks.drain();
       assertFalse(result.isDone(), "SELECT timeout was cancelled");
       assertEquals(2, h.session().sentAsdus().size());
+      selectTimeout.run();
+      callbacks.drain();
+      assertFalse(result.isDone(), "a stale SELECT timeout cannot fail EXECUTE");
       h.clock.advance(49, TimeUnit.MILLISECONDS);
       callbacks.drain();
       assertFalse(result.isDone(), "EXECUTE has its own deadline");
@@ -205,6 +218,275 @@ class CommandTransactionTest {
       callbacks.drain();
       assertFailure(result, ProtocolTimeoutException.class);
       assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void inlineSelectContinuationDoesNotDeadlockCompetingSend() throws Exception {
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    var config = ClientConfig.builder().callbackExecutor(Runnable::run).build();
+    try (var client =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            config,
+            (events, scheduler) -> {
+              var session = new LockingSession(events);
+              sessionRef.set(session);
+              return session;
+            })) {
+      client.connect();
+      LockingSession session = requireNonNull(sessionRef.get());
+      CompletableFuture<CommandResult> selected =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, true), CommandMode.selectBeforeOperate())
+              .toCompletableFuture();
+      Asdu selectReply =
+          reply(session.delegate.sentAsdus().get(0), Cause.ACTIVATION_CONFIRMATION, false);
+      var inboundLocked = new CountDownLatch(1);
+      var deliverConfirmation = new CountDownLatch(1);
+      ExecutorService workers = Executors.newFixedThreadPool(2);
+      try {
+        Future<?> receive =
+            workers.submit(
+                () -> {
+                  session.lock.lock();
+                  try {
+                    inboundLocked.countDown();
+                    awaitLatch(deliverConfirmation);
+                    session.delegate.deliverAsdu(selectReply);
+                  } finally {
+                    session.lock.unlock();
+                  }
+                });
+        assertTrue(inboundLocked.await(5, TimeUnit.SECONDS));
+        Future<?> competing =
+            workers.submit(
+                () ->
+                    client
+                        .commands()
+                        .sendAsync(
+                            Command.single(
+                                new PointAddress(
+                                    POINT.commonAddress(), InformationObjectAddress.of(101)),
+                                true),
+                            CommandMode.directExecute()));
+        assertTrue(session.competingSendEntered.await(5, TimeUnit.SECONDS));
+        // The competing sender is now inside Session.sendAsdu, waiting for the inbound lock.
+        // An inline SELECT continuation must enqueue EXECUTE and return, not wait for that sender.
+        deliverConfirmation.countDown();
+        receive.get(5, TimeUnit.SECONDS);
+        competing.get(5, TimeUnit.SECONDS);
+        assertEquals(3, session.delegate.sentAsdus().size());
+        session.delegate.deliverAsdu(
+            reply(session.delegate.sentAsdus().get(2), Cause.ACTIVATION_CONFIRMATION, false));
+        assertTrue(selected.join().positive());
+      } finally {
+        deliverConfirmation.countDown();
+        workers.shutdownNow();
+        assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+      }
+    }
+  }
+
+  @Test
+  void failedSubmissionDoesNotPreventLaterCommands() {
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    var config = ClientConfig.builder().callbackExecutor(Runnable::run).build();
+    try (var client =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            config,
+            (events, scheduler) -> {
+              var session = new LockingSession(events);
+              sessionRef.set(session);
+              return session;
+            })) {
+      client.connect();
+      LockingSession session = requireNonNull(sessionRef.get());
+      session.failNextSend = true;
+      CompletableFuture<CommandResult> failed =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, true), CommandMode.directExecute())
+              .toCompletableFuture();
+      assertFailure(failed, IllegalStateException.class);
+      CompletableFuture<CommandResult> later =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, false), CommandMode.directExecute())
+              .toCompletableFuture();
+      session.delegate.deliverAsdu(
+          reply(session.delegate.sentAsdus().get(0), Cause.ACTIVATION_CONFIRMATION, false));
+      assertTrue(later.join().positive());
+    }
+  }
+
+  @Test
+  void sessionResetWaitsForPriorCommandSubmissionWithoutBlockingCaller() throws Exception {
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    var config = ClientConfig.builder().callbackExecutor(Runnable::run).build();
+    try (var client =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            config,
+            (events, scheduler) -> {
+              var session = new LockingSession(events);
+              sessionRef.set(session);
+              return session;
+            })) {
+      client.connect();
+      LockingSession session = requireNonNull(sessionRef.get());
+      CompletableFuture<CommandResult> selected =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, true), CommandMode.selectBeforeOperate())
+              .toCompletableFuture();
+      Asdu selectReply =
+          reply(session.delegate.sentAsdus().get(0), Cause.ACTIVATION_CONFIRMATION, false);
+      session.pauseExecute = true;
+      ExecutorService workers = Executors.newFixedThreadPool(2);
+      try {
+        Future<?> receive = workers.submit(() -> session.delegate.deliverAsdu(selectReply));
+        assertTrue(session.executeSendEntered.await(5, TimeUnit.SECONDS));
+        session.delegate.fireConnectionLost(null);
+        assertFailure(selected, ConnectionClosedException.class);
+        Future<CompletionStage<Void>> submission = workers.submit(client::connectAsync);
+        CompletionStage<Void> reconnect = submission.get(5, TimeUnit.SECONDS);
+        assertFalse(
+            reconnect.toCompletableFuture().isDone(), "reset must await the old submission");
+        session.releaseExecuteSend.countDown();
+        receive.get(5, TimeUnit.SECONDS);
+        reconnect.toCompletableFuture().get(5, TimeUnit.SECONDS);
+        assertEquals(
+            1, session.delegate.sentAsdus().size(), "EXECUTE cannot reach the new connection");
+      } finally {
+        session.releaseExecuteSend.countDown();
+        workers.shutdownNow();
+        assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+      }
+    }
+  }
+
+  @Test
+  void failedSessionResetDoesNotPreventLaterConnection() {
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    var config = ClientConfig.builder().callbackExecutor(Runnable::run).build();
+    try (var client =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            config,
+            (events, scheduler) -> {
+              var session = new LockingSession(events);
+              sessionRef.set(session);
+              return session;
+            })) {
+      LockingSession session = requireNonNull(sessionRef.get());
+      session.failNextConnect = true;
+      assertFailure(client.connectAsync().toCompletableFuture(), IllegalStateException.class);
+      client.connect();
+      CompletableFuture<CommandResult> result =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, true), CommandMode.directExecute())
+              .toCompletableFuture();
+      session.delegate.deliverAsdu(
+          reply(session.delegate.sentAsdus().get(0), Cause.ACTIVATION_CONFIRMATION, false));
+      assertTrue(result.join().positive());
+    }
+  }
+
+  private static void awaitLatch(CountDownLatch latch) {
+    try {
+      assertTrue(latch.await(5, TimeUnit.SECONDS));
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    }
+  }
+
+  /** Models a real session's lock held while delivering callbacks. */
+  private static final class LockingSession implements Session {
+    final FakeSession delegate;
+    final ReentrantLock lock = new ReentrantLock();
+    final CountDownLatch competingSendEntered = new CountDownLatch(1);
+    final CountDownLatch executeSendEntered = new CountDownLatch(1);
+    final CountDownLatch releaseExecuteSend = new CountDownLatch(1);
+    boolean pauseExecute;
+    boolean failNextSend;
+    boolean failNextConnect;
+
+    LockingSession(Session.Events events) {
+      delegate = FakeSession.client(events);
+    }
+
+    @Override
+    public void onConnected() {
+      if (failNextConnect) {
+        failNextConnect = false;
+        throw new IllegalStateException("injected reset failure");
+      }
+      delegate.onConnected();
+    }
+
+    @Override
+    public CompletionStage<Void> startDataTransfer() {
+      return delegate.startDataTransfer();
+    }
+
+    @Override
+    public CompletionStage<Void> stopDataTransfer() {
+      return delegate.stopDataTransfer();
+    }
+
+    @Override
+    public boolean isDataTransferStarted() {
+      return delegate.isDataTransferStarted();
+    }
+
+    @Override
+    public void sendAsdu(Asdu asdu) {
+      if (failNextSend) {
+        failNextSend = false;
+        throw new IllegalStateException("injected send failure");
+      }
+      if (pauseExecute
+          && asdu.objects().get(0) instanceof SingleCommand command
+          && !command.qualifier().select()) {
+        executeSendEntered.countDown();
+        awaitLatch(releaseExecuteSend);
+      }
+      if (asdu.objects().get(0).address().equals(InformationObjectAddress.of(101))) {
+        competingSendEntered.countDown();
+      }
+      try {
+        // Interruptible only so a failing regression can unwind the blocked sender and release
+        // its facade-side lock instead of leaving deadlocked test threads behind.
+        lock.lockInterruptibly();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(e);
+      }
+      try {
+        delegate.sendAsdu(asdu);
+      } finally {
+        lock.unlock();
+      }
+    }
+
+    @Override
+    public boolean awaitSendCapacity(long timeoutMillis) {
+      return true;
+    }
+
+    @Override
+    public int pendingSendCount() {
+      return delegate.pendingSendCount();
+    }
+
+    @Override
+    public void close() {
+      delegate.close();
     }
   }
 
