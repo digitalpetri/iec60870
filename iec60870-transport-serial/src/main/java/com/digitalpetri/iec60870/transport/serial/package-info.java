@@ -23,8 +23,11 @@
  *
  * <p>A dedicated reader thread does semi-blocking bulk reads into a reusable buffer and feeds the
  * incremental deframer, delivering each assembled frame to the registered {@link
- * com.digitalpetri.iec60870.transport.TransportListener}. Sends write, flush, and release one whole
- * frame on the calling thread.
+ * com.digitalpetri.iec60870.transport.TransportListener}. Sends enqueue a whole frame for a
+ * dedicated writer thread, which preserves frame order and releases each buffer after the driver
+ * write. The returned stage succeeds after the complete frame is written and fails on write failure
+ * or connection loss. Teardown fails outstanding sends before reporting loss to the listener and
+ * releases queued buffers; the writer releases any buffer it already holds when the driver returns.
  */
 @org.jspecify.annotations.NullMarked
 package com.digitalpetri.iec60870.transport.serial;
