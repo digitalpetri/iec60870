@@ -35,11 +35,12 @@ import org.slf4j.LoggerFactory;
  * and its data-flow-control (DFC) back-pressure flag.
  *
  * <p><b>Per-slave bring-up.</b> Each configured slave is brought up independently with a
- * request-status-of-link (FC9) followed, on a status-of-link (FC11) reply, by a
+ * request-status-of-link (FC9) followed, on a status-of-link (FC11) reply with DFC=0, by a
  * reset-of-remote-link (FC0); the positive acknowledgement of the reset transitions that slave to
- * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}. Bring-up is scheduled
- * <em>fairly</em>: it is the lowest-priority bus activity (behind commands and polls to slaves that
- * are already available), it round-robins across the not-yet-reset slaves, and the request-status
+ * {@link LinkState#AVAILABLE available} and restarts its FCB at {@code 1}. A busy status (DFC=1)
+ * releases the bus for other slaves and defers this slave's next status request until the next poll
+ * tick. Bring-up is scheduled <em>fairly</em>: bus turns rotate among commands, due polls, and
+ * bring-up. Bring-up round-robins across the not-yet-reset slaves, and the request-status
  * retransmissions of an unresponsive slave <em>release the bus</em> between probes whenever other
  * work could run, so a single dead slave cannot monopolize the shared bus for its whole retransmit
  * budget while polls and commands to healthy slaves wait. The dead slave is still degraded to
@@ -105,6 +106,13 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    */
   private static final int MAX_ACD_DRAIN = 16;
 
+  /** Activities that take turns on the shared bus, skipping any without eligible work. */
+  private enum BusActivity {
+    COMMAND,
+    POLL,
+    BRING_UP
+  }
+
   /** The bring-up / availability state of a single configured secondary station. */
   private enum LinkState {
 
@@ -145,6 +153,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     private LinkState linkState = LinkState.UNRESET;
     private boolean nextFcb = true; // FCB for this slave's next FCV=1 frame; true after a reset
     private boolean dfc; // the slave's last-reported data-flow-control (receive-buffer-full) bit
+    private boolean statusDeferred; // a busy startup reply defers the next FC9 until a poll tick
 
     // Unanswered request-status-of-link (FC9) bring-up transmissions accumulated for this slave.
     // Counted per slave (not on the shared retryCount) so that bring-up can yield the bus between
@@ -203,6 +212,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
   private boolean pollPending; // a class-2 poll is owed (set on a poll tick, consumed by pump())
   private int pollCursor; // round-robin index into slaveAddresses for the next poll
   private int bringUpCursor; // round-robin index into slaveAddresses for the next bring-up
+  private BusActivity nextBusActivity = BusActivity.COMMAND;
 
   // Timer handles and the generation counters that invalidate stale dispatched tasks.
   private @Nullable ScheduledFuture<?> confirmFuture;
@@ -525,77 +535,69 @@ final class UnbalancedMasterEngine implements Ft12Engine {
   // --- Bus loop (lock held) -------------------------------------------------------------------
 
   /**
-   * Advances the single-transaction bus loop, sending the next eligible frame while the bus is
-   * idle.
-   *
-   * <p>Acts only while data transfer is started and the bus is free ({@code pending == null}). The
-   * priority order is: (1) deliver the first command whose target slave can accept it now, scanning
-   * past a leading command for a not-yet-ready slave (still being brought up, or
-   * DFC-back-pressured) so it does not starve commands to other ready slaves (rejecting a command
-   * for an unconfigured or failed slave with a synthesized negative confirmation rather than
-   * silently dropping it, sending broadcasts immediately); (2) on a due poll tick, request class-2
-   * data from the next available slave; (3) bring up the next not-yet-reset slave, round robin
-   * across the configured secondaries.
-   *
-   * <p>Bring-up is the <em>lowest</em> priority on purpose: servicing a slave that is already
-   * available must never be starved by bringing up a not-yet-available one. Together with the
-   * round-robin bring-up cursor and the bus yield in {@link #onRequestStatusTimeout(Pending)}, this
-   * keeps a single unresponsive slave from monopolizing the shared bus for its whole retransmit
-   * budget while polls and commands to healthy slaves wait.
+   * Advances the shared bus while it is idle, rotating among commands, due polls, and bring-up.
+   * Activities without eligible work are skipped. Retransmissions and bounded ACD drains finish
+   * before the rotation resumes.
    */
   private void pump() {
     while (!closed && started && pending == null) {
-      // Priority 1: deliver the first command whose target slave can accept it now. Scanning past a
-      // leading command for a not-yet-ready slave — one still being brought up (UNRESET) or
-      // available but DFC-back-pressured — keeps a single blocked slave from starving commands to
-      // other ready slaves (cross-slave head-of-line blocking). Queue order is otherwise preserved,
-      // so two commands for the same slave keep their submission order (deliverability is constant
-      // within a scan, so the earliest command for any slave is always reached first).
-      Asdu command = removeFirstDeliverableCommand();
-      if (command != null) {
-        int target = commonAddressOf(command);
-        if (target == broadcastAddress) {
-          sendBroadcast(command);
-          continue; // FC4 expects no reply; the bus is free again.
+      boolean worked = false;
+      for (int i = 0; i < 3 && !worked; i++) {
+        switch (nextBusActivity) {
+          case COMMAND -> {
+            nextBusActivity = BusActivity.POLL;
+            worked = trySendCommand();
+          }
+          case POLL -> {
+            nextBusActivity = BusActivity.BRING_UP;
+            if (pollPending) {
+              pollPending = false;
+              Integer slave = nextSlaveToPoll();
+              if (slave != null) {
+                sendPollClass2(slave);
+                worked = true;
+              }
+            }
+          }
+          case BRING_UP -> {
+            nextBusActivity = BusActivity.COMMAND;
+            Integer unreset = nextSlaveToBringUp();
+            if (unreset != null) {
+              sendRequestStatus(unreset);
+              worked = true;
+            }
+          }
         }
-        SlaveState slave = slaves.get(target);
-        if (slave == null || slave.linkState == LinkState.ERROR) {
-          LOGGER.debug(
-              "rejecting command for {} slave (CA={}) with a negative confirmation",
-              slave == null ? "unconfigured" : "failed",
-              target);
-          rejectUndeliverable(command);
-          continue; // the bus is still free; the loop guard re-checks closed/started
-        }
-        // The target is available and not back-pressured: send it as send/confirm user data.
-        if (sendUserData(target, command)) {
-          return; // a user-data transaction is now outstanding; the bus is busy
-        }
-        // Framing the user data failed (e.g. an oversized ASDU): the command was rejected locally
-        // and the bus is still free, so keep scanning for other work rather than stalling.
-        continue;
       }
-
-      // Priority 2: cadence-driven class-2 poll of the next available slave.
-      if (pollPending) {
-        pollPending = false;
-        Integer slave = nextSlaveToPoll();
-        if (slave != null) {
-          sendPollClass2(slave);
-          return;
-        }
-        // No available slave to poll this tick; fall through to bring-up.
+      if (!worked) {
+        return; // nothing to do until the next command, response, or poll tick
       }
-
-      // Priority 3: bring up the next not-yet-reset slave (round robin across the secondaries).
-      Integer unreset = nextSlaveToBringUp();
-      if (unreset != null) {
-        sendRequestStatus(unreset);
-        return;
-      }
-
-      return; // nothing to do until the next ack or poll tick
     }
+  }
+
+  private boolean trySendCommand() {
+    // Scan past commands for UNRESET or DFC-blocked slaves while retaining each slave's FIFO order.
+    Asdu command = removeFirstDeliverableCommand();
+    if (command == null) {
+      return false;
+    }
+    int target = commonAddressOf(command);
+    if (target == broadcastAddress) {
+      sendBroadcast(command);
+    } else {
+      SlaveState slave = slaves.get(target);
+      if (slave == null || slave.linkState == LinkState.ERROR) {
+        LOGGER.debug(
+            "rejecting command for {} slave (CA={}) with a negative confirmation",
+            slave == null ? "unconfigured" : "failed",
+            target);
+        rejectUndeliverable(command);
+      } else {
+        sendUserData(target, command);
+      }
+    }
+    // A broadcast or local rejection also consumes its turn, even though the bus remains free.
+    return true;
   }
 
   /**
@@ -632,8 +634,8 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * #onRequestStatusTimeout(Pending)} yields the bus after a dead slave's probe times out, the next
    * bring-up turn lands on a different slave instead of immediately re-probing the dead one.
    *
-   * @return the link address of the next slave awaiting bring-up, or {@code null} if every
-   *     configured slave is already available or has been degraded to error.
+   * @return the link address of the next slave eligible for bring-up, or {@code null} if every
+   *     configured slave is available, failed, or deferred after a busy status reply.
    */
   private @Nullable Integer nextSlaveToBringUp() {
     int n = slaveAddresses.size();
@@ -641,7 +643,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       int index = (bringUpCursor + i) % n;
       int address = slaveAddresses.get(index);
       SlaveState slave = slaves.get(address);
-      if (slave != null && slave.linkState == LinkState.UNRESET) {
+      if (slave != null && slave.linkState == LinkState.UNRESET && !slave.statusDeferred) {
         bringUpCursor = (index + 1) % n;
         return address;
       }
@@ -664,7 +666,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
         continue;
       }
       SlaveState slave = slaves.get(address);
-      if (slave != null && slave.linkState == LinkState.UNRESET) {
+      if (slave != null && slave.linkState == LinkState.UNRESET && !slave.statusDeferred) {
         return true;
       }
     }
@@ -792,7 +794,17 @@ final class UnbalancedMasterEngine implements Ft12Engine {
             slave.dfc = dfc;
             slave.bringUpRetries = 0; // the slave answered: the FC9 retransmission budget resets
           }
-          sendReset(p.slaveAddress()); // proceed to the reset-of-remote-link, same slave
+          if (dfc) {
+            // The secondary answered but cannot accept reset yet (IEC 101 Figure 5). Retry status
+            // on the poll cadence without occupying the bus or spending the silent-peer budget.
+            if (slave != null) {
+              slave.statusDeferred = true;
+            }
+            pending = null;
+            pump();
+          } else {
+            sendReset(p.slaveAddress());
+          }
         } else {
           LOGGER.debug(
               "unexpected response FC{} to request-status-of-link from slave {}",
@@ -1188,6 +1200,9 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       }
       armPollTimer(); // keep the cadence ticking
       pollPending = true;
+      for (SlaveState slave : slaves.values()) {
+        slave.statusDeferred = false;
+      }
       pump();
     } finally {
       lock.unlock();
@@ -1215,6 +1230,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     pollPending = false;
     pollCursor = 0;
     bringUpCursor = 0;
+    nextBusActivity = BusActivity.COMMAND;
     commandQueue.clear();
     slaves.clear();
     for (int address : slaveAddresses) {

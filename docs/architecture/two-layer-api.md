@@ -166,6 +166,9 @@ implements the standard outstation behavior and an `*Async` variant. A handler i
 `ServerContext` exposing the connection's `remoteAddress()`, the matched `station()`, default-answer
 helpers (`defaultInterrogation`, `defaultRead`), and a raw `send(Asdu)` escape hatch. A command is
 answered with a `CommandDecision` (`accept()`, `acceptAndUpdate(value)`, or `reject(cause)`).
+Solicited replies preserve the request's originator address, including negative replies and
+interrogation data. Published updates and command return information use the default originator
+address (zero).
 
 ```java
 ServerHandler handler = new ServerHandler() {
