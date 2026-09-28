@@ -491,7 +491,8 @@ final class BalancedEngine implements Ft12Engine {
 
   private void bringUpComplete(boolean busy) {
     cancelConfirmTimer();
-    pending = null;
+    // Start completion callbacks can send inline, so establish the busy gate before notifying them.
+    pending = busy ? PendingPrimary.BUSY_STATUS : null;
     retryCount = 0;
     // A fresh reset: the primary FCB starts at 1 and the secondary expects 0, on both ends.
     nextFcb = true;
@@ -503,6 +504,9 @@ final class BalancedEngine implements Ft12Engine {
       events.onDataTransferStateChanged(true);
     }
     completePendingStart();
+    if (closed) {
+      return;
+    }
     if (busy) {
       beginBusyWait();
     } else {

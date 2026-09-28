@@ -155,6 +155,52 @@ class BalancedEngineBackpressureTest {
   }
 
   @Test
+  void busyResetAckBlocksDataSentInlineByTheStartCompletion() {
+    var fixture = new Fixture();
+    Asdu asdu = readAsdu(1);
+    CompletableFuture<Void> sent =
+        fixture
+            .engine
+            .startDataTransfer()
+            .thenRun(() -> fixture.engine.sendAsdu(asdu))
+            .toCompletableFuture();
+    fixture.takeStatusProbe();
+    fixture.reply(11, false);
+    fixture.takePrimary(0);
+
+    fixture.reply(0, true);
+    assertTrue(sent.isDone());
+    assertFalse(sent.isCompletedExceptionally());
+    fixture.takeStatusProbe();
+    fixture.assertNoOutput();
+    assertEquals(1, fixture.engine.pendingSendCount());
+
+    fixture.reply(11, false);
+    Ft12Frame.Variable data = fixture.takeData();
+    assertEquals(asdu, data.asdu());
+    assertTrue(data.control().fcb());
+    fixture.reply(0, false);
+    fixture.assertNoOutput();
+  }
+
+  @Test
+  void busyResetAckDoesNotProbeAfterTheStartCompletionClosesTheEngine() {
+    var fixture = new Fixture();
+    CompletableFuture<Void> closed =
+        fixture.engine.startDataTransfer().thenRun(fixture.engine::close).toCompletableFuture();
+    fixture.takeStatusProbe();
+    fixture.reply(11, false);
+    fixture.takePrimary(0);
+
+    fixture.reply(0, true);
+    assertTrue(closed.isDone());
+    assertFalse(closed.isCompletedExceptionally());
+    fixture.assertNoOutput();
+    fixture.scheduler.advance(5000, TimeUnit.MILLISECONDS);
+    fixture.assertNoOutput();
+  }
+
+  @Test
   void busyKeepaliveStatusBlocksQueuedAndNewDataUntilAReadyStatus() {
     var fixture = new Fixture();
     fixture.bringUp();
