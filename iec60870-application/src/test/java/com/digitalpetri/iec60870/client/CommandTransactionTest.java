@@ -548,6 +548,11 @@ class CommandTransactionTest {
       }
     }
 
+    public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
+      sendAsdu(asdu);
+      return CompletableFuture.completedFuture(null);
+    }
+
     @Override
     public boolean awaitSendCapacity(long timeoutMillis) {
       return true;

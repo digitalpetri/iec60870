@@ -241,10 +241,10 @@ class Cs101OverTcpIntegrationTest {
 
     Iec60870Client client =
         TcpIec101Client.builder()
-            .originatorAddress(originator)
             .host("127.0.0.1")
             .port(port)
             .profile(PROFILE)
+            .originatorAddress(originator)
             .linkSettings(LinkSettings.balanced().build())
             .startDataTransferOnConnect(true)
             .build();
