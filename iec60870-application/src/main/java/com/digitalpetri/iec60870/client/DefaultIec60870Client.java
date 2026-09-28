@@ -1063,9 +1063,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
       if (!asdu.commonAddress().equals(point.commonAddress())) {
         return Outcome.IGNORED;
       }
-      // A negative read confirmation (C_RD_NA_1 with P/N=1) ends the request.
+      // A rejected read mirrors the requested IOA (IEC 60870-5-101, 7.4.14). Reads of
+      // different points may coexist, so only the echoed point can identify the failed request.
       if (asdu.type() == AsduType.C_RD_NA_1) {
-        if (asdu.negative()) {
+        if (asdu.negative()
+            && asdu.objects().size() == 1
+            && asdu.objects().get(0) instanceof ReadCommand command
+            && command.address().equals(point.objectAddress())) {
           negativeConfirmation = asdu;
           return Outcome.FAILED;
         }
