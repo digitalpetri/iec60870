@@ -688,10 +688,11 @@ public final class ApciSession implements Session {
   }
 
   private void flushSendQueue(@Nullable Entry synchronousSubmission) {
-    if (role == Role.SERVER && !dataTransferStarted) {
-      return;
-    }
     while (!sendQueue.isEmpty() && sequenceDistance(ackSequenceNumber, sendSequenceNumber) < k) {
+      // A write completion can stop data transfer before the next queued write.
+      if (role == Role.SERVER && !dataTransferStarted) {
+        return;
+      }
       // output.send(...) may re-enter and close the session (a synchronous transport-send failure);
       // stop draining and arming timers if that happens.
       if (closed) {
