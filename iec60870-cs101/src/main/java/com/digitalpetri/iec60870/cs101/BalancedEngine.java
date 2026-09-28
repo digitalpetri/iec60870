@@ -488,7 +488,8 @@ final class BalancedEngine implements Ft12Engine {
     // Start completion callbacks can send inline, so establish the busy gate before notifying them.
     pending = busy ? PendingPrimary.BUSY_STATUS : null;
     retryCount = 0;
-    // A fresh reset: the primary FCB starts at 1 and the secondary expects 0, on both ends.
+    // Initialize this CLIENT's primary sequence and secondary receive state. The peer resets
+    // only its secondary when it receives our FC0; its primary sequence remains independent.
     nextFcb = true;
     secondaryReset = true;
     expectedFcb = false;
@@ -670,17 +671,11 @@ final class BalancedEngine implements Ft12Engine {
   }
 
   private void handleResetFromPeer() {
-    // The peer reset the link: reset our secondary and primary FCB state for a fresh link.
+    // FC0 resets our secondary process only (IEC 60870-5-101 6.2.1.2). The independent
+    // primary process keeps its FCB, outstanding transaction, and confirmation deadline.
     secondaryReset = true;
     expectedFcb = false;
-    nextFcb = true;
     lastSecondaryResponse = null;
-    // Abandon any primary transaction the peer's reset stranded in flight before flushing. Leaving
-    // it pending would wedge the send queue behind a confirmation that can no longer come, and the
-    // confirm timer would retransmit its now stale-FCB frame to a freshly reset peer that has
-    // discarded the secondary state needed to recognize the retransmission — delivering the ASDU a
-    // second time. See abortPendingForPeerReset.
-    abortPendingForPeerReset();
     if (!linkAvailable) {
       linkAvailable = true;
       events.onDataTransferStateChanged(true);
@@ -689,44 +684,8 @@ final class BalancedEngine implements Ft12Engine {
     if (closed) {
       return;
     }
-    // The link is now available in both directions: flush any user data still queued (never
-    // transmitted, so safe to send fresh after the reset).
+    // Initial bring-up may release queued data; an outstanding primary still owns the window.
     flushSendQueue();
-  }
-
-  /**
-   * Abandons any primary transaction left in flight when the peer reset the link.
-   *
-   * <p>A reset-of-remote-link re-initializes the link in both directions, so the peer has discarded
-   * the secondary state — its expected FCB and cached response — that would otherwise recognize a
-   * retransmission. Retransmitting the in-flight frame across that boundary would therefore be
-   * delivered as a fresh frame, a duplicate of an ASDU the peer may already have delivered before
-   * it reset; its outcome is now unknowable. The engine drops it rather than re-sending it
-   * (at-most-once across a reset, consistent with the connection re-initialization in {@link
-   * #onConnected()}): it cancels the confirm/repeat timer, clears the pending slot, and realigns
-   * {@link #pendingFcb} with the freshly reset primary sequence so no stale-FCB frame can be
-   * retransmitted. Never-transmitted ASDUs still queued behind it are untouched and are flushed by
-   * the caller with fresh FCBs. An idle keep-alive probe is likewise abandoned; an in-progress
-   * bring-up handshake — not expected on a well-behaved balanced link, where only a {@code CLIENT}
-   * drives bring-up and its {@code SERVER} peer never resets it — is left to its own confirm timer.
-   */
-  private void abortPendingForPeerReset() {
-    PendingPrimary current = pending;
-    if (current == null) {
-      return;
-    }
-    switch (current) {
-      case USER_DATA, KEEPALIVE -> {
-        cancelConfirmTimer();
-        pending = null;
-        pendingDataAsdu = null;
-        pendingFcb = nextFcb;
-        retryCount = 0;
-      }
-      case BRING_UP_STATUS, BRING_UP_RESET -> {
-        // Leave the bring-up handshake's confirm timer to resolve or time it out.
-      }
-    }
   }
 
   private void handleTestFunction(LinkControlField control) {

@@ -108,7 +108,18 @@ Blocking methods are the primary surface; each has an `*Async` variant returning
 qualifier, and an optional `Instant` time tag — but **not** the select/execute flag. The service
 chooses select-vs-execute from a `CommandMode` (`directExecute()` or `selectBeforeOperate()`) when it
 builds the wire ASDU, and picks the time-tagged TypeID (e.g. `C_SC_TA_1`) when the command carries a
-time. A command completes with a `CommandResult(target, positive, cause, confirmation)` rather than
+time. One pending operation reserves the command family and point through both SELECT and EXECUTE.
+A positive SELECT confirmation queues EXECUTE while retaining that reservation; connection loss
+invalidates it before any delayed continuation can use a replacement connection. Each confirmation
+must mirror the transmitted command's exact type, object (including phase, value, qualifier, and
+time) and test flag. The reply's originator address must match the command or be zero (unused).
+A one-octet cause of transmission omits the originator octet, so its decoded replies use zero;
+zero is also accepted from peers that do not use originator addresses. A different nonzero
+originator is rejected. ACT_CON and mirrored negative error causes are accepted; DEACT_CON does
+not confirm an activation. Identical stale replies remain indistinguishable because the protocol
+carries no request identifier.
+
+A command completes with a `CommandResult(target, positive, cause, confirmation)` rather than
 throwing on a protocol-level rejection: `positive() == false` means the station returned a negative
 confirmation. Transport and session failures (timeout, disconnect) still surface as exceptions.
 
@@ -121,8 +132,15 @@ CommandResult sbo = client.commands()
 
 **Interrogation.** `interrogate` sends `C_IC_NA_1 ACT`, awaits the positive `ACT_CON` (else a
 `NegativeConfirmationException`), collects the reported objects until `ACT_TERM`, and returns an
-`InterrogationResult(station, objects, terminated)`. `result.pointValues()` projects the monitor
-objects onto `PointEntry(PointAddress, PointValue<?>)` entries, skipping non-monitor objects.
+`InterrogationResult(station, objects, terminated)`. Confirmations and terminations must echo the
+requested qualifier and IOA; termination is accepted only after confirmation. Collected data must
+carry the cause for the requested station or group (20..36), and all replies must match the request's
+test flag. With a two-octet cause of transmission, replies may carry the requested originator or the
+default originator (OA 0); another nonzero originator is ignored. With a one-octet cause of
+transmission, no originator field is transmitted or compared. A late reply for another group cannot
+complete or add data to the request.
+`result.pointValues()` projects the monitor objects onto `PointEntry(PointAddress, PointValue<?>)`
+entries, skipping non-monitor objects.
 
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,

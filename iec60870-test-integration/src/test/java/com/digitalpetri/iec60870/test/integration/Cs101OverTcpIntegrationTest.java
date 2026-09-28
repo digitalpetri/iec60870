@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.Command;
+import com.digitalpetri.iec60870.client.CommandMode;
 import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
@@ -29,6 +32,7 @@ import com.digitalpetri.iec60870.tcp.TcpIec101Server;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -46,12 +50,12 @@ import org.junit.jupiter.api.Test;
  * and every stop-and-wait acknowledgement here cross a real TCP connection on Netty's event loops,
  * so {@link Iec60870Client#connect() connect()} drives the balanced bring-up over the wire and the
  * tests use bounded {@link Await} polling rather than fixed sleeps for the asynchronous spontaneous
- * delivery. One station hosts a reported monitor point and a commandable point; the three tests
- * cover the three FT1.2 message directions over the balanced link — a controlling-station
- * interrogation, a controlling-station command, and a controlled-station spontaneous publish — and
- * each asserts up front, through the shared {@link #startAndConnect(ServerHandler) wiring helper},
- * that {@code connect()} both connected the transport and started data transfer (the balanced link
- * reset completed). Per-test teardown closes both facades.
+ * delivery. One station hosts a reported monitor point and a commandable point; the tests cover the
+ * three FT1.2 message directions over the balanced link — a controlling-station interrogation, a
+ * controlling-station command, and a controlled-station spontaneous publish — and each asserts up
+ * front, through the shared {@link #startAndConnect(ServerHandler) wiring helper}, that {@code
+ * connect()} both connected the transport and started data transfer (the balanced link reset
+ * completed). Per-test teardown closes both facades.
  */
 class Cs101OverTcpIntegrationTest {
 
@@ -113,6 +117,34 @@ class Cs101OverTcpIntegrationTest {
         "the reported monitor point should be returned by general interrogation");
   }
 
+  @Test
+  void interrogationOmitsConfiguredOriginatorWithOneOctetCot() throws Exception {
+    EventCollector events = startAndConnect(new ServerHandler() {}, OriginatorAddress.of(5));
+    Iec60870Client client = requireNonNull(this.client);
+
+    InterrogationResult result =
+        client.interrogateAsync(STATION).toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+    assertTrue(result.terminated());
+    assertEquals(
+        List.of(MONITOR_POINT),
+        result.pointValues().stream().map(InterrogationResult.PointEntry::address).toList());
+    for (Cause cause :
+        List.of(
+            Cause.ACTIVATION_CONFIRMATION,
+            Cause.INTERROGATED_BY_STATION,
+            Cause.ACTIVATION_TERMINATION)) {
+      Await.until(
+          "decoded interrogation reply with no originator for " + cause,
+          () ->
+              events.hasMatch(
+                  ClientEvent.AsduReceived.class,
+                  event ->
+                      event.asdu().cause() == cause
+                          && event.asdu().originatorAddress().equals(OriginatorAddress.none())));
+    }
+  }
+
   /**
    * A single command over the 101-over-TCP balanced link is confirmed positively and the server
    * handler observes the command.
@@ -140,6 +172,30 @@ class Cs101OverTcpIntegrationTest {
         COMMAND_POINT,
         commanded.get(),
         "the server handler must have been invoked for the command");
+  }
+
+  @Test
+  void commandsWithConfiguredOriginatorWorkWithoutOriginatorOctet() throws IOException {
+    startAndConnect(
+        new ServerHandler() {
+          @Override
+          public CommandDecision onCommand(ServerContext context, CommandRequest request) {
+            return CommandDecision.accept();
+          }
+        },
+        OriginatorAddress.of(5));
+    Iec60870Client client = requireNonNull(this.client);
+
+    CommandResult direct = client.commands().single(COMMAND_POINT, true);
+    assertTrue(direct.positive());
+    assertEquals(OriginatorAddress.none(), direct.confirmation().orElseThrow().originatorAddress());
+    CommandResult selected =
+        client
+            .commands()
+            .send(Command.single(COMMAND_POINT, false), CommandMode.selectBeforeOperate());
+    assertTrue(selected.positive());
+    assertEquals(
+        OriginatorAddress.none(), selected.confirmation().orElseThrow().originatorAddress());
   }
 
   /**
@@ -177,6 +233,11 @@ class Cs101OverTcpIntegrationTest {
    * @throws IOException if an ephemeral loopback port cannot be reserved.
    */
   private EventCollector startAndConnect(ServerHandler handler) throws IOException {
+    return startAndConnect(handler, OriginatorAddress.none());
+  }
+
+  private EventCollector startAndConnect(ServerHandler handler, OriginatorAddress originator)
+      throws IOException {
     int port = reserveEphemeralPort();
 
     Station station =
@@ -212,6 +273,7 @@ class Cs101OverTcpIntegrationTest {
             .host("127.0.0.1")
             .port(port)
             .profile(PROFILE)
+            .originatorAddress(originator)
             .linkSettings(LinkSettings.balanced().build())
             .startDataTransferOnConnect(true)
             .build();

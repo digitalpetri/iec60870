@@ -317,6 +317,36 @@ class ClientVsLib60870ServerInteropTest {
     assertFalse(values.containsKey((long) IOA_SINGLE), "1000 must not be in group 2");
   }
 
+  @Test
+  @DisplayName("Station and group interrogations collect OA0 data for the requesting originator")
+  void interrogationCollectsDefaultOriginatorData() {
+    for (QualifierOfInterrogation qoi :
+        List.of(
+            QualifierOfInterrogation.STATION,
+            QualifierOfInterrogation.GROUP_1,
+            QualifierOfInterrogation.GROUP_2)) {
+      events().clear();
+      InterrogationResult result = client().interrogate(STATION, qoi);
+      assertTrue(result.terminated());
+      assertEquals(7, result.objects().size(), "all OA0 points must be collected for " + qoi);
+      for (Cause cause :
+          List.of(
+              Cause.ACTIVATION_CONFIRMATION,
+              Cause.fromValue(qoi.value().intValue()),
+              Cause.ACTIVATION_TERMINATION)) {
+        Asdu response = events().awaitAsdu(asdu -> asdu.cause() == cause, WAIT_TIMEOUT);
+        assertNotNull(response, "interrogation response must carry " + cause);
+        assertFalse(response.test());
+        assertEquals(
+            cause == Cause.fromValue(qoi.value().intValue())
+                ? OriginatorAddress.none()
+                : OriginatorAddress.of(3),
+            response.originatorAddress(),
+            "OA3 request receives OA3 controls and OA0 data: " + response);
+      }
+    }
+  }
+
   // --- Counter interrogation ------------------------------------------------------------------
 
   @Test
