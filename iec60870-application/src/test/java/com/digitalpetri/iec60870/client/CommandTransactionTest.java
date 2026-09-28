@@ -109,6 +109,80 @@ class CommandTransactionTest {
   }
 
   @Test
+  void originatorNoneConfirmsDirectCommand() {
+    try (Harness h = new Harness(Runnable::run)) {
+      CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), false);
+      h.session()
+          .deliverAsdu(
+              reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false, OriginatorAddress.none()));
+      assertTrue(
+          result.isDone(), "a peer that does not use originator addresses can confirm the command");
+      assertTrue(result.join().positive());
+      assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void originatorNoneConfirmsSelectAndExecute() {
+    try (Harness h = new Harness(Runnable::run)) {
+      CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
+      h.session()
+          .deliverAsdu(
+              reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false, OriginatorAddress.none()));
+      assertEquals(
+          2, h.session().sentAsdus().size(), "SELECT without an originator can advance to EXECUTE");
+      assertFalse(result.isDone());
+      h.session()
+          .deliverAsdu(
+              reply(h.sent(1), Cause.ACTIVATION_CONFIRMATION, false, OriginatorAddress.none()));
+      assertTrue(result.isDone());
+      assertTrue(result.join().positive());
+      assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void originatorNoneStillRequiresMatchingCommand() {
+    try (Harness h = new Harness(Runnable::run)) {
+      Command command = new Command.SingleCommandRequest(POINT, true, 2, Optional.of(TIME));
+      CompletableFuture<CommandResult> result = h.send(command, true);
+      Asdu request = h.sent(0);
+      for (String mismatch : List.of("phase", "value", "qualifier", "time")) {
+        Asdu wrong = mismatchedReply(request, mismatch);
+        h.session()
+            .deliverAsdu(reply(wrong, wrong.cause(), wrong.negative(), OriginatorAddress.none()));
+        assertEquals(
+            1, h.session().sentAsdus().size(), mismatch + " must still match when OA is unused");
+        assertFalse(result.isDone());
+      }
+      h.session()
+          .deliverAsdu(
+              reply(request, Cause.ACTIVATION_CONFIRMATION, false, OriginatorAddress.none()));
+      assertEquals(2, h.session().sentAsdus().size());
+      h.session()
+          .deliverAsdu(
+              reply(h.sent(1), Cause.ACTIVATION_CONFIRMATION, false, OriginatorAddress.none()));
+      assertTrue(result.isDone());
+      assertTrue(result.join().positive());
+    }
+  }
+
+  @Test
+  void originatorNoneCanRejectSelect() {
+    try (Harness h = new Harness(Runnable::run)) {
+      CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
+      h.session()
+          .deliverAsdu(
+              reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, true, OriginatorAddress.none()));
+      assertTrue(
+          result.isDone(), "an originator-free negative reply must reject the matching SELECT");
+      assertFalse(result.join().positive());
+      assertEquals(1, h.session().sentAsdus().size(), "a rejected SELECT must not send EXECUTE");
+      assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
   void duplicateSelectConfirmationDoesNotConfirmExecute() {
     try (Harness h = new Harness(Runnable::run)) {
       CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
@@ -525,13 +599,18 @@ class CommandTransactionTest {
   }
 
   private static Asdu reply(Asdu request, Cause cause, boolean negative) {
+    return reply(request, cause, negative, request.originatorAddress());
+  }
+
+  private static Asdu reply(
+      Asdu request, Cause cause, boolean negative, OriginatorAddress originator) {
     return new Asdu(
         request.type(),
         request.sequence(),
         cause,
         negative,
         request.test(),
-        request.originatorAddress(),
+        originator,
         request.commonAddress(),
         request.objects());
   }

@@ -7,6 +7,7 @@ import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
+import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
@@ -974,11 +975,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     Outcome accept(Asdu asdu) {
+      // OA zero means no specific originator: one-octet COT omits OA, and peers may leave it
+      // unused even with two octets. A different nonzero OA still belongs to another source.
       if (executeQueued
           || asdu.type() != activation.type()
           || asdu.sequence() != activation.sequence()
           || asdu.test() != activation.test()
-          || !asdu.originatorAddress().equals(activation.originatorAddress())
+          || (!asdu.originatorAddress().equals(OriginatorAddress.none())
+              && !asdu.originatorAddress().equals(activation.originatorAddress()))
           || !asdu.commonAddress().equals(activation.commonAddress())
           || !asdu.objects().equals(activation.objects())) {
         return Outcome.IGNORED;

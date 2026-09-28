@@ -37,7 +37,10 @@ public interface CommandService {
    * operation; reconnecting never resumes its execute phase.
    *
    * <p>Confirmations must echo the transmitted command, including its value, qualifier, phase, time
-   * tag, type, originator address, and test flag. Replies for distinguishable commands are ignored.
+   * tag, type, and test flag. The reply's originator address must match the command or be zero
+   * (unused). Zero also covers profiles with a one-octet cause of transmission, which omit the
+   * originator address. Replies for distinguishable commands or another nonzero originator are
+   * ignored.
    *
    * @param command the command to send.
    * @param mode the command procedure (direct-execute or select-before-operate).
