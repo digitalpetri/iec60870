@@ -39,8 +39,9 @@ public interface ServerContext {
    * Builds the standard answer to an interrogation from the matched station's value image.
    *
    * <p>Reports every {@linkplain com.digitalpetri.iec60870.point.PointCapability#REPORTED reported}
-   * point selected by the request's qualifier of interrogation. If the request's common address
-   * matches no station, the returned response declines the interrogation with {@link
+   * point selected by the request's qualifier of interrogation, without time tags regardless of the
+   * server's configured time-tag style. If the request's common address matches no station, the
+   * returned response declines the interrogation with {@link
    * com.digitalpetri.iec60870.asdu.Cause#UNKNOWN_COMMON_ADDRESS}.
    *
    * @param request the interrogation request.

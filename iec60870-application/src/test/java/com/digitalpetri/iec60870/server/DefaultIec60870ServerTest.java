@@ -37,6 +37,7 @@ import com.digitalpetri.iec60870.fakes.FakeSession;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.point.Quality;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import com.digitalpetri.iec60870.session.Session;
 import java.net.SocketAddress;
@@ -146,6 +147,67 @@ class DefaultIec60870ServerTest {
     assertEquals(Cause.ACTIVATION_TERMINATION, sent.get(2).cause());
 
     server.close();
+  }
+
+  @Test
+  void defaultInterrogationUsesUntimedData() {
+    assertUntimedInterrogation(ServerConfig.builder(), AsduType.M_SP_TB_1);
+  }
+
+  @Test
+  void cp24InterrogationUsesUntimedData() {
+    assertUntimedInterrogation(
+        ServerConfig.builder().timeTagStyle(TimeTagStyle.CP24), AsduType.M_SP_TA_1);
+  }
+
+  private void assertUntimedInterrogation(ServerConfig.Builder builder, AsduType spontaneousType) {
+    Station station = singlePointStation();
+    PointValue<Boolean> value =
+        PointValue.single(false)
+            .withQuality(Quality.invalidQuality())
+            .withTimestamp(Instant.parse("2026-01-02T03:04:05Z"));
+    station.updateValue(POINT.objectAddress(), value);
+    ServerConfig config = builder.station(station).callbackExecutor(DIRECT).build();
+    try (var server = new DefaultIec60870Server(transport, config, sessionFactory(config))) {
+      server.start();
+      FakeServerTransport.FakeConnection connection = transport.accept("client");
+      connection.startDataTransfer();
+
+      for (QualifierOfInterrogation qoi :
+          List.of(QualifierOfInterrogation.STATION, QualifierOfInterrogation.GROUP_1)) {
+        int before = connection.sentAsdus().size();
+        InterrogationCommand command = new InterrogationCommand(ZERO, qoi);
+        connection.deliverAsdu(control(AsduType.C_IC_NA_1, Cause.ACTIVATION, command));
+
+        assertEquals(before + 3, connection.sentAsdus().size());
+        List<Asdu> replies = connection.sentAsdus().subList(before, before + 3);
+        assertEquals(Cause.ACTIVATION_CONFIRMATION, replies.get(0).cause());
+        assertFalse(replies.get(0).negative());
+        assertEquals(List.of(command), replies.get(0).objects());
+        Asdu monitor = replies.get(1);
+        assertEquals(AsduType.M_SP_NA_1, monitor.type());
+        assertEquals(
+            qoi.equals(QualifierOfInterrogation.STATION)
+                ? Cause.INTERROGATED_BY_STATION
+                : Cause.INTERROGATED_BY_GROUP_1,
+            monitor.cause());
+        assertEquals(CA, monitor.commonAddress());
+        assertEquals(
+            List.of(
+                new SinglePointInformation(POINT.objectAddress(), false, value.quality().toQds())),
+            monitor.objects());
+        assertEquals(Cause.ACTIVATION_TERMINATION, replies.get(2).cause());
+        assertEquals(List.of(command), replies.get(2).objects());
+      }
+
+      // An interrogation omits the timestamp on the wire without changing the image or publishing
+      // style.
+      assertEquals(value, station.currentValue(POINT.objectAddress()).orElseThrow());
+      server.publish(POINT, value, Cause.SPONTANEOUS);
+      List<Asdu> sent = connection.sentAsdus();
+      assertEquals(spontaneousType, sent.get(sent.size() - 1).type());
+      assertEquals(Cause.SPONTANEOUS, sent.get(sent.size() - 1).cause());
+    }
   }
 
   @Test
