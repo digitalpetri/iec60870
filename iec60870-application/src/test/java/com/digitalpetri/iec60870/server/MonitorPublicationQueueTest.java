@@ -49,6 +49,10 @@ class MonitorPublicationQueueTest {
         harness.queue.submit(asdu(2));
         release.countDown();
         snapshot.get(5, TimeUnit.SECONDS);
+        // The publisher's drain completes the snapshot; let it exit so resume drains on this
+        // thread.
+        publishing.join(5000);
+        assertFalse(publishing.isAlive());
         assertTrue(harness.sent.isEmpty());
         harness.queue.resume(() -> {});
         assertEquals(List.of(2), harness.sent);
