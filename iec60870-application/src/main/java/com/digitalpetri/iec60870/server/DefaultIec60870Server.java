@@ -11,6 +11,7 @@ import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.InformationObject;
+import com.digitalpetri.iec60870.asdu.element.FreezeMode;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
 import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
@@ -652,6 +653,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
       if (asdu.objects().isEmpty()
           || !(asdu.objects().get(0) instanceof CounterInterrogationCommand command)) {
         send(activationConfirmation(asdu, true, Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS));
+        return done();
+      }
+
+      // The station image supplies reported totals, not a live counter freeze/reset operation.
+      if (command.qualifier().freeze() != FreezeMode.READ) {
+        send(activationConfirmation(asdu, true, Cause.ACTIVATION_CONFIRMATION));
         return done();
       }
 
