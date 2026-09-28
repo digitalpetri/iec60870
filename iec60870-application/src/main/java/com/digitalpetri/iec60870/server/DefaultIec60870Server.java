@@ -633,7 +633,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                 monitorCause,
                 false,
                 false,
-                OriginatorAddress.none(),
+                request.originatorAddress(),
                 request.commonAddress(),
                 List.of(object)));
       }
@@ -676,7 +676,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                 monitorCause,
                 false,
                 false,
-                OriginatorAddress.none(),
+                asdu.originatorAddress(),
                 asdu.commonAddress(),
                 List.of(object)));
       }
@@ -716,7 +716,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                         Cause.REQUEST,
                         false,
                         false,
-                        OriginatorAddress.none(),
+                        asdu.originatorAddress(),
                         asdu.commonAddress(),
                         List.of(object)));
               });
@@ -745,7 +745,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
                           Cause.ACTIVATION_CONFIRMATION,
                           false,
                           false,
-                          OriginatorAddress.none(),
+                          asdu.originatorAddress(),
                           asdu.commonAddress(),
                           List.of(command)));
                 } else {
@@ -767,7 +767,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               Cause.ACTIVATION_CONFIRMATION,
               false,
               false,
-              OriginatorAddress.none(),
+              asdu.originatorAddress(),
               asdu.commonAddress(),
               asdu.objects()));
       return done();
@@ -846,7 +846,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
               Cause.ACTIVATION_CONFIRMATION,
               false,
               false,
-              OriginatorAddress.none(),
+              request.originatorAddress(),
               request.commonAddress(),
               request.objects()));
 
@@ -916,7 +916,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           cause,
           negative,
           false,
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           request.objects());
     }
@@ -934,7 +934,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           Cause.ACTIVATION_TERMINATION,
           false,
           false,
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           objects);
     }
@@ -947,7 +947,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           cause,
           true,
           request.test(),
-          OriginatorAddress.none(),
+          request.originatorAddress(),
           request.commonAddress(),
           request.objects());
     }
