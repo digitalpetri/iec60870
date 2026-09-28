@@ -24,7 +24,9 @@ import com.digitalpetri.iec60870.transport.ClientTransport;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -92,6 +94,17 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   private final ReentrantLock lock = new ReentrantLock();
   private final List<PendingRequest> pending = new ArrayList<>();
+
+  /** The shared connect attempt, retained while its session remains active; guarded by lock. */
+  private @Nullable CompletableFuture<Void> connectFuture;
+
+  /** Whether close() permanently ended this client's lifecycle; guarded by lock. */
+  private boolean closed;
+
+  /** Serializes session initialization without holding a lock across session callbacks. */
+  private final Deque<Runnable> sessionOperations = new ArrayDeque<>();
+
+  private boolean sessionOperationRunning;
 
   /**
    * Guards against publishing {@link ClientEvent.ConnectionClosed} more than once per connection.
@@ -179,19 +192,131 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   @Override
   public CompletionStage<Void> connectAsync() {
-    return transport
-        .connect()
-        .thenCompose(
-            ignored -> {
-              // Arm the one-shot ConnectionClosed guard for this connection.
-              connectionClosedPublished.set(false);
-              session.onConnected();
-              publish(new ClientEvent.ConnectionOpened());
-              if (config.startDataTransferOnConnect()) {
-                return session.startDataTransfer();
-              }
-              return CompletableFuture.completedFuture(null);
-            });
+    CompletableFuture<Void> future;
+    lock.lock();
+    try {
+      if (closed) {
+        return CompletableFuture.failedFuture(new ConnectionClosedException("client closed"));
+      }
+      if (connectFuture != null) {
+        return connectFuture.copy();
+      }
+      future = new CompletableFuture<>();
+      connectFuture = future;
+    } finally {
+      lock.unlock();
+    }
+
+    try {
+      transport
+          .connect()
+          .thenCompose(
+              ignored ->
+                  CompletableFuture.supplyAsync(
+                          () -> initializeConnection(future), this::executeSessionOperation)
+                      .thenCompose(stage -> stage))
+          .whenComplete(
+              (ignored, error) -> {
+                if (error != null) {
+                  failConnect(future, error);
+                } else if (isCurrentConnect(future)) {
+                  future.complete(null);
+                } else {
+                  future.completeExceptionally(new ConnectionClosedException("connection lost"));
+                }
+              });
+    } catch (RuntimeException e) {
+      failConnect(future, e);
+    }
+    // Each caller can cancel its own wait without cancelling initialization for the other callers.
+    return future.copy();
+  }
+
+  private CompletionStage<Void> initializeConnection(CompletableFuture<Void> future) {
+    if (!isCurrentConnect(future)) {
+      return CompletableFuture.failedFuture(new ConnectionClosedException("connection lost"));
+    }
+    connectionClosedPublished.set(false);
+    session.onConnected();
+    if (!isCurrentConnect(future)) {
+      // Loss/close may invalidate the attempt while onConnected waits for the session lock. The
+      // serial operation queue prevents a newer attempt from initializing before this cleanup.
+      session.close();
+      return CompletableFuture.failedFuture(new ConnectionClosedException("connection lost"));
+    }
+    publish(new ClientEvent.ConnectionOpened());
+    if (!isCurrentConnect(future)) {
+      return CompletableFuture.failedFuture(new ConnectionClosedException("connection lost"));
+    }
+    return config.startDataTransferOnConnect()
+        ? session.startDataTransfer()
+        : CompletableFuture.completedFuture(null);
+  }
+
+  private boolean isCurrentConnect(CompletableFuture<Void> future) {
+    lock.lock();
+    try {
+      return connectFuture == future && !closed;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private void failConnect(CompletableFuture<Void> future, Throwable cause) {
+    lock.lock();
+    try {
+      if (connectFuture == future) {
+        connectFuture = null;
+      }
+    } finally {
+      lock.unlock();
+    }
+    future.completeExceptionally(cause);
+  }
+
+  private DetachedConnection detachConnect(boolean closing) {
+    lock.lock();
+    try {
+      closed |= closing;
+      CompletableFuture<Void> future = connectFuture;
+      connectFuture = null;
+      // Reconnect becomes admissible when connectFuture is cleared. Remove the old requests in
+      // the same critical section, before another connection can reuse their registrations.
+      List<PendingRequest> requests = new ArrayList<>(pending);
+      pending.clear();
+      return new DetachedConnection(future, requests);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private record DetachedConnection(
+      @Nullable CompletableFuture<Void> future, List<PendingRequest> requests) {}
+
+  /**
+   * Runs CompletableFuture tasks in order without blocking callers that re-enter from a callback.
+   */
+  private void executeSessionOperation(Runnable operation) {
+    synchronized (sessionOperations) {
+      sessionOperations.addLast(operation);
+      if (sessionOperationRunning) {
+        return;
+      }
+      sessionOperationRunning = true;
+    }
+    while (true) {
+      Runnable next;
+      synchronized (sessionOperations) {
+        next = sessionOperations.pollFirst();
+        if (next == null) {
+          sessionOperationRunning = false;
+          return;
+        }
+      }
+      // CompletableFuture captures supplier exceptions, so a failed operation cannot stop the
+      // drain.
+      next.run();
+    }
   }
 
   @Override
@@ -226,7 +351,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   @Override
   public void close() {
-    failAllPending(new ConnectionClosedException("client closed"));
+    DetachedConnection detached = detachConnect(true);
+    CompletableFuture<Void> connection = detached.future();
+    var failure = new ConnectionClosedException("client closed");
+    failPending(detached.requests(), failure);
     session.close();
     try {
       transport.disconnect();
@@ -236,6 +364,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
     publisher.close();
     if (ownsScheduler) {
       scheduler.shutdownNow();
+    }
+    if (connection != null) {
+      connection.completeExceptionally(failure);
     }
   }
 
@@ -603,20 +734,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
   }
 
   /**
-   * Fails every pending request with the given cause.
+   * Fails requests detached from a closed connection, outside the client lock.
    *
+   * @param requests the requests removed with their connection.
    * @param cause the failure to deliver.
    */
-  private void failAllPending(Throwable cause) {
-    List<PendingRequest> snapshot;
-    lock.lock();
-    try {
-      snapshot = new ArrayList<>(pending);
-      pending.clear();
-    } finally {
-      lock.unlock();
-    }
-    for (PendingRequest request : snapshot) {
+  private void failPending(List<PendingRequest> requests, Throwable cause) {
+    for (PendingRequest request : requests) {
       request.cancelTimeout();
       callbackExecutor.execute(() -> request.fail(cause));
     }
@@ -1133,10 +1257,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     public void onClosed(@Nullable Throwable cause) {
-      failAllPending(
+      DetachedConnection detached = detachConnect(false);
+      CompletableFuture<Void> connection = detached.future();
+      ConnectionClosedException failure =
           cause != null
               ? new ConnectionClosedException("session closed", cause)
-              : new ConnectionClosedException("session closed"));
+              : new ConnectionClosedException("session closed");
+      failPending(detached.requests(), failure);
       publishConnectionClosed(cause);
       // The session self-closed on a protocol error or timeout: tear the transport down so a
       // persistent transport stops reconnecting, matching the protocol layer giving up.
@@ -1145,19 +1272,29 @@ public final class DefaultIec60870Client implements Iec60870Client {
       } catch (RuntimeException e) {
         LOGGER.debug("transport disconnect failed after session close", e);
       }
+      if (connection != null) {
+        connection.completeExceptionally(failure);
+      }
     }
 
     @Override
     public void onConnectionLost(@Nullable Throwable cause) {
+      DetachedConnection detached = detachConnect(false);
+      CompletableFuture<Void> connection = detached.future();
       // Transport-level loss (peer drop, send failure, I/O error): fail pending work and publish
       // the closed event, but do NOT call transport.disconnect(). Disconnecting would fire
       // Event.Disconnect on the persistent ChannelFsm and stop its automatic reconnection; the old
       // client deliberately left the transport free to reconnect after an unsolicited drop.
-      failAllPending(
+      ConnectionClosedException failure =
           cause != null
               ? new ConnectionClosedException("connection lost", cause)
-              : new ConnectionClosedException("connection lost"));
+              : new ConnectionClosedException("connection lost");
+      failPending(detached.requests(), failure);
       publishConnectionClosed(cause);
+      // A caller can retry from this completion, so finish the old connection's cleanup first.
+      if (connection != null) {
+        connection.completeExceptionally(failure);
+      }
     }
   }
 
