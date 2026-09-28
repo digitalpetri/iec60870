@@ -11,6 +11,8 @@ import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.object.SingleCommand;
 import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.Command;
+import com.digitalpetri.iec60870.client.CommandMode;
 import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
@@ -48,12 +50,12 @@ import org.junit.jupiter.api.Test;
  * and every stop-and-wait acknowledgement here cross a real TCP connection on Netty's event loops,
  * so {@link Iec60870Client#connect() connect()} drives the balanced bring-up over the wire and the
  * tests use bounded {@link Await} polling rather than fixed sleeps for the asynchronous spontaneous
- * delivery. One station hosts a reported monitor point and a commandable point; the three tests
- * cover the three FT1.2 message directions over the balanced link — a controlling-station
- * interrogation, a controlling-station command, and a controlled-station spontaneous publish — and
- * each asserts up front, through the shared {@link #startAndConnect(ServerHandler) wiring helper},
- * that {@code connect()} both connected the transport and started data transfer (the balanced link
- * reset completed). Per-test teardown closes both facades.
+ * delivery. One station hosts a reported monitor point and a commandable point; the tests cover the
+ * three FT1.2 message directions over the balanced link — a controlling-station interrogation, a
+ * controlling-station command, and a controlled-station spontaneous publish — and each asserts up
+ * front, through the shared {@link #startAndConnect(ServerHandler) wiring helper}, that {@code
+ * connect()} both connected the transport and started data transfer (the balanced link reset
+ * completed). Per-test teardown closes both facades.
  */
 class Cs101OverTcpIntegrationTest {
 
@@ -170,6 +172,30 @@ class Cs101OverTcpIntegrationTest {
         COMMAND_POINT,
         commanded.get(),
         "the server handler must have been invoked for the command");
+  }
+
+  @Test
+  void commandsWithConfiguredOriginatorWorkWithoutOriginatorOctet() throws IOException {
+    startAndConnect(
+        new ServerHandler() {
+          @Override
+          public CommandDecision onCommand(ServerContext context, CommandRequest request) {
+            return CommandDecision.accept();
+          }
+        },
+        OriginatorAddress.of(5));
+    Iec60870Client client = requireNonNull(this.client);
+
+    CommandResult direct = client.commands().single(COMMAND_POINT, true);
+    assertTrue(direct.positive());
+    assertEquals(OriginatorAddress.none(), direct.confirmation().orElseThrow().originatorAddress());
+    CommandResult selected =
+        client
+            .commands()
+            .send(Command.single(COMMAND_POINT, false), CommandMode.selectBeforeOperate());
+    assertTrue(selected.positive());
+    assertEquals(
+        OriginatorAddress.none(), selected.confirmation().orElseThrow().originatorAddress());
   }
 
   /**

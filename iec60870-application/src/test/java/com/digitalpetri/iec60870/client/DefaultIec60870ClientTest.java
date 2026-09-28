@@ -439,7 +439,7 @@ class DefaultIec60870ClientTest {
 
     // The real select confirmation advances to the execute phase; the execute confirmation
     // completes.
-    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false, true));
     assertEquals(2, session().sentAsdus().size(), "the execute phase is sent after a real confirm");
     session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
     assertTrue(stage.toCompletableFuture().join().positive());
@@ -454,7 +454,7 @@ class DefaultIec60870ClientTest {
         client.commands().sendAsync(Command.single(point, true), CommandMode.selectBeforeOperate());
 
     // Confirm the select phase; the execute phase is sent only after this confirmation.
-    session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
+    session().deliverAsdu(commandConfirmation(point.objectAddress(), false, true));
     // Confirm the execute phase.
     session().deliverAsdu(commandConfirmation(point.objectAddress(), false));
 
@@ -1386,7 +1386,7 @@ class DefaultIec60870ClientTest {
       // Confirm the SELECT phase. With inline callbacks this synchronously arms the EXECUTE phase
       // (a second, separately scheduled command timeout) inside deliverAsdu.
       requireNonNull(quietSession.get())
-          .deliverAsdu(commandConfirmation(point.objectAddress(), false));
+          .deliverAsdu(commandConfirmation(point.objectAddress(), false, true));
       assertFalse(stage.toCompletableFuture().isDone());
       assertEquals(
           1, timingClient.pendingRequestCount(), "the execute-phase confirmation is pending");
@@ -1593,6 +1593,10 @@ class DefaultIec60870ClientTest {
   }
 
   private Asdu commandConfirmation(InformationObjectAddress ioa, boolean negative) {
+    return commandConfirmation(ioa, negative, false);
+  }
+
+  private Asdu commandConfirmation(InformationObjectAddress ioa, boolean negative, boolean select) {
     return new Asdu(
         AsduType.C_SC_NA_1,
         false,
@@ -1601,7 +1605,7 @@ class DefaultIec60870ClientTest {
         false,
         config.originatorAddress(),
         STATION,
-        List.of(new SingleCommand(ioa, true, new QualifierOfCommand(0, false))));
+        List.of(new SingleCommand(ioa, true, new QualifierOfCommand(0, select))));
   }
 
   private Asdu emptyCommandConfirmation() {
