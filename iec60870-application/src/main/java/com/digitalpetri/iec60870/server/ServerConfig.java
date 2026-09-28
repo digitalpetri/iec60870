@@ -38,8 +38,8 @@ import org.jspecify.annotations.Nullable;
  * @param stations the stations hosted by the server; each must have a distinct common address.
  * @param handler the handler that answers control-direction requests.
  * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
- * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code 0}
- *     for an unbounded queue.
+ * @param maxOutboundQueue the bound on each connection's session queue and, separately, its
+ *     deferred event buffer during interrogations; {@code 0} leaves both unbounded.
  * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
  *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
  * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
@@ -71,8 +71,8 @@ public record ServerConfig(
    * @param stations the stations hosted by the server; each must have a distinct common address.
    * @param handler the handler that answers control-direction requests.
    * @param eventQueuePolicy the policy applied when a started connection's outbound queue is full.
-   * @param maxOutboundQueue the bound on each started connection's outbound send queue, or {@code
-   *     0} for an unbounded queue.
+   * @param maxOutboundQueue the bound on each connection's session queue and, separately, its
+   *     deferred event buffer during interrogations; {@code 0} leaves both unbounded.
    * @param outboundBlockTimeout the maximum time a publishing thread waits for outbound-queue
    *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
    * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
@@ -217,9 +217,10 @@ public record ServerConfig(
     }
 
     /**
-     * Sets the bound on each started connection's outbound send queue. Defaults to {@code 1000}; a
-     * value of {@code 0} leaves the queue unbounded. When the queue reaches this bound the
-     * configured {@link OutboundQueuePolicy} decides the fate of a newly published value.
+     * Sets the bound on each connection's session queue and its separate deferred-event buffer
+     * during interrogations. Defaults to {@code 1000} each; {@code 0} leaves both unbounded. When
+     * the queue reaches this bound the configured {@link OutboundQueuePolicy} decides the fate of a
+     * newly published value.
      *
      * @param maxOutboundQueue the outbound queue bound, or {@code 0} for unbounded; must not be
      *     negative.

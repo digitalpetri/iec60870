@@ -45,6 +45,7 @@ import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -379,6 +380,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     private final ServerTransportConnection transportConnection;
     private final SocketAddress remoteAddress;
     private final Session session;
+    private final MonitorPublicationQueue monitors;
 
     // Serializes handler dispatch; each ASDU chains off the previous dispatch.
     private volatile CompletableFuture<Void> dispatchTail = CompletableFuture.completedFuture(null);
@@ -397,6 +399,9 @@ public final class DefaultIec60870Server implements Iec60870Server {
           Objects.requireNonNull(
               sessionFactory.create(transportConnection, new SessionEvents(), scheduler),
               "session");
+      monitors =
+          new MonitorPublicationQueue(
+              config, this::sendMonitor, session::sendAsduAsync, callbackExecutor, this::close);
     }
 
     SocketAddress remoteAddress() {
@@ -417,6 +422,10 @@ public final class DefaultIec60870Server implements Iec60870Server {
       if (!session.isDataTransferStarted()) {
         return;
       }
+      monitors.submit(asdu);
+    }
+
+    private void sendMonitor(Asdu asdu) {
       // Apply backpressure for the BLOCK policy on the publishing thread, OUTSIDE the session lock,
       // before offering the ASDU. DROP_OLDEST / DROP_NEWEST are enforced inside the session's
       // bounded send queue together with the flow-control window.
@@ -447,6 +456,24 @@ public final class DefaultIec60870Server implements Iec60870Server {
                 },
                 callbackExecutor);
       }
+    }
+
+    private CompletionStage<Void> withInterrogation(Supplier<CompletionStage<Void>> response) {
+      var result = new CompletableFuture<Void>();
+      monitors
+          .hold()
+          .thenComposeAsync(ignored -> response.get(), callbackExecutor)
+          .whenComplete(
+              (ignored, error) ->
+                  monitors.resume(
+                      () -> {
+                        if (error == null) {
+                          result.complete(null);
+                        } else {
+                          result.completeExceptionally(error);
+                        }
+                      }));
+      return result;
     }
 
     /** Writes one response at a time, keeping large replies out of the lossy event queue. */
@@ -496,8 +523,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
               }
             }
           } catch (RuntimeException error) {
-            result.completeExceptionally(error);
             close(error);
+            result.completeExceptionally(error);
           }
         } while (draining.decrementAndGet() != 0);
       }
@@ -674,10 +701,13 @@ public final class DefaultIec60870Server implements Iec60870Server {
       }
 
       InterrogationRequest request = new InterrogationRequest(asdu.commonAddress(), qoi);
-      return config
-          .handler()
-          .onInterrogationAsync(context, request)
-          .thenCompose(response -> emitInterrogation(asdu, qoi, response));
+      return withInterrogation(
+          () ->
+              config
+                  .handler()
+                  .onInterrogationAsync(context, request)
+                  .thenComposeAsync(
+                      response -> emitInterrogation(asdu, qoi, response), callbackExecutor));
     }
 
     private CompletionStage<Void> emitInterrogation(
@@ -729,14 +759,16 @@ public final class DefaultIec60870Server implements Iec60870Server {
         return done();
       }
 
-      // RQT selects the requested counter group: 1..4 a specific group, 5 (or any other value) a
-      // general counter request reporting every integrated-totals point.
+      return withInterrogation(() -> emitCounterInterrogation(asdu, command, station.get()));
+    }
+
+    private CompletionStage<Void> emitCounterInterrogation(
+        Asdu asdu, CounterInterrogationCommand command, Station station) {
+      // RQT 1..4 selects a counter group; other values request all integrated totals.
       int rqt = command.qualifier().request();
       Cause monitorCause = counterCause(rqt);
       List<Station.InterrogatedPoint> points =
-          rqt >= 1 && rqt <= 4
-              ? station.get().selectCounterGroup(rqt)
-              : station.get().selectCounterGroup(0);
+          rqt >= 1 && rqt <= 4 ? station.selectCounterGroup(rqt) : station.selectCounterGroup(0);
       Stream<Asdu> data =
           points.stream()
               .map(
@@ -1038,6 +1070,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
       if (!closed.compareAndSet(false, true)) {
         return;
       }
+      monitors.close();
       session.close();
       // Release the slot reserved in onAccept. The CAS above makes this run exactly once, so the
       // count is balanced even if a loss fires in the window after onAccept reserved the slot (and

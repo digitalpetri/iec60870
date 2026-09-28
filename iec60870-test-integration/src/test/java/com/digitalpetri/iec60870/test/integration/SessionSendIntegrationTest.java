@@ -141,8 +141,13 @@ class SessionSendIntegrationTest {
   }
 
   @Test
-  void saturatedEventQueueClosesWithoutPositiveTermination() {
+  void saturatedEventQueueRetainsSolicitedResponse() {
     verifyInterrogation(false, false, false, true);
+  }
+
+  @Test
+  void saturatedProtectedQueueClosesWithoutPositiveTermination() {
+    verifyInterrogation(false, false, false, true, true);
   }
 
   private void verifyInterrogation(boolean counters) {
@@ -151,6 +156,11 @@ class SessionSendIntegrationTest {
 
   private void verifyInterrogation(
       boolean counters, boolean direct, boolean fail, boolean saturate) {
+    verifyInterrogation(counters, direct, fail, saturate, false);
+  }
+
+  private void verifyInterrogation(
+      boolean counters, boolean direct, boolean fail, boolean saturate, boolean protectedQueue) {
     var callbacks = new ArrayDeque<Runnable>();
     var transport = new AcceptTransport();
     var ref = new AtomicReference<ApciSession>();
@@ -190,6 +200,7 @@ class SessionSendIntegrationTest {
                 defaults.t2(),
                 defaults.t3())
             : defaults;
+    var failedWrite = new CompletableFuture<Void>();
     var output =
         new ApciSession.Output() {
           @Override
@@ -202,7 +213,7 @@ class SessionSendIntegrationTest {
             if (fail
                 && apdu.asdu() != null
                 && apdu.asdu().cause() == Cause.INTERROGATED_BY_STATION) {
-              return CompletableFuture.failedFuture(new IllegalStateException("write failed"));
+              return failedWrite;
             }
             send(apdu);
             return CompletableFuture.completedFuture(null);
@@ -232,7 +243,11 @@ class SessionSendIntegrationTest {
       session.onApdu(new Apdu(new ControlField.TypeU(UFunction.STARTDT_ACT), null));
       if (saturate) {
         for (int i = 0; i < 1012; i++) {
-          session.sendAsdu(read());
+          if (protectedQueue) {
+            session.sendAsduAsync(read());
+          } else {
+            session.sendAsdu(read());
+          }
         }
       }
       InformationObject request =
@@ -254,6 +269,13 @@ class SessionSendIntegrationTest {
                   OriginatorAddress.none(),
                   CA,
                   List.of(request))));
+      if (fail) {
+        while (!callbacks.isEmpty()) {
+          callbacks.remove().run();
+        }
+        server.publish(PointAddress.of(1, 2000), PointValue.single(false), Cause.SPONTANEOUS);
+        failedWrite.completeExceptionally(new IllegalStateException("write failed"));
+      }
       int acknowledged = 0;
       for (int turn = 0; turn < 3000; turn++) {
         while (!callbacks.isEmpty()) {
@@ -267,12 +289,14 @@ class SessionSendIntegrationTest {
         session.onApdu(new Apdu(new ControlField.TypeS(written), null));
       }
       List<Asdu> replies = sent.stream().map(Apdu::asdu).filter(Objects::nonNull).toList();
-      if (fail || saturate) {
+      if (fail || protectedQueue) {
+        assertFalse(replies.stream().anyMatch(a -> a.cause() == Cause.SPONTANEOUS));
         assertFalse(replies.stream().anyMatch(a -> a.cause() == Cause.ACTIVATION_TERMINATION));
         assertTrue(session.sendAsduAsync(read()).toCompletableFuture().isCompletedExceptionally());
         assertEquals(0, session.pendingSendCount());
         return;
       }
+      replies = replies.stream().filter(a -> a.type() != AsduType.C_RD_NA_1).toList();
       assertEquals(Cause.ACTIVATION_CONFIRMATION, replies.get(0).cause());
       assertEquals(Cause.ACTIVATION_TERMINATION, replies.get(replies.size() - 1).cause());
       assertEquals(2002, replies.size(), "positive termination requires every requested point");

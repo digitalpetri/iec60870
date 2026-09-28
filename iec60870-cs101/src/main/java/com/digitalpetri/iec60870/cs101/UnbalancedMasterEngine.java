@@ -587,8 +587,8 @@ final class UnbalancedMasterEngine implements Ft12Engine {
             "rejecting command for {} slave (CA={}) with a negative confirmation",
             slave == null ? "unconfigured" : "failed",
             target);
-        entry.fail(new IllegalStateException("no available slave for common address " + target));
         rejectUndeliverable(command);
+        entry.fail(new IllegalStateException("no available slave for common address " + target));
       } else {
         sendUserData(target, entry);
       }

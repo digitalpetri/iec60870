@@ -144,26 +144,42 @@ The practical rule for application code:
 `Session.sendAsdu` submits discardable traffic such as spontaneous events. Its bounded queue follows
 `OutboundQueuePolicy`. `Session.sendAsduAsync` submits a protected ASDU and returns its first
 transport-write completion. It remains pending while flow control or polling holds the ASDU in the
-queue. It fails if the queue is full, encoding or writing fails, or the session closes or resets
-before completion. Success does not mean that the peer acknowledged or processed the ASDU. An APCI
-encoding rejection fails only the affected submission; queued writes after it can continue. The legacy void APCI send
-still throws when its ASDU is rejected synchronously.
+queue. It fails if that queue is full of protected entries, encoding or writing fails, or the session
+closes or resets before completion. Success does not mean that the peer acknowledged or processed the ASDU. An APCI
+encoding rejection fails only the affected submission; queued writes after it can continue. The
+legacy void APCI send still throws when its ASDU is rejected synchronously.
 
 Protected entries cannot be evicted by later event publishing. `DROP_OLDEST` evicts the oldest
 remaining discardable entry; if all queued entries are protected, the incoming event is dropped.
-A full queue rejects a new protected submission. Both submission modes share the configured queue
-bound. Session implementations use `OutboundAsduQueue` to track entries through transport completion,
+A new protected submission evicts the oldest discardable entry from a full queue, regardless of the
+event overflow policy. It is rejected only when every queued entry is protected. Both submission
+modes share the configured queue bound. Session implementations use `OutboundAsduQueue` to track entries through transport completion,
 including writes already removed from the pending queue when the connection closes.
 
 The server streams each station or counter interrogation response one ASDU at a time, waiting for
 each transport write before offering the next ASDU. ACT_TERM is offered only after every data write
 succeeds. A rejected or failed solicited write closes that connection. Large responses therefore do
 not overflow the event queue, and the per-connection handler chain stays pending until the response
-finishes. Spontaneous events may interleave with the response.
+finishes.
 
-Session completion callbacks can run under a session lock. Applications should dispatch dependent
-work to their callback executor before blocking or entering the session again. The built-in server
-uses an iterative drain to support direct executors and synchronously completed writes without
+Before taking an interrogation snapshot or invoking a custom interrogation handler, the server
+pauses event publishing for that connection. Publications already being submitted, and any older
+deferred events, finish before the snapshot is taken. New publications wait until the response
+finishes, so a snapshot cannot overwrite a newer event at the peer. This applies to station/group
+and counter interrogations and preserves custom handler response objects. Rejection or handler
+failure releases the pause too.
+
+Each connection has a separate deferred-event buffer bounded by `maxOutboundQueue`, in addition to
+the session's queue; zero leaves both unbounded. The deferred buffer uses the configured event drop
+policy or BLOCK timeout. Only publishing threads may wait for capacity. After the response, deferred
+events drain one tracked write at a time, without blocking the callback executor. A subsequent
+interrogation waits only for the finite event prefix ahead of its snapshot marker; later publications
+cannot indefinitely postpone it. Close discards the deferred backlog and wakes blocked publishers.
+
+Direct callers of the `Session` SPI must dispatch dependent work before blocking or re-entering a
+session: its completion callbacks can run under the session lock. Facade `sendAsync` relays success
+and failure onto the configured client callback executor, as other facade operations do. The built-in
+server uses an iterative drain to support direct executors and synchronously completed writes without
 recursion per response item. Custom `Session` implementations must implement `sendAsduAsync` to
 support facade sends; its compatibility default fails without submitting. Custom asynchronous
 `ApciSession.Output` and `Ft12LinkLayer.Output` sinks must override `sendAsync` and return the actual

@@ -87,7 +87,8 @@ public interface Session {
    * <p>The stage completes when the underlying transport finishes the first write, not when the
    * peer acknowledges or processes it. It remains pending while flow control queues the ASDU, and
    * fails on queue rejection, encoding/write failure, close, or connection reset before completion.
-   * A full bounded queue rejects this submission rather than evicting another reliable ASDU.
+   * A full bounded queue evicts its oldest discardable ASDU, or rejects this submission if every
+   * queued ASDU is reliable.
    *
    * <p>Completions may run under the session lock. Dependent work must be dispatched to an executor
    * before blocking or calling back into the session. Legacy implementations must override this

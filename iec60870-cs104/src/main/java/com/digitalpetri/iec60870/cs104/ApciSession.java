@@ -309,7 +309,8 @@ public final class ApciSession implements Session {
    * <p>If the number of outstanding unacknowledged I-frames has reached {@code k}, the ASDU is
    * queued until the window opens. Once STOPDT begins, the queue is held until STARTDT completes. A
    * {@link Role#SERVER} also queues ASDUs before the initial STARTDT activation. Queued ASDUs are
-   * sent in submission order. A synchronous encoding failure propagates without closing the session.
+   * sent in submission order. A synchronous encoding failure propagates without closing the
+   * session.
    *
    * @param asdu the application ASDU to send.
    * @throws IllegalArgumentException if immediate encoding rejects the ASDU.

@@ -17,9 +17,10 @@ import org.jspecify.annotations.Nullable;
  * An outbound ASDU queue for session implementations, with optional bounds and tracked writes.
  *
  * <p>The owning session must serialize queue operations. Write completions may arrive on any
- * thread. Reliable entries cannot be evicted by the overflow policy; offering one to a full queue
- * fails its completion. Call {@link #failAll(Throwable)} on close or connection reset, including
- * for writes already removed from the queue whose transport completion is still pending.
+ * thread. Reliable entries cannot be evicted by the overflow policy. Offering one to a full queue
+ * evicts the oldest discardable entry, or fails if every queued entry is reliable. Call {@link
+ * #failAll(Throwable)} on close or connection reset, including for writes already removed from the
+ * queue whose transport completion is still pending.
  */
 public final class OutboundAsduQueue {
   private final int capacity;
@@ -52,7 +53,7 @@ public final class OutboundAsduQueue {
     var entry = new Entry(Objects.requireNonNull(asdu, "asdu"), reliable);
     if (capacity > 0 && queue.size() >= capacity) {
       Entry evicted =
-          !reliable && policy == OutboundQueuePolicy.DROP_OLDEST
+          (reliable || policy == OutboundQueuePolicy.DROP_OLDEST)
               ? removeFirstMatching(candidate -> !candidate.reliable)
               : null;
       if (evicted == null) {
