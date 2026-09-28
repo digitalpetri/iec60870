@@ -95,6 +95,13 @@ Each station's primary and secondary processes are independent. A received reset
 secondary receive state. Its own primary keeps its FCB and any outstanding transaction, including the
 original retry deadline.
 
+An outstanding frame is retransmitted across a received reset. Duplicate suppression works while the
+peer retains its secondary receive state. If the peer actually restarted and cleared that state after
+delivering the original ASDU, a lost ACK can cause the same ASDU to be delivered again on retry. This
+includes a library CLIENT reconnecting over serial while the SERVER's port and engine remain open.
+`FC0` does not distinguish that restart from a primary-only reset; at-most-once delivery is not
+guaranteed across it.
+
 When the peer acknowledges with `DFC=1`, the accepted ASDU advances the transmit FCB, but subsequent
 data waits. A negative acknowledgement (`FC1`) retains the rejected ASDU and its FCB. In both cases
 the primary probes status with `FC9` and resumes data only after `FC11/DFC=0`. Busy status replies

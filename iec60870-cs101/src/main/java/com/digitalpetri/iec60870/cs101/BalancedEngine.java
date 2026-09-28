@@ -494,7 +494,8 @@ final class BalancedEngine implements Ft12Engine {
     // Start completion callbacks can send inline, so establish the busy gate before notifying them.
     pending = busy ? PendingPrimary.BUSY_STATUS : null;
     retryCount = 0;
-    // A fresh reset: the primary FCB starts at 1 and the secondary expects 0, on both ends.
+    // Initialize this CLIENT's primary sequence and secondary receive state. The peer resets
+    // only its secondary when it receives our FC0; its primary sequence remains independent.
     nextFcb = true;
     secondaryReset = true;
     expectedFcb = false;

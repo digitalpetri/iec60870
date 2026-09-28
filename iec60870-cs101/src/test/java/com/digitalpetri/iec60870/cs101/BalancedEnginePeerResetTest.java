@@ -91,6 +91,40 @@ class BalancedEnginePeerResetTest {
   }
 
   @Test
+  void restartedPeerCanReceiveAnUnacknowledgedAsduAgain() {
+    for (boolean singleCharAck : List.of(false, true)) {
+      var pair = new EnginePair(singleCharAck);
+      Asdu asdu = readAsdu(7);
+      pair.local.sendAsdu(asdu);
+      Ft12Frame.Variable original = pair.deliverLocalData();
+      assertEquals(List.of(asdu), pair.peerEvents.asdus());
+      pair.peerOutput.removeFirst(); // Lose the ACK after the peer delivered the ASDU.
+      pair.localScheduler.advance(50, TimeUnit.MILLISECONDS);
+
+      // A serial peer can restart while the local SERVER's port and engine remain open.
+      pair.peer.close();
+      pair.peer.onConnected();
+      pair.bringUpPeer();
+      assertTrue(pair.localOutput.isEmpty());
+      assertEquals(List.of(asdu), pair.peerEvents.asdus());
+
+      pair.localScheduler.advance(149, TimeUnit.MILLISECONDS);
+      assertTrue(pair.localOutput.isEmpty());
+      pair.localScheduler.advance(1, TimeUnit.MILLISECONDS);
+      assertEquals(original, pair.deliverLocalData());
+      assertEquals(
+          List.of(asdu, asdu),
+          pair.peerEvents.asdus(),
+          "the restarted secondary lost its cached ACK and delivers the retry again");
+
+      pair.local.onFrame(pair.peerOutput.removeFirst());
+      pair.localScheduler.advance(4000, TimeUnit.MILLISECONDS);
+      assertTrue(pair.localOutput.isEmpty(), "the retry was acknowledged");
+      assertEquals(0, pair.localEvents.closedCount());
+    }
+  }
+
+  @Test
   void peerResetPreservesPendingKeepalive() {
     for (boolean singleCharAck : List.of(false, true)) {
       var pair = new EnginePair(singleCharAck);
@@ -156,6 +190,10 @@ class BalancedEnginePeerResetTest {
               peerEvents);
       local.onConnected();
       peer.onConnected();
+      bringUpPeer();
+    }
+
+    void bringUpPeer() {
       peer.startDataTransfer();
       // Relay outside output callbacks so neither engine is re-entered while it holds its lock.
       local.onFrame(peerOutput.removeFirst()); // FC9 -> FC11
