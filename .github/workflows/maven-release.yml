@@ -16,14 +16,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Java for publishing to Maven Central
+      - name: Set up Java
         uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
-          server-id: central
-          server-username: MAVEN_USERNAME
-          server-password: MAVEN_PASSWORD
+          overwrite-settings: false
 
       - name: Install GPG secret key
         run: |
@@ -33,7 +31,7 @@ jobs:
       # The `release` profile signs artifacts (GPG), attaches sources/javadoc,
       # and publishes via the central-publishing plugin with autoPublish.
       - name: Publish to Maven Central
-        run: mvn -B clean deploy -P release
+        run: mvn -B --settings .github/maven-settings.xml clean deploy -P release
         env:
           MAVEN_USERNAME: ${{ secrets.CENTRAL_SONATYPE_TOKEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.CENTRAL_SONATYPE_TOKEN_PASSWORD }}
