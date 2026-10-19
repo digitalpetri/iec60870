@@ -224,13 +224,14 @@ ownership and threading, TLS and configuration, and the error model and extensib
 
 ## Requirements
 
-The repository pins its Java and Maven toolchain with `mise`:
+The repository configures Java 17 and Maven 3.10 with `mise`. Java uses an exact version; Maven allows
+patch updates within 3.10:
 
 ```shell
 mise install
 ```
 
-After installation, run Maven through `mise exec` so the pinned Java 17 and Maven versions are used.
+After installation, run Maven through `mise exec` so the configured Java and Maven versions are used.
 
 ## Building
 
