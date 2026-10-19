@@ -101,7 +101,7 @@ core-vs-transport split is the central design constraint; see `docs/architecture
 
 ## Common Commands
 
-- Install pinned tools: `mise install`
+- Install configured tools: `mise install`
 - Format the codebase: `mise exec -- mvn spotless:apply`
 - Verify the build: `mise exec -- mvn clean verify`
 - Compile without tests: `mise exec -- mvn clean compile`
