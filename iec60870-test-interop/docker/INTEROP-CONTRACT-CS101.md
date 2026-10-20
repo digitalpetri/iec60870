@@ -153,7 +153,8 @@ IOA = 2, COT = 1). In summary:
 - Monitor image at IOAs `1000`–`1071`, fixed values per CS104 contract section 2.
 - Station interrogation (QOI 20) → all seven non-time points, one ASDU per point; group 1 (QOI 21)
   the same; group 2 (QOI 22) the seven time-tagged points reported via their non-time TypeIDs.
-- Counter interrogation (general / group 1) → both integrated totals (IOAs 1070/1071, value 1000).
+- Counter read (general / group 1, FRZ 0) → both integrated totals (IOAs 1070/1071, value 1000);
+  a freeze or reset (FRZ 1..3) → `ACT_CON` only.
 - Read (C_RD_NA_1) of any monitor IOA → that point at its native (time/non-time) TypeID, COT REQUEST.
 - Commands: IOA **2000–2999 → ACCEPT** (ACT_CON positive), IOA **3000 → REJECT** (ACT_CON negative).
   A single command accepted mirrors onto IOA 1000, a setpoint-short onto IOA 1060 (RETURN_INFO_REMOTE).

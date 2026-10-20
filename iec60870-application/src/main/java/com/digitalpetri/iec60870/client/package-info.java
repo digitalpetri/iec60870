@@ -2,12 +2,12 @@
  * The high-level IEC 60870-5-104 client (controlling station) API.
  *
  * <p>This package turns the raw protocol model into the workflows a SCADA master needs: connecting,
- * starting and stopping data transfer, interrogating stations, reading points, issuing commands,
- * and synchronizing clocks. Callers enter through the {@link
- * com.digitalpetri.iec60870.client.Iec60870Client} interface; {@link
- * com.digitalpetri.iec60870.client.DefaultIec60870Client} is the implementation that drives any
- * {@link com.digitalpetri.iec60870.transport.ClientTransport}. The transport knobs (host/port/TLS)
- * live in the transport module, not here.
+ * starting and stopping data transfer, interrogating stations and their counters, reading points,
+ * issuing commands, synchronizing clocks, testing the link, resetting processes, and loading
+ * parameters. Callers enter through the {@link com.digitalpetri.iec60870.client.Iec60870Client}
+ * interface; {@link com.digitalpetri.iec60870.client.DefaultIec60870Client} is the implementation
+ * that drives any {@link com.digitalpetri.iec60870.transport.ClientTransport}. The transport knobs
+ * (host/port/TLS) live in the transport module, not here.
  *
  * <h2>Lifecycle</h2>
  *
@@ -31,14 +31,20 @@
  *
  * <h2>Requests and correlation</h2>
  *
- * <p>Interrogation, read, command, and clock-synchronization requests are correlated against the
- * controlled station's confirmations. Commands flow through {@link
+ * <p>Every request except the raw {@code send} is correlated against the controlled station's
+ * confirmations: interrogation, counter interrogation, read, commands, clock synchronization, test,
+ * reset process, and parameter load and activation. Correlation matches the reply's fields to the
+ * pending request, since the protocol carries no request identifier, so a second request that would
+ * compete for the same replies fails with {@link
+ * com.digitalpetri.iec60870.RequestInProgressException}. A request to the global common address is
+ * rejected for the same reason: every station answers it. Commands flow through {@link
  * com.digitalpetri.iec60870.client.CommandService} as a {@link
  * com.digitalpetri.iec60870.client.Command} plus a {@link
  * com.digitalpetri.iec60870.client.CommandMode} (direct-execute or select-before-operate) and
  * return a {@link com.digitalpetri.iec60870.client.CommandResult}. A negative confirmation (P/N =
- * 1) is surfaced as a non-positive {@code CommandResult} for commands and as a {@link
- * com.digitalpetri.iec60870.NegativeConfirmationException} for interrogation, read, and clock-sync.
+ * 1) is surfaced as a non-positive {@code CommandResult} for commands, a non-positive {@link
+ * com.digitalpetri.iec60870.client.ParameterResult} for parameter loads, and a {@link
+ * com.digitalpetri.iec60870.NegativeConfirmationException} for the other requests.
  *
  * <h2>Boundaries</h2>
  *

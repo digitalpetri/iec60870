@@ -153,8 +153,7 @@ class Cs101BalancedInteropTest {
         client.connect();
         assertTrue(client.isConnected(), "client should be connected after connect()");
 
-        InteropClientContract.assertBroadClientContract(
-            client, events, OriginatorAddress.none(), WAIT_TIMEOUT, WAIT_TIMEOUT);
+        InteropClientContract.assertBroadClientContract(client, events, WAIT_TIMEOUT, WAIT_TIMEOUT);
       } finally {
         client.close();
       }

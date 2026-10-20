@@ -3,8 +3,12 @@ package com.digitalpetri.iec60870.client;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.InformationObject;
+import com.digitalpetri.iec60870.asdu.element.FreezeMode;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfResetProcess;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
@@ -14,10 +18,10 @@ import java.util.concurrent.Flow;
  * A high-level IEC 60870-5-104 client (controlling station).
  *
  * <p>An {@code Iec60870Client} drives one connection to a controlled station: it connects, starts
- * and stops data transfer, interrogates stations, reads points, issues commands, and synchronizes
- * clocks. Blocking methods are the primary surface; each has a {@code *Async} variant returning a
- * {@link CompletionStage}. The client is {@link AutoCloseable}, so it works with
- * try-with-resources.
+ * and stops data transfer, interrogates stations and their counters, reads points, issues commands,
+ * synchronizes clocks, tests the application link, resets processes, and loads parameters. Blocking
+ * methods are the primary surface; each has a {@code *Async} variant returning a {@link
+ * CompletionStage}. The client is {@link AutoCloseable}, so it works with try-with-resources.
  *
  * <p>After {@link #connect()} the client manages the connection: if it is lost, or a connection
  * attempt fails, the client reconnects on its own according to its {@link ReconnectPolicy}, resets
@@ -32,6 +36,11 @@ import java.util.concurrent.Flow;
  * ClientEvent.AsduReceived}. Each {@code PointUpdated} reports the value's point type and the wire
  * type identification that carried it. Events are delivered serially on the client's callback
  * executor.
+ *
+ * <p>Requests that address a station with {@link CommonAddress}, such as {@link
+ * #interrogate(CommonAddress)}, reject the global (broadcast) address with {@link
+ * IllegalArgumentException}: every station answers a broadcast with its own address, so the client
+ * cannot tell when such a request is complete. Send a broadcast with {@link #send(Asdu)}.
  *
  * <pre>{@code
  * try (Iec60870Client client = TcpIec104Client.builder()
@@ -173,6 +182,7 @@ public interface Iec60870Client extends AutoCloseable {
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the interrogation does not
    *     complete in time.
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   * @throws IllegalArgumentException if {@code station} is the global address.
    */
   InterrogationResult interrogate(CommonAddress station);
 
@@ -187,6 +197,7 @@ public interface Iec60870Client extends AutoCloseable {
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the interrogation does not
    *     complete in time.
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   * @throws IllegalArgumentException if {@code station} is the global address.
    */
   InterrogationResult interrogate(CommonAddress station, QualifierOfInterrogation qoi);
 
@@ -196,6 +207,7 @@ public interface Iec60870Client extends AutoCloseable {
    * @param station the common address to interrogate.
    * @return a stage that completes with the interrogation result, or completes exceptionally on
    *     failure.
+   * @throws IllegalArgumentException if {@code station} is the global address.
    */
   CompletionStage<InterrogationResult> interrogateAsync(CommonAddress station);
 
@@ -206,6 +218,7 @@ public interface Iec60870Client extends AutoCloseable {
    * @param qoi the qualifier of interrogation selecting the station or a specific group.
    * @return a stage that completes with the interrogation result, or completes exceptionally on
    *     failure.
+   * @throws IllegalArgumentException if {@code station} is the global address.
    */
   CompletionStage<InterrogationResult> interrogateAsync(
       CommonAddress station, QualifierOfInterrogation qoi);
@@ -251,7 +264,8 @@ public interface Iec60870Client extends AutoCloseable {
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
    *     in time.
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
-   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century.
+   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century, or
+   *     {@code station} is the global address.
    */
   void synchronizeClock(CommonAddress station, Instant time);
 
@@ -265,9 +279,210 @@ public interface Iec60870Client extends AutoCloseable {
    * @param time the time to set.
    * @return a stage that completes when the command is confirmed, or completes exceptionally on
    *     failure.
-   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century.
+   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century, or
+   *     {@code station} is the global address.
    */
   CompletionStage<Void> synchronizeClockAsync(CommonAddress station, Instant time);
+
+  /**
+   * Reads every counter of a station with a general counter interrogation (C_CI_NA_1, RQT 5, {@link
+   * FreezeMode#READ}).
+   *
+   * @param station the common address to interrogate.
+   * @return the counters the station reported.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the
+   *     request or reports an unknown type, cause, or address.
+   * @throws com.digitalpetri.iec60870.RequestInProgressException if a counter interrogation of the
+   *     same station is already in flight.
+   * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the interrogation does not
+   *     complete within the request timeout.
+   * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   * @see #counterInterrogate(CommonAddress, QualifierOfCounterInterrogation)
+   */
+  CounterInterrogationResult counterInterrogate(CommonAddress station);
+
+  /**
+   * Sends a counter interrogation (C_CI_NA_1) with the given qualifier and waits for it to
+   * complete.
+   *
+   * <p>With {@link FreezeMode#READ} the station reports the counters of the requested group, and
+   * the call completes on the activation termination with those counters. Only integrated totals
+   * with the cause that matches the request (37 for RQT 5, 38 to 41 for groups 1 to 4) received
+   * after the positive activation confirmation are collected; spontaneous counters and other groups
+   * are not. The collection is bounded by {@link ClientConfig#maxInterrogationResponseObjects()}
+   * and the whole read by {@link ClientConfig#requestTimeout()}.
+   *
+   * <p>A freeze, freeze with reset, or reset completes on the positive activation confirmation with
+   * no counters, within {@link ClientConfig#commandTimeout()}. The station does not transmit
+   * counters for these (IEC 60870-5-101, 7.4.8); read them afterwards. Any activation termination
+   * or counters a station sends after a freeze anyway still reach {@link #events()} and do not
+   * affect a later read.
+   *
+   * <p>Collected counters are also published as {@link ClientEvent.PointUpdated}. One counter
+   * interrogation may be in flight per station, independent of a general interrogation. A raw
+   * C_CI_NA_1 sent with {@link #send(Asdu)} to a station with a counter interrogation in flight
+   * makes the attribution of responses undefined.
+   *
+   * <pre>{@code
+   * client.counterInterrogate(station, QualifierOfCounterInterrogation.group(1, FreezeMode.FREEZE_NO_RESET));
+   * CounterInterrogationResult frozen =
+   *     client.counterInterrogate(station, QualifierOfCounterInterrogation.group(1, FreezeMode.READ));
+   * }</pre>
+   *
+   * @param station the common address to interrogate.
+   * @param qcc the qualifier selecting the counter group and freeze mode.
+   * @return the counters the station reported; empty unless {@code qcc} requests a read.
+   * @throws IllegalArgumentException if {@code station} is the global address, or {@code qcc}
+   *     requests a read with an RQT outside {@code 1..5}.
+   * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the
+   *     request or reports an unknown type, cause, or address.
+   * @throws com.digitalpetri.iec60870.RequestInProgressException if a counter interrogation of the
+   *     same station is already in flight.
+   * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the interrogation does not
+   *     complete in time.
+   * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   */
+  CounterInterrogationResult counterInterrogate(
+      CommonAddress station, QualifierOfCounterInterrogation qcc);
+
+  /**
+   * Reads every counter of a station with a general counter interrogation (C_CI_NA_1, RQT 5, {@link
+   * FreezeMode#READ}).
+   *
+   * @param station the common address to interrogate.
+   * @return a stage that completes with the counters, or completes exceptionally on failure.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @see #counterInterrogate(CommonAddress, QualifierOfCounterInterrogation)
+   */
+  CompletionStage<CounterInterrogationResult> counterInterrogateAsync(CommonAddress station);
+
+  /**
+   * Sends a counter interrogation (C_CI_NA_1) with the given qualifier.
+   *
+   * @param station the common address to interrogate.
+   * @param qcc the qualifier selecting the counter group and freeze mode.
+   * @return a stage that completes with the result, or completes exceptionally on failure.
+   * @throws IllegalArgumentException if {@code station} is the global address, or {@code qcc}
+   *     requests a read with an RQT outside {@code 1..5}.
+   * @see #counterInterrogate(CommonAddress, QualifierOfCounterInterrogation)
+   */
+  CompletionStage<CounterInterrogationResult> counterInterrogateAsync(
+      CommonAddress station, QualifierOfCounterInterrogation qcc);
+
+  /**
+   * Tests the application link to a station with C_TS_TA_1 and measures the round trip.
+   *
+   * <p>The command carries the next value of a per-client 16-bit test sequence counter, which
+   * wraps, and the current time encoded with {@link ClientConfig#timePolicy()}. The call completes
+   * on the activation confirmation that echoes the counter; the echoed time is not compared and is
+   * available in {@link TestResult#confirmation()}. IEC 60870-5-101 links use C_TS_NA_1 instead;
+   * see {@link #test(CommonAddress, AsduType)}.
+   *
+   * @param station the common address to test.
+   * @return the round-trip time and the confirmation.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the test
+   *     or reports an unknown type, cause, or address.
+   * @throws com.digitalpetri.iec60870.RequestInProgressException if a test of the same station is
+   *     already in flight.
+   * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
+   *     within the command timeout.
+   * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   */
+  TestResult test(CommonAddress station);
+
+  /**
+   * Tests the application link to a station with the given test command type.
+   *
+   * <p>{@link AsduType#C_TS_TA_1} behaves as {@link #test(CommonAddress)}. {@link
+   * AsduType#C_TS_NA_1}, used on IEC 60870-5-101 links, sends the fixed test bit pattern {@code
+   * 0x55AA} and completes on the confirmation that echoes it.
+   *
+   * @param station the common address to test.
+   * @param type {@link AsduType#C_TS_TA_1} or {@link AsduType#C_TS_NA_1}.
+   * @return the round-trip time and the confirmation.
+   * @throws IllegalArgumentException if {@code station} is the global address, or {@code type} is
+   *     not a test command type.
+   * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the test
+   *     or reports an unknown type, cause, or address.
+   * @throws com.digitalpetri.iec60870.RequestInProgressException if a test of the same station is
+   *     already in flight.
+   * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
+   *     within the command timeout.
+   * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   */
+  TestResult test(CommonAddress station, AsduType type);
+
+  /**
+   * Tests the application link to a station with C_TS_TA_1 and measures the round trip.
+   *
+   * @param station the common address to test.
+   * @return a stage that completes with the result, or completes exceptionally on failure.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @see #test(CommonAddress)
+   */
+  CompletionStage<TestResult> testAsync(CommonAddress station);
+
+  /**
+   * Tests the application link to a station with the given test command type.
+   *
+   * @param station the common address to test.
+   * @param type {@link AsduType#C_TS_TA_1} or {@link AsduType#C_TS_NA_1}.
+   * @return a stage that completes with the result, or completes exceptionally on failure.
+   * @throws IllegalArgumentException if {@code station} is the global address, or {@code type} is
+   *     not a test command type.
+   * @see #test(CommonAddress, AsduType)
+   */
+  CompletionStage<TestResult> testAsync(CommonAddress station, AsduType type);
+
+  /**
+   * Resets the process of a station with a reset process command (C_RP_NA_1) and waits for the
+   * activation confirmation.
+   *
+   * <p>The call completes on the positive confirmation and does not wait for a disconnect or an end
+   * of initialization. After a general reset ({@link QualifierOfResetProcess#GENERAL}) the station
+   * may close the connection. A reset of the event buffer ({@link
+   * QualifierOfResetProcess#EVENT_BUFFER}) discards the time-tagged events the station has not yet
+   * sent.
+   *
+   * <p>The confirmation is optional for a station (IEC 60870-5-5, 6.1). If the connection closes
+   * before it arrives, the call fails with {@link
+   * com.digitalpetri.iec60870.ConnectionClosedException} and the outcome is unknown: the station
+   * may have reset.
+   *
+   * @param station the common address to reset.
+   * @param qrp the qualifier of reset process.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the
+   *     reset or reports an unknown type, cause, or address.
+   * @throws com.digitalpetri.iec60870.RequestInProgressException if a reset of the same station is
+   *     already in flight.
+   * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
+   *     within the command timeout.
+   * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection closes before the
+   *     confirmation arrives.
+   */
+  void resetProcess(CommonAddress station, QualifierOfResetProcess qrp);
+
+  /**
+   * Resets the process of a station with a reset process command (C_RP_NA_1).
+   *
+   * @param station the common address to reset.
+   * @param qrp the qualifier of reset process.
+   * @return a stage that completes on the positive confirmation, or completes exceptionally on
+   *     failure.
+   * @throws IllegalArgumentException if {@code station} is the global address.
+   * @see #resetProcess(CommonAddress, QualifierOfResetProcess)
+   */
+  CompletionStage<Void> resetProcessAsync(CommonAddress station, QualifierOfResetProcess qrp);
+
+  /**
+   * Returns the service that loads and activates parameters of measured values.
+   *
+   * @return the parameter service.
+   */
+  ParameterService parameters();
 
   /**
    * Sends a raw ASDU, bypassing the high-level command and request helpers.
