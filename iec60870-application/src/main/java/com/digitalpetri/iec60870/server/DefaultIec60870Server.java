@@ -322,7 +322,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
   // --- Event publishing -----------------------------------------------------------------------
 
   /**
-   * Publishes a server event to subscribers, dropping it if no subscriber can accept it.
+   * Publishes a server event to subscribers, dropping it for any subscriber whose buffer is full.
    *
    * @param event the event to publish.
    */
@@ -330,7 +330,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
     if (publisher.isClosed()) {
       return;
     }
-    publisher.offer(event, (subscriber, dropped) -> false);
+    publisher.offer(
+        event,
+        (subscriber, dropped) -> {
+          LOGGER.warn("dropped a server event for a subscriber whose buffer is full: {}", dropped);
+          return false;
+        });
   }
 
   // --- Helpers --------------------------------------------------------------------------------

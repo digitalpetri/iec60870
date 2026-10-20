@@ -76,6 +76,15 @@ Receive side: each received I-frame increments an unacked-received counter. When
 `w`, the session immediately sends an S-frame carrying the current V(R) and resets the counter.
 Sending any I-frame or S-frame also discharges the counter, because both carry N(R).
 
+Inbound pause: `setInboundPaused(true)` asks the `Output` to stop reading from the transport
+(`Cs104Binding` forwards it to `ClientTransport.setReadPaused` for a `CLIENT`; a `SERVER` ignores it).
+The session keeps acknowledging every I-frame it does read within `w` and `t2`, so the receive rules
+above still hold. Frames left unread are simply not received yet, and the peer stops once `k` of its
+I-frames are unacknowledged. The client facade uses this to hold the outstation back while an event
+subscriber catches up (see [Buffers and threading](buffers-and-threading.md#client-event-delivery-and-inbound-flow-control)).
+The pause does not take the session lock, because the facade calls it from inside `Events.onAsdu`
+and from its callback executor.
+
 ## STARTDT / STOPDT gating and roles
 
 After connect, the default state is *stopped*: no monitor data flows until the controlling station
@@ -136,6 +145,10 @@ How `ApciSession` runs them:
   received `TESTFR act` is answered immediately with `TESTFR con`; a received `TESTFR con` clears the
   outstanding test and cancels its `t1` deadline. Together `t3`+`TESTFR`+`t1` detect a dead peer on an
   otherwise idle link.
+- **Pause deadline.** An inbound pause also arms a `t1` deadline. Paused reads hide the peer's
+  acknowledgements and a peer close, and the peer's own `t1` on its oldest unread I-frame expires
+  at about the same time. If the pause has not ended within `t1`, the session closes itself with a
+  `ProtocolTimeoutException`. Resuming, `onConnected()`, and `close()` cancel the deadline.
 
 ## Lifecycle and threading
 

@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.client;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.EventBacklogExceededException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.NegativeConfirmationException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
@@ -38,9 +39,9 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -62,10 +63,11 @@ import org.slf4j.LoggerFactory;
  * and supplied through the session factory; the facade itself contains no wire-frame or
  * transport-framing logic.
  *
- * <p>The client also owns a {@link SubmissionPublisher} for {@link ClientEvent} delivery on the
- * configured callback executor and a request-correlation layer that matches activation
- * confirmations and interrogation responses to the blocking and asynchronous calls that issued
- * them.
+ * <p>The client also owns a lossless publisher for {@link ClientEvent} delivery on the configured
+ * callback executor and a request-correlation layer that matches activation confirmations and
+ * interrogation responses to the blocking and asynchronous calls that issued them. When the slowest
+ * subscriber falls {@link ClientConfig#eventBacklogLimit()} events behind, the client pauses
+ * inbound data with {@link Session#setInboundPaused(boolean)} until the subscriber catches up.
  *
  * <p>The instance is thread-safe. Construct it with a transport, a {@link ClientConfig}, and a
  * session factory that builds the {@link Session} wired to the facade's {@link Session.Events}.
@@ -89,7 +91,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final boolean ownsScheduler;
 
   private final Executor callbackExecutor;
-  private final SubmissionPublisher<ClientEvent> publisher;
+  private final EventStream<ClientEvent> publisher;
+  private final SessionEvents sessionEvents = new SessionEvents();
   private final Session session;
   private final CommandService commandService;
 
@@ -110,6 +113,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * Guards against publishing {@link ClientEvent.ConnectionClosed} more than once per connection.
    */
   private final AtomicBoolean connectionClosedPublished = new AtomicBoolean(true);
+
+  /**
+   * Set when a subscriber's backlog reached the hard capacity, until the next connection; while
+   * set, inbound data is discarded and the connection is being closed.
+   */
+  private final AtomicBoolean backlogExceeded = new AtomicBoolean();
 
   /**
    * Creates a client over the given transport and configuration, building its {@link Session}
@@ -171,14 +180,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
       this.ownsScheduler = true;
     }
     this.callbackExecutor = config.callbackExecutor();
-    this.publisher = new SubmissionPublisher<>(callbackExecutor, Flow.defaultBufferSize());
+    this.publisher =
+        new EventStream<>(callbackExecutor, config.eventBacklogLimit(), this::setInboundPaused);
 
     // The facade owns the Session.Events sink; the factory wires the session to it. The factory
     // routes inbound frames to the session and transport-level connection loss to
     // Session.Events.onClosed, so the facade learns of every close through that single sink.
     this.session =
-        Objects.requireNonNull(
-            sessionFactory.apply(new SessionEvents(), this.scheduler), "session");
+        Objects.requireNonNull(sessionFactory.apply(sessionEvents, this.scheduler), "session");
 
     this.commandService = new DefaultCommandService();
   }
@@ -200,6 +209,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
       }
       if (connectFuture != null) {
         return connectFuture.copy();
+      }
+      if (!publisher.hasRoomForData()) {
+        return CompletableFuture.failedFuture(backlogExceeded("connect"));
       }
       future = new CompletableFuture<>();
       connectFuture = future;
@@ -237,6 +249,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
       return CompletableFuture.failedFuture(new ConnectionClosedException("connection lost"));
     }
     connectionClosedPublished.set(false);
+    backlogExceeded.set(false);
+    publisher.resetPause();
     session.onConnected();
     if (!isCurrentConnect(future)) {
       // Loss/close may invalidate the attempt while onConnected waits for the session lock. The
@@ -300,6 +314,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   @Override
   public CompletionStage<Void> startDataTransferAsync() {
+    if (!publisher.hasRoomForData()) {
+      return CompletableFuture.failedFuture(backlogExceeded("start data transfer"));
+    }
     return session.startDataTransfer();
   }
 
@@ -310,7 +327,30 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   @Override
   public CompletionStage<Void> stopDataTransferAsync() {
+    if (!publisher.hasRoomForData()) {
+      return CompletableFuture.failedFuture(backlogExceeded("stop data transfer"));
+    }
     return session.stopDataTransfer();
+  }
+
+  /**
+   * Builds the failure for a lifecycle operation refused while a subscriber's backlog is at the
+   * hard capacity.
+   *
+   * <p>Each admitted operation publishes a few lifecycle events into the reserve above the data
+   * capacity. Refusing further operations until the subscriber catches up keeps that reserve from
+   * filling, so lifecycle events are never dropped.
+   *
+   * @param operation the refused operation, for the detail message.
+   * @return the exception to fail the operation with.
+   */
+  private EventBacklogExceededException backlogExceeded(String operation) {
+    return new EventBacklogExceededException(
+        "cannot "
+            + operation
+            + ": an event subscriber is "
+            + publisher.maxBacklog()
+            + " events behind");
   }
 
   @Override
@@ -540,6 +580,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * @param asdu the received ASDU.
    */
   private void onAsduReceived(Asdu asdu) {
+    if (!admitInbound()) {
+      return;
+    }
     publish(new ClientEvent.AsduReceived(asdu));
 
     boolean consumed = correlate(asdu);
@@ -561,6 +604,64 @@ public final class DefaultIec60870Client implements Iec60870Client {
                 address, value.value(), asdu.type(), asdu.cause(), value.timestamp()));
       }
     }
+    publisher.afterInbound();
+  }
+
+  /**
+   * Decides whether the events of one more inbound ASDU fit in every subscriber's backlog.
+   *
+   * <p>When the slowest subscriber has reached the hard capacity, the session's pause could not
+   * hold the peer back. The client then stops taking in data and closes the connection with an
+   * {@link EventBacklogExceededException} rather than continue with a gap in the event stream.
+   *
+   * @return {@code true} if the ASDU should be processed and its events published.
+   */
+  private boolean admitInbound() {
+    if (backlogExceeded.get()) {
+      return false;
+    }
+    if (publisher.hasRoomForData()) {
+      return true;
+    }
+    if (backlogExceeded.compareAndSet(false, true)) {
+      CompletableFuture<Void> connection;
+      lock.lock();
+      try {
+        connection = connectFuture;
+      } finally {
+        lock.unlock();
+      }
+      setInboundPaused(true);
+      var cause =
+          new EventBacklogExceededException(
+              "an event subscriber is " + publisher.maxBacklog() + " events behind");
+      // Invoked under the session lock; close the session from the scheduler instead.
+      try {
+        scheduler.execute(() -> closeOnBacklogExceeded(connection, cause));
+      } catch (RejectedExecutionException e) {
+        LOGGER.debug("scheduler rejected the backlog close; the client is closing", e);
+      }
+    }
+    return false;
+  }
+
+  private void closeOnBacklogExceeded(
+      @Nullable CompletableFuture<Void> connection, EventBacklogExceededException cause) {
+    if (connection == null || !isCurrentConnect(connection)) {
+      return;
+    }
+    LOGGER.warn("closing the connection: {}", cause.getMessage());
+    session.close();
+    sessionEvents.onConnectionLost(cause);
+    transport.closeConnection();
+  }
+
+  private void setInboundPaused(boolean paused) {
+    LOGGER.debug(
+        "{} inbound data; event backlog {}",
+        paused ? "pausing" : "resuming",
+        publisher.maxBacklog());
+    session.setInboundPaused(paused);
   }
 
   /**
@@ -780,15 +881,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
   // --- Helpers --------------------------------------------------------------------------------
 
   /**
-   * Publishes a client event to subscribers, dropping it if no subscriber can accept it.
+   * Publishes a client event to subscribers without dropping it.
    *
    * @param event the event to publish.
    */
   private void publish(ClientEvent event) {
-    if (publisher.isClosed()) {
-      return;
-    }
-    publisher.offer(event, (subscriber, dropped) -> false);
+    publisher.publish(event);
   }
 
   /**
@@ -799,8 +897,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * @return the stage's result.
    * @throws Iec60870Exception if the stage completed exceptionally with a protocol failure.
    */
-  private static <T> T await(CompletionStage<T> stage) {
-    try {
+  private <T> T await(CompletionStage<T> stage) {
+    // A subscriber that blocks in onNext on a call whose response is inbound data must not hold
+    // the pause that keeps the response from being read.
+    try (EventStream.Exclusion ignored = publisher.excludeCurrentSubscriber()) {
       return stage.toCompletableFuture().join();
     } catch (CompletionException e) {
       throw unwrap(e.getCause());
@@ -1314,7 +1414,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
     @Override
     public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
       LOGGER.debug("received an undecodable ASDU ({} octets): {}", asdu.length, cause.toString());
+      if (!admitInbound()) {
+        return;
+      }
       publish(new ClientEvent.UndecodableAsdu(asdu, cause));
+      publisher.afterInbound();
     }
 
     @Override

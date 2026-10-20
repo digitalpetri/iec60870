@@ -102,7 +102,20 @@ public interface Iec60870Client extends AutoCloseable {
    * Returns the publisher of client events.
    *
    * <p>Events are delivered serially on the client's callback executor: a subscriber never observes
-   * two events concurrently. Subscribe before connecting to avoid missing early events.
+   * two events concurrently. Subscribe before connecting to avoid missing early events; there is no
+   * replay.
+   *
+   * <p>The stream never drops an event for a slow subscriber, including one that requests events in
+   * small batches with {@link Flow.Subscription#request(long)}. When the slowest subscriber falls
+   * {@link ClientConfig#eventBacklogLimit()} events behind, the client stops taking in user data
+   * until the backlog falls to half the limit, and the peer's own flow control holds it back. A
+   * subscriber may therefore block or do slow work in {@code onNext}, at the cost of slowing the
+   * data stream. A subscriber stalled longer than the peer's acknowledgement timeout ends in a
+   * {@link ClientEvent.ConnectionClosed} with a cause. Lifecycle events are always delivered, after
+   * the events published before them. While a subscriber is so far behind that its buffer is nearly
+   * full, {@link #connect()}, {@link #startDataTransfer()}, and {@link #stopDataTransfer()} fail
+   * with {@link com.digitalpetri.iec60870.EventBacklogExceededException} so their lifecycle events
+   * still fit.
    *
    * @return the event publisher.
    */

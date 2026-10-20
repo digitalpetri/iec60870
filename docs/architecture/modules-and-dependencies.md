@@ -29,6 +29,9 @@ layer, and of the high-level facade:
   `ClientTransport.disconnect()` means intentional shutdown; `ClientTransport.closeConnection()`
   closes only the current connection so a persistent transport can reconnect after a protocol
   binding drops a malformed frame.
+  `ClientTransport.setReadPaused(boolean)` and `Session.setInboundPaused(boolean)` are the inbound
+  flow-control seam: both default to no-ops, `NettyClientTransport` toggles `autoRead`, and
+  `ApciSession` forwards the session call to its transport.
 
 `iec60870-cs104` owns the genuinely-104 link/session code (the package `.cs104`):
 

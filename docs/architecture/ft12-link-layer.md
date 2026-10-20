@@ -15,6 +15,13 @@ the neutral `Session` SPI, not the engines. The ASDU application layer above the
 unchanged, with the 104 path. (Spec references below cite IEC 60870-5-1 for the FT1.2 frame format
 and IEC 60870-5-2 for the balanced and unbalanced link transmission procedures.)
 
+`Ft12LinkLayer` keeps the `Session.setInboundPaused` default, a no-op, so the client facade cannot
+yet hold a 101 peer back while an event subscriber lags. The standard mechanisms would be for an
+unbalanced master to stop polling for class 1 and class 2 data and for a balanced station to set DFC
+in its confirmations. Until then a 101 client relies on its event buffer alone, and closes the
+connection with an `EventBacklogExceededException` if a subscriber falls behind by the buffer's full
+capacity (see [Buffers and threading](buffers-and-threading.md#client-event-delivery-and-inbound-flow-control)).
+
 ## Frame formats
 
 FT1.2 (IEC 60870-5-1) defines three frame shapes, distinguished by their leading start octet and

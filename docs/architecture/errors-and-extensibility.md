@@ -147,6 +147,8 @@ An application can drop to the raw layer at any time:
 
 Together these cover the modeled procedures and the bespoke ones built on standard TypeIDs: a
 received ASDU of a supported type that the facade does not act on is still surfaced as a raw `Asdu`
-(via `ClientEvent.AsduReceived` or `ServerHandler.onRawAsdu`), so it is never silently dropped. A
+(via `ClientEvent.AsduReceived` or `ServerHandler.onRawAsdu`), so it is never silently dropped. The
+client event stream itself never drops events; a lagging subscriber pauses inbound data instead (see
+[Buffers and threading](buffers-and-threading.md#client-event-delivery-and-inbound-flow-control)). A
 TypeID the library does not model, or an `F_*` type, is surfaced as raw octets. The facades cannot
 send such a type, so private TypeIDs and file transfer are not supported end to end.

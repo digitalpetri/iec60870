@@ -19,6 +19,7 @@ public final class FakeClientTransport implements ClientTransport {
 
   private boolean connected;
   private int disconnectCount;
+  private int closeConnectionCount;
   private @Nullable Throwable connectFailure;
 
   @Override
@@ -41,6 +42,7 @@ public final class FakeClientTransport implements ClientTransport {
   @Override
   public void closeConnection() {
     connected = false;
+    closeConnectionCount++;
   }
 
   @Override
@@ -78,5 +80,14 @@ public final class FakeClientTransport implements ClientTransport {
    */
   public int disconnectCount() {
     return disconnectCount;
+  }
+
+  /**
+   * Returns how many times {@link #closeConnection()} has been invoked.
+   *
+   * @return the {@code closeConnection()} invocation count.
+   */
+  public int closeConnectionCount() {
+    return closeConnectionCount;
   }
 }

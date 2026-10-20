@@ -76,6 +76,21 @@ public interface ClientTransport {
   CompletionStage<Void> send(ByteBuf frame);
 
   /**
+   * Pauses or resumes reading inbound frames from the current connection.
+   *
+   * <p>While paused, the transport stops reading from the peer, so frames wait in the operating
+   * system's buffers and the peer's own flow control throttles it. Frames the transport has already
+   * read may still be delivered to the listener after the call. Writes are not affected. The pause
+   * applies to the current connection only; a new connection starts with reading enabled.
+   *
+   * <p>May be called from any thread, including from within a {@link TransportListener} callback.
+   * The default does nothing, which leaves reading enabled.
+   *
+   * @param paused {@code true} to stop reading, {@code false} to resume.
+   */
+  default void setReadPaused(boolean paused) {}
+
+  /**
    * Registers the listener that receives inbound frames and connection-loss notifications.
    *
    * <p>Should be set before {@link #connect()} so no inbound frame is missed. Setting a new

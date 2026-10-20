@@ -295,15 +295,23 @@ Everything above runs under one contract, distilled from
   work onto the callback executor for you.
 - **Use the `*Async` handler form** when the answer is itself non-blocking and I/O-bound (for example
   a database lookup that returns a `CompletionStage`), so you do not tie up the callback thread.
-- **Keep `onNext` fast.** The event publisher is a `SubmissionPublisher`; a subscriber that falls far
-  enough behind that its buffer overflows can be **dropped/lagged** rather than blocking the
-  publisher. Do the minimum in `onNext` and offload slow work.
+- **The client event stream is lossless.** A slow client subscriber, or one that calls
+  `request(n)` in small batches, never loses an event. Once the slowest subscriber is
+  `eventBacklogLimit` events behind (default 4096, set on `ClientConfig.Builder` or the transport
+  builders), the client stops reading user data until the backlog falls to half the limit, and the
+  outstation's `k` window holds it back. A slow subscriber therefore slows the data stream rather
+  than dropping data. A subscriber stalled longer than `t1` ends in a `ConnectionClosed` with a
+  cause; lifecycle events are always delivered, in order after the events published before them.
+- **Keep server `onNext` fast.** The server event stream still uses a fixed per-subscriber buffer
+  of 256 events and drops (and logs) an event that finds a subscriber's buffer full. Hand server
+  events to your own queue if you do slow work with them.
 
 | Choice | Consequence |
 |---|---|
 | Default `ForkJoinPool` callback executor | parallel across connections; per-connection delivery still serial |
 | Single-threaded `callbackExecutor` | strict submission order across *everything*, at the cost of cross-connection parallelism |
-| Blocking inside `onNext` / a blocking handler | safe (off the I/O thread), but a slow subscriber risks being dropped — offload slow work |
+| Blocking inside a client `onNext` | safe; no event is lost, but the data stream slows to the subscriber's pace |
+| Blocking inside a server `onNext` / a blocking handler | safe (off the I/O thread), but a slow server subscriber can lose events — offload slow work |
 | `*Async` handler form | the server does not wait on the callback thread for an I/O-bound answer |
 
 For the full ownership and serialization model, read

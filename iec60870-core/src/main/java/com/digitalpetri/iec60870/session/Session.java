@@ -143,6 +143,22 @@ public interface Session {
   int pendingSendCount();
 
   /**
+   * Pauses or resumes inbound user data using the link layer's own flow control.
+   *
+   * <p>While paused, the session stops taking in new user data, so the peer's own flow control
+   * throttles it. Data already received is still delivered and acknowledged as usual, so a few more
+   * ASDUs may arrive after the call. A pause lasting longer than the peer's acknowledgement timeout
+   * can end in a connection close. The pause applies to the current connection; {@link
+   * #onConnected()} starts a new connection unpaused.
+   *
+   * <p>May be called from any thread, including from within an {@link Events} callback. The default
+   * does nothing, which leaves inbound data unthrottled.
+   *
+   * @param paused {@code true} to pause inbound user data, {@code false} to resume it.
+   */
+  default void setInboundPaused(boolean paused) {}
+
+  /**
    * Closes the session.
    *
    * <p>Cancels any timers, fails any pending data-transfer future, and marks the session closed.

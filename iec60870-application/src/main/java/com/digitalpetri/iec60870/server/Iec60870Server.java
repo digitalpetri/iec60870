@@ -73,7 +73,11 @@ public interface Iec60870Server extends AutoCloseable {
   /**
    * Returns a publisher of server lifecycle and request events.
    *
-   * <p>Events are delivered serially on the configured callback executor.
+   * <p>Events are delivered serially on the configured callback executor. Each subscriber has a
+   * buffer of {@link Flow#defaultBufferSize()} events. An event that finds a subscriber's buffer
+   * full is dropped for that subscriber and logged, so keep {@code onNext} fast or hand events to
+   * your own queue. Unlike {@code Iec60870Client.events()}, which never drops events, the server
+   * stream does not throttle the controlling stations.
    *
    * @return the event publisher.
    */
