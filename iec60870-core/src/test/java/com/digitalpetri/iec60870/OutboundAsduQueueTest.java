@@ -1,7 +1,10 @@
 package com.digitalpetri.iec60870;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -16,6 +19,24 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class OutboundAsduQueueTest {
+  @Test
+  void rawEntriesKeepACopyAndShareTheEvictionRules() {
+    var queue = new OutboundAsduQueue(2, OutboundQueuePolicy.DROP_OLDEST);
+    byte[] octets = {(byte) 0x88, 0x01, 0x43, 0x00};
+    var event = queue.offer(asdu(1), false);
+    var raw = queue.offerRaw(octets, true);
+    octets[0] = 0;
+
+    var reply = queue.offer(asdu(2), true);
+
+    assertTrue(event.completion().toCompletableFuture().isCompletedExceptionally());
+    assertSame(raw, queue.removeFirst());
+    assertArrayEquals(new byte[] {(byte) 0x88, 0x01, 0x43, 0x00}, raw.rawAsdu());
+    assertThrows(IllegalStateException.class, raw::asdu);
+    assertSame(reply, queue.removeFirst());
+    assertNull(reply.rawAsdu());
+  }
+
   @Test
   void protectedEntriesEvictOnlyTheOldestDiscardableEntry() {
     for (OutboundQueuePolicy policy : OutboundQueuePolicy.values()) {

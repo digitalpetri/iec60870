@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.cs104;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolStateException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
@@ -19,6 +20,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,6 +110,23 @@ public final class ApciSession implements Session {
     default CompletionStage<Void> sendAsync(Apdu apdu) {
       send(apdu);
       return CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * Writes an I-format frame around ASDU octets that bypass the typed encoder, and returns its
+     * transport completion.
+     *
+     * <p>Invoked while the session lock is held; implementations must not block or re-enter the
+     * session. The default throws, so a session with this output rejects {@link
+     * ApciSession#sendRawAsduAsync(byte[])} submissions without consuming a sequence number.
+     *
+     * @param control the I-format control field.
+     * @param asdu the complete ASDU octets; must not be modified.
+     * @return the write completion.
+     * @throws UnsupportedOperationException if this output cannot write raw ASDU octets.
+     */
+    default CompletionStage<Void> sendRawAsync(ControlField.TypeI control, byte[] asdu) {
+      throw new UnsupportedOperationException("output does not support raw ASDU sends");
     }
   }
 
@@ -292,12 +311,43 @@ public final class ApciSession implements Session {
 
       ControlField control = apdu.control();
       if (control instanceof ControlField.TypeI i) {
-        onIFrame(i, Objects.requireNonNull(apdu.asdu()));
+        Asdu asdu = Objects.requireNonNull(apdu.asdu());
+        onIFrame(i, () -> events.onAsdu(asdu));
       } else if (control instanceof ControlField.TypeS s) {
         onSFrame(s);
       } else if (control instanceof ControlField.TypeU u) {
         onUFrame(u.function());
       }
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Handles an inbound I-format frame whose ASDU could not be decoded.
+   *
+   * <p>The frame goes through the same checks and state changes as an I-frame passed to {@link
+   * #onApdu(Apdu)}: an I-frame while data transfer is stopped or an unexpected N(S) closes the
+   * session, its N(R) acknowledges sent frames, V(R) advances, and the frame is acknowledged within
+   * {@code t2} or at {@code w}. Instead of {@link Session.Events#onAsdu(Asdu)}, the session reports
+   * the octets through {@link Session.Events#onUndecodableAsdu(byte[], Iec60870Exception)}.
+   *
+   * @param control the I-format control field.
+   * @param asdu the raw ASDU octets; ownership passes to the session.
+   * @param cause the decode failure.
+   */
+  public void onUndecodableIFrame(
+      ControlField.TypeI control, byte[] asdu, Iec60870Exception cause) {
+    Objects.requireNonNull(control, "control");
+    Objects.requireNonNull(asdu, "asdu");
+    Objects.requireNonNull(cause, "cause");
+    lock.lock();
+    try {
+      if (closed) {
+        return;
+      }
+      armT3();
+      onIFrame(control, () -> events.onUndecodableAsdu(asdu, cause));
     } finally {
       lock.unlock();
     }
@@ -322,17 +372,37 @@ public final class ApciSession implements Session {
 
   @Override
   public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
-    return submitAsdu(asdu, true);
+    Objects.requireNonNull(asdu, "asdu");
+    return submit(() -> sendQueue.offer(asdu, true), true);
+  }
+
+  /**
+   * Sends ASDU octets exactly as given, in an I-format APDU queued behind earlier submissions.
+   *
+   * <p>The completion fails with {@link UnsupportedOperationException} if the session's {@link
+   * Output} does not override {@link Output#sendRawAsync(ControlField.TypeI, byte[])}.
+   *
+   * @param asdu the complete ASDU octets; the session takes a copy.
+   * @return the transport-write completion.
+   */
+  @Override
+  public CompletionStage<Void> sendRawAsduAsync(byte[] asdu) {
+    Objects.requireNonNull(asdu, "asdu");
+    return submit(() -> sendQueue.offerRaw(asdu, true), true);
   }
 
   private CompletionStage<Void> submitAsdu(Asdu asdu, boolean reliable) {
     Objects.requireNonNull(asdu, "asdu");
+    return submit(() -> sendQueue.offer(asdu, reliable), reliable);
+  }
+
+  private CompletionStage<Void> submit(Supplier<Entry> offer, boolean reliable) {
     lock.lock();
     try {
       if (closed) {
         return CompletableFuture.failedFuture(new ConnectionClosedException("session is closed"));
       }
-      Entry entry = sendQueue.offer(asdu, reliable);
+      Entry entry = offer.get();
       flushSendQueue(reliable ? null : entry);
       return entry.completion();
     } finally {
@@ -518,7 +588,7 @@ public final class ApciSession implements Session {
 
   // --- Inbound frame handling (lock held) -----------------------------------------------------
 
-  private void onIFrame(ControlField.TypeI i, Asdu asdu) {
+  private void onIFrame(ControlField.TypeI i, Runnable delivery) {
     if (!dataTransferStarted) {
       // An I-frame carries user data, which §5.3 permits only while data transfer is started: the
       // controlling station sends it after STARTDT con, the controlled station after it has set the
@@ -552,7 +622,7 @@ public final class ApciSession implements Session {
     unackedReceivedCount++;
 
     // Deliver to the application.
-    events.onAsdu(asdu);
+    delivery.run();
     // Delivery may have synchronously closed the session (an application send failure); if so, do
     // not acknowledge or arm timers on a closed session.
     if (closed) {
@@ -736,7 +806,6 @@ public final class ApciSession implements Session {
         break;
       }
       Entry entry = sendQueue.removeFirst();
-      Asdu asdu = entry.asdu();
       // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
       queueDrained.signalAll();
       ControlField.TypeI control =
@@ -747,7 +816,11 @@ public final class ApciSession implements Session {
       iFrameTimeouts.addLast(timeout);
       CompletionStage<Void> write;
       try {
-        write = output.sendAsync(new Apdu(control, asdu));
+        byte[] rawAsdu = entry.rawAsdu();
+        write =
+            rawAsdu != null
+                ? output.sendRawAsync(control, rawAsdu)
+                : output.sendAsync(new Apdu(control, entry.asdu()));
       } catch (RuntimeException error) {
         // Reject this submission and cancel only its timer; preserve earlier deadlines.
         iFrameTimeouts.removeLastOccurrence(timeout);

@@ -1,8 +1,10 @@
 package com.digitalpetri.iec60870.server;
 
+import com.digitalpetri.iec60870.AsduDecodeException;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
+import com.digitalpetri.iec60870.UnsupportedAsduTypeException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
@@ -367,6 +369,50 @@ public final class DefaultIec60870Server implements Iec60870Server {
         cause != null ? cause : new IllegalStateException("unknown failure"));
   }
 
+  /**
+   * Builds the negative mirror IEC 60870-5-101 7.2.3 defines for an undecodable ASDU: the octets
+   * returned unchanged except for octet 3, which keeps the T bit, sets P/N, and carries cause 44
+   * for an undefined type identification (or one with no codec) or cause 45 for an undefined cause
+   * of transmission.
+   *
+   * @param asdu the received ASDU octets.
+   * @return the mirror octets, or {@code null} when no mirror is defined: the type and cause are
+   *     both known, the ASDU is shorter than three octets, or it already carries P/N=1.
+   */
+  static byte @Nullable [] undecodableMirror(byte[] asdu) {
+    if (asdu.length < 3 || (asdu[2] & 0x40) != 0) {
+      return null;
+    }
+    int cause;
+    if (!isDecodableType(asdu[0] & 0xFF)) {
+      cause = Cause.UNKNOWN_TYPE_ID.value();
+    } else if (!isDefinedCause(asdu[2] & 0x3F)) {
+      cause = Cause.UNKNOWN_CAUSE.value();
+    } else {
+      return null;
+    }
+    byte[] mirror = asdu.clone();
+    mirror[2] = (byte) ((asdu[2] & 0x80) | 0x40 | cause);
+    return mirror;
+  }
+
+  private static boolean isDecodableType(int typeId) {
+    try {
+      return AsduType.fromId(typeId).supported();
+    } catch (UnsupportedAsduTypeException e) {
+      return false;
+    }
+  }
+
+  private static boolean isDefinedCause(int value) {
+    try {
+      Cause.fromValue(value);
+      return true;
+    } catch (AsduDecodeException e) {
+      return false;
+    }
+  }
+
   // --- Per-connection state -------------------------------------------------------------------
 
   /**
@@ -534,13 +580,13 @@ public final class DefaultIec60870Server implements Iec60870Server {
     }
 
     /**
-     * Dispatches a received ASDU on the serial per-connection chain so handler callbacks never run
-     * concurrently for this connection.
+     * Runs the work for one received ASDU on the serial per-connection chain so handler callbacks
+     * never run concurrently for this connection.
      */
-    // Read-modify-write of dispatchTail is serialized by the session lock (onAsdu, the only caller,
-    // runs under it), so the non-atomic compound assignment is safe.
+    // Read-modify-write of dispatchTail is serialized by the session lock (the session callbacks,
+    // the only callers, run under it), so the non-atomic compound assignment is safe.
     @SuppressWarnings("NonAtomicOperationOnVolatileField")
-    private void dispatch(Asdu asdu) {
+    private void dispatch(Supplier<CompletionStage<Void>> work) {
       // Bound the dispatch backlog: a peer that streams ASDUs faster than the handler drains them
       // could otherwise retain unbounded ASDUs and futures on the chain. The session delivers this
       // ASDU under its lock and must not be re-entered, so an over-limit ASDU is dropped here
@@ -558,7 +604,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
       dispatchTail =
           dispatchTail
               .handle((ignored, ignoredError) -> null)
-              .thenComposeAsync(ignored -> handle(asdu), callbackExecutor)
+              .thenComposeAsync(ignored -> work.get(), callbackExecutor)
               .handle(
                   (ignored, error) -> {
                     if (bounded) {
@@ -1015,6 +1061,34 @@ public final class DefaultIec60870Server implements Iec60870Server {
       return done();
     }
 
+    // --- Undecodable ASDU ---------------------------------------------------------------------
+
+    /**
+     * Publishes an undecodable ASDU and, when IEC 60870-5-101 7.2.3 defines one, sends its negative
+     * mirror as raw octets. The typed model cannot represent an undefined type identification or
+     * cause, so the mirror bypasses the reply deferral that typed replies use; it is a negative
+     * answer, not process data, so overtaking deferred events is harmless.
+     */
+    private CompletionStage<Void> handleUndecodable(byte[] asdu, Iec60870Exception cause) {
+      publish(new ServerEvent.UndecodableAsdu(remoteAddress, asdu, cause));
+      byte[] reply = undecodableMirror(asdu);
+      if (reply != null && !closed.get()) {
+        session
+            .sendRawAsduAsync(reply)
+            .whenCompleteAsync(
+                (ignored, error) -> {
+                  if (error instanceof UnsupportedOperationException) {
+                    LOGGER.debug(
+                        "session for {} cannot send a raw negative mirror", remoteAddress, error);
+                  } else if (error != null) {
+                    close(error);
+                  }
+                },
+                callbackExecutor);
+      }
+      return done();
+    }
+
     // --- ASDU construction helpers ------------------------------------------------------------
 
     /**
@@ -1102,7 +1176,17 @@ public final class DefaultIec60870Server implements Iec60870Server {
       @Override
       public void onAsdu(Asdu asdu) {
         // Invoked under the session lock; hand off to the serial dispatch chain.
-        dispatch(asdu);
+        dispatch(() -> handle(asdu));
+      }
+
+      @Override
+      public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
+        LOGGER.debug(
+            "received an undecodable ASDU ({} octets) from {}: {}",
+            asdu.length,
+            remoteAddress,
+            cause.toString());
+        dispatch(() -> handleUndecodable(asdu, cause));
       }
 
       @Override

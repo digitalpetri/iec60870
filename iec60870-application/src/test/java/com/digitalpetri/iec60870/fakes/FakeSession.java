@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.fakes;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.session.OutboundAsduQueue;
@@ -41,6 +42,8 @@ public final class FakeSession implements Session {
   private final boolean serverRole;
 
   private final List<Asdu> sent = new ArrayList<>();
+  private final List<byte[]> sentRaw = new ArrayList<>();
+  private boolean rawSendSupported = true;
   private final OutboundAsduQueue queued;
 
   private boolean dataTransferStarted;
@@ -140,6 +143,18 @@ public final class FakeSession implements Session {
   }
 
   @Override
+  public CompletionStage<Void> sendRawAsduAsync(byte[] asdu) {
+    if (!rawSendSupported) {
+      return Session.super.sendRawAsduAsync(asdu);
+    }
+    if (closed) {
+      return CompletableFuture.failedFuture(new ConnectionClosedException("session closed"));
+    }
+    sentRaw.add(asdu.clone());
+    return CompletableFuture.completedFuture(null);
+  }
+
+  @Override
   public boolean awaitSendCapacity(long timeoutMillis) {
     // The fake never blocks: capacity is reported as available unless the bounded queue is full.
     return maxOutboundQueue <= 0 || queued.size() < maxOutboundQueue;
@@ -165,6 +180,35 @@ public final class FakeSession implements Session {
    */
   public void deliverAsdu(Asdu asdu) {
     events.onAsdu(asdu);
+  }
+
+  /**
+   * Reports inbound ASDU octets the session could not decode through {@link
+   * Session.Events#onUndecodableAsdu(byte[], Iec60870Exception)}.
+   *
+   * @param asdu the raw ASDU octets.
+   * @param cause the decode failure.
+   */
+  public void deliverUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
+    events.onUndecodableAsdu(asdu, cause);
+  }
+
+  /**
+   * Returns the raw ASDU octets sent through {@link #sendRawAsduAsync(byte[])}, in order.
+   *
+   * @return the sent raw ASDUs.
+   */
+  public List<byte[]> sentRawAsdus() {
+    return sentRaw;
+  }
+
+  /**
+   * Makes {@link #sendRawAsduAsync(byte[])} behave like a session without raw-send support.
+   *
+   * @param supported whether raw sends are supported.
+   */
+  public void rawSendSupported(boolean supported) {
+    this.rawSendSupported = supported;
   }
 
   /**

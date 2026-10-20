@@ -1,10 +1,12 @@
 package com.digitalpetri.iec60870.cs101;
 
 import com.digitalpetri.iec60870.AsduDecodeException;
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
 
 /**
  * Bridges {@link Ft12Frame} values to and from complete FT1.2 frame {@link ByteBuf}s.
@@ -68,8 +70,8 @@ public final class Ft12Framer {
    * @return a newly allocated buffer holding the complete FT1.2 frame.
    * @throws IllegalArgumentException if {@code linkAddressLength} is outside {@code 0..2}, the link
    *     address is non-zero while {@code linkAddressLength} is {@code 0}, the link address does not
-   *     fit in {@code linkAddressLength} octets, or a variable frame's user-data length exceeds
-   *     {@code 255}.
+   *     fit in {@code linkAddressLength} octets, a variable frame's user-data length exceeds {@code
+   *     255}, or {@code frame} is an inbound-only {@link Ft12Frame.UndecodableVariable}.
    */
   public static ByteBuf encode(
       Ft12Frame frame, ProtocolProfile profile, int linkAddressLength, ByteBufAllocator alloc) {
@@ -83,6 +85,8 @@ public final class Ft12Framer {
         encodeFixed(fixed, linkAddressLength, buffer);
       } else if (frame instanceof Ft12Frame.Variable variable) {
         encodeVariable(variable, profile, linkAddressLength, buffer);
+      } else if (frame instanceof Ft12Frame.UndecodableVariable) {
+        throw new IllegalArgumentException("an undecodable variable frame cannot be encoded");
       } else {
         // Unreachable: Ft12Frame is sealed over the three handled subtypes.
         throw new IllegalArgumentException(
@@ -101,6 +105,10 @@ public final class Ft12Framer {
    * <p>The buffer must be positioned at the start octet and contain exactly one whole frame. The
    * frame octets are consumed from the buffer; the buffer is not released.
    *
+   * <p>A variable frame whose framing and checksum are valid but whose ASDU cannot be decoded is
+   * returned as an {@link Ft12Frame.UndecodableVariable} rather than thrown, because the frame
+   * itself arrived intact.
+   *
    * @param profile the protocol profile that governs ASDU field widths (used only by
    *     variable-length frames).
    * @param linkAddressLength the number of little-endian link-address octets, in the range {@code
@@ -110,7 +118,7 @@ public final class Ft12Framer {
    * @throws IllegalArgumentException if {@code linkAddressLength} is outside {@code 0..2}.
    * @throws AsduDecodeException if the start octet is unrecognized, the reserved single character
    *     {@code 0xA2} is seen, the doubled length octets disagree, the buffer is too short for the
-   *     declared frame, the checksum or end octet is wrong, or the embedded ASDU is malformed.
+   *     declared frame, or the checksum or end octet is wrong.
    */
   public static Ft12Frame decode(
       ProtocolProfile profile, int linkAddressLength, ByteBuf wholeFrame) {
@@ -231,12 +239,13 @@ public final class Ft12Framer {
    * @param profile the protocol profile that governs ASDU field widths.
    * @param linkAddressLength the number of little-endian link-address octets.
    * @param buffer the source buffer.
-   * @return the decoded variable-length frame.
+   * @return the decoded variable-length frame, or an {@link Ft12Frame.UndecodableVariable} when
+   *     only the embedded ASDU is malformed.
    * @throws AsduDecodeException if the doubled length octets disagree, the repeated start octet is
    *     wrong, the buffer is too short, the user-data length cannot hold the control field and link
-   *     address, the checksum or end octet is wrong, or the embedded ASDU is malformed.
+   *     address, or the checksum or end octet is wrong.
    */
-  private static Ft12Frame.Variable decodeVariable(
+  private static Ft12Frame decodeVariable(
       ProtocolProfile profile, int linkAddressLength, ByteBuf buffer) {
     if (buffer.readableBytes() < 3) {
       throw new AsduDecodeException(
@@ -288,9 +297,20 @@ public final class Ft12Framer {
     int end = buffer.readUnsignedByte();
     verifyChecksumAndEnd(buffer, userDataStart, userDataEnd, cs, end);
 
-    Asdu asdu = Asdu.Serde.decode(profile, asduBytes);
-
-    return new Ft12Frame.Variable(LinkControlField.fromOctet(controlOctet), linkAddress, asdu);
+    LinkControlField control = LinkControlField.fromOctet(controlOctet);
+    int asduStart = asduBytes.readerIndex();
+    try {
+      return new Ft12Frame.Variable(control, linkAddress, Asdu.Serde.decode(profile, asduBytes));
+    } catch (RuntimeException e) {
+      // Asdu.Serde.decode reports bad input as AsduDecodeException or
+      // UnsupportedAsduTypeException; wrap anything else so the frame's cause stays uniform.
+      Iec60870Exception cause =
+          e instanceof Iec60870Exception ie
+              ? ie
+              : new AsduDecodeException("ASDU decode failed: " + e, e);
+      byte[] octets = ByteBufUtil.getBytes(asduBytes, asduStart, asduLength);
+      return new Ft12Frame.UndecodableVariable(control, linkAddress, octets, cause);
+    }
   }
 
   /**

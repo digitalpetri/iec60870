@@ -4,8 +4,9 @@ The library has [two layers](../../architecture/two-layer-api.md): a high-level 
 points and issues standard commands for you, and a lower **raw protocol layer** that exposes the exact
 bytes on the wire. This page is about that lower layer. You drop to it for one of two reasons: you need
 exact wire control of a TypeID the facade *does* model — for conformance testing or debugging — or you
-need to send and receive a TypeID the facade does **not** act on, such as the file-transfer `F_*` types
-or a private procedure. The escape hatch lives on the high-level
+need to send and receive a TypeID the facade models but does **not** act on. ASDUs the library cannot
+decode at all, such as the file-transfer `F_*` types or a private TypeID, reach you as raw octets (see
+[Receive an undecodable ASDU](#receive-an-undecodable-asdu)). The escape hatch lives on the high-level
 [`Iec60870Client`](../../architecture/two-layer-api.md) and `Iec60870Server`, so you never give up your
 connection to use it.
 
@@ -19,7 +20,7 @@ commands, you are on the wrong page: see [Connect & interrogate](./connect-and-i
 |---|---|
 | You are writing a conformance or exact-wire test and must control every octet. | You are doing standard reads, commands, or [interrogation](./connect-and-interrogate.md). |
 | A **supported** TypeID is delivered but the facade does not act on it, and you want to inspect it. | You want clock sync, general interrogation, or counter interrogation — those are higher-level and safer. |
-| You must speak a private TypeID or an `F_*` file-transfer procedure the facade does not model. | The standard helpers already cover your case. |
+| A peer sends a private TypeID, a private cause, or an `F_*` type, and you want to log or inspect it. | The standard helpers already cover your case. |
 
 For the long-form version of this decision, see the
 [Choosing a layer](../../architecture/two-layer-api.md#choosing-a-layer) table in the architecture
@@ -133,10 +134,12 @@ TypeID. There are also explicit-registry overloads
 need them — the standard registry is what the facade dispatches against, so a custom registry buys you
 nothing at the facade level. Stick to the two-argument calls.
 
-Decode rejects malformed or out-of-range wire data with `AsduDecodeException` (a truncated header, an
-undefined cause, a count outside `0..127`, an IOA overflow under sequence addressing) and rejects an
-undefined or uncodec'd type identification with `UnsupportedAsduTypeException`. See the
-[error model](../reference/errors.md) for the full list.
+Decode rejects malformed wire data with `AsduDecodeException` (a truncated header or element, an
+undefined cause, an IOA overflow under sequence addressing, an element value its record rejects) and
+rejects an undefined or uncodec'd type identification with `UnsupportedAsduTypeException`. It throws
+nothing else for bad input. Time tags are the exception to "malformed": `Cp56Time2a`, `Cp24Time2a`,
+and `Cp16Time2a` keep out-of-range fields as received, and `isWellFormed()` tells you whether they name
+a valid time. See the [error model](../reference/errors.md) for the full list.
 
 ## Who owns the ByteBuf
 
@@ -153,9 +156,10 @@ here.
 
 ## Send a raw ASDU from the client
 
-On an open, started connection, `Iec60870Client.send(Asdu)` transmits any ASDU as-is, bypassing the
-high-level command and request helpers. This is the client-side escape hatch for private TypeIDs and
-conformance work.
+On an open, started connection, `Iec60870Client.send(Asdu)` transmits any ASDU the typed model can
+encode, bypassing the high-level command and request helpers. This is the client-side escape hatch for
+conformance work and procedures the facade does not implement. It cannot send a private TypeID or an
+`F_*` type, because `Asdu.Serde` has no way to encode them.
 
 ```java
 import com.digitalpetri.iec60870.asdu.Asdu;
@@ -195,6 +199,39 @@ concurrently. For the full event surface and the threading rules, see
 [Threading and callback serialization](../../architecture/buffers-and-threading.md#threading-and-callback-serialization);
 this page does not re-explain them.
 
+## Receive an undecodable ASDU
+
+A correctly framed ASDU can still fail to decode: a private TypeID (128–255), an `F_*` type, a private
+or reserved cause of transmission, or objects that do not fit the octets present. The connection stays
+open. The link layer acknowledges the frame like any other, and the client publishes
+`ClientEvent.UndecodableAsdu(asdu, cause)` in place of `AsduReceived`. `asdu()` returns the raw octets,
+starting at the type identification, and `cause()` is the `AsduDecodeException` or
+`UnsupportedAsduTypeException` that decoding threw.
+
+```java
+import com.digitalpetri.iec60870.client.ClientEvent;
+import java.util.HexFormat;
+
+// inside Flow.Subscriber<ClientEvent>#onNext(ClientEvent event):
+switch (event) {
+  case ClientEvent.UndecodableAsdu u ->
+      log.warn("undecodable ASDU {}: {}", HexFormat.of().formatHex(u.asdu()), u.cause().getMessage());
+  default -> {}
+}
+```
+
+The first octet is the TypeID and the third is the cause of transmission (with the T and P/N bits), so
+you can classify a frame without decoding it. A burst of these events right after connecting usually
+means the [protocol profile](./tune-apci.md) field widths do not match the peer's.
+
+The server publishes `ServerEvent.UndecodableAsdu(remoteAddress, asdu, cause)` and answers an undefined
+TypeID or cause itself, with the octets mirrored back as a negative confirmation (cause 44 or 45). An
+undecodable ASDU never reaches `ServerHandler.onRawAsdu`.
+
+For conformance testing, the `Tcp*` and `Serial*` builders accept
+`undecodableAsduPolicy(UndecodableAsduPolicy.STRICT)`. On CS 104 the connection then closes on an
+undecodable ASDU without acknowledging it, and on CS 101 the frame is dropped unacknowledged.
+
 ## Handle a raw ASDU on the server
 
 The server side mirrors the client. Override `ServerHandler.onRawAsdu(ServerContext, Asdu)` — it is
@@ -213,7 +250,7 @@ import com.digitalpetri.iec60870.server.ServerHandler;
 ServerHandler handler = new ServerHandler() {
   @Override
   public boolean onRawAsdu(ServerContext context, Asdu asdu) {
-    if (asdu.type() == AsduType.F_FR_NA_1) {   // a private/bespoke procedure
+    if (asdu.type() == AsduType.C_CI_NA_1) {   // a procedure the facade does not implement
       // ...build a reply Asdu...
       context.send(reply);
       return true;                             // claim it: standard dispatch is skipped
@@ -223,30 +260,26 @@ ServerHandler handler = new ServerHandler() {
 };
 ```
 
-This is the hook for private TypeIDs and bespoke procedures — for example, an `F_*` file-transfer state
-machine. Note the snippet only branches on `asdu.type()`, which is a frame-level decision and always
-safe. The `F_FR_NA_1` body itself **cannot** be decoded by the standard registry (see the next section),
-so a real implementation parses the element bytes itself rather than expecting a decoded record. For
-where `ServerHandler` and `ServerContext` come from, see [Host a server](./host-a-server.md); for the
-rationale behind these hooks, see
+This is the hook for bespoke procedures built on supported TypeIDs. It is offered only ASDUs that
+decoded; private TypeIDs and `F_*` types never reach it. For where `ServerHandler` and `ServerContext`
+come from, see [Host a server](./host-a-server.md); for the rationale behind these hooks, see
 [Raw send/receive hooks](../../architecture/errors-and-extensibility.md#raw-sendreceive-hooks).
 
 ## What the raw layer can and can't do
 
-There is **no pluggable codec registry** at the facade level. Dispatch is driven by `AsduType`, and
-`AsduType.fromId` rejects an undefined type identification with `UnsupportedAsduTypeException` before any
-codec runs. The consequences are sharp:
+There is **no pluggable codec registry** at the facade level: sessions always decode with the standard
+registry, and `AsduType.fromId` rejects an undefined type identification with
+`UnsupportedAsduTypeException` before any codec runs. The consequences are sharp:
 
 - A **modeled** TypeID round-trips fully: you can build it, encode it, and decode its object bodies
   back. (Everything in the [coverage matrix](../reference/coverage-matrix.md) is modeled.)
 - A **supported-but-not-acted-on** TypeID is still delivered raw — via `ClientEvent.AsduReceived` or
   `ServerHandler.onRawAsdu` — and never silently dropped.
-- An **unsupported** TypeID that still has an `AsduType` constant (the `F_*` file-transfer types) can be
-  carried as a raw `Asdu` envelope, but **decoding its element bodies fails**: the standard registry has
-  no codec for it, so `Asdu.Serde.decode` throws `UnsupportedAsduTypeException`. Handle those at the
-  frame level (branch on `asdu.type()`) or parse the bytes yourself.
-- A **private-range** TypeID (128–255) has no `AsduType` constant at all; `AsduType.fromId` rejects it
-  with `UnsupportedAsduTypeException`.
+- An **unsupported** TypeID that still has an `AsduType` constant (the `F_*` file-transfer types) has
+  no codec, so `Asdu.Serde` can neither decode nor encode it. Inbound, it arrives as a
+  `ClientEvent.UndecodableAsdu` with its raw octets for you to parse. Outbound, it cannot be sent.
+- A **private-range** TypeID (128–255) has no `AsduType` constant at all. It is received the same way as
+  an `F_*` type and cannot be sent either.
 
 See the [coverage matrix](../reference/coverage-matrix.md) for what is modeled and the
 [error model](../reference/errors.md) for what each operation throws.

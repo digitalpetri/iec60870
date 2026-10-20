@@ -21,8 +21,9 @@ This is the fast-lookup table; the rest of the page is detail.
 | A request times out | `ProtocolTimeoutException` (thrown) | [When each is raised](#when-each-is-raised) |
 | The connection is lost or closed | `ConnectionClosedException` (thrown) | [Fatal vs. recoverable](#fatal-vs-recoverable) |
 | A duplicate request is already in flight | `RequestInProgressException` (thrown) | [When each is raised](#when-each-is-raised) |
-| Bad wire data arrives | `AsduDecodeException` (thrown) | [When each is raised](#when-each-is-raised) |
-| An unknown TypeID is decoded | `UnsupportedAsduTypeException` (thrown) | [When each is raised](#when-each-is-raised) |
+| A malformed frame arrives (bad START octet, length, control field) | `ClientEvent.ConnectionClosed` carrying an `AsduDecodeException` | [Fatal vs. recoverable](#fatal-vs-recoverable) |
+| An intact frame carries an ASDU that cannot be decoded (unknown TypeID or cause, bad objects) | `ClientEvent.UndecodableAsdu` / `ServerEvent.UndecodableAsdu` event; the connection stays open | [Fatal vs. recoverable](#fatal-vs-recoverable) |
+| You decode bad data with `Asdu.Serde` yourself | `AsduDecodeException` or `UnsupportedAsduTypeException` (thrown) | [When each is raised](#when-each-is-raised) |
 | The APCI window is violated | `SequenceNumberException` (thrown, fatal) | [Fatal vs. recoverable](#fatal-vs-recoverable) |
 | An *uncorrelated* negative confirmation arrives | `ClientEvent.NegativeConfirmation` event | [Uncorrelated negative confirmations](#uncorrelated-negative-confirmations-events) |
 
@@ -50,12 +51,12 @@ RuntimeException
 
 | Exception | Raised when | Carries |
 |---|---|---|
-| `AsduDecodeException` | An ASDU or one of its fields cannot be decoded: bad START octet, truncated header, undefined cause, out-of-range count. | message / cause only |
+| `AsduDecodeException` | A frame or an ASDU cannot be decoded: bad START octet or length, truncated header or element, undefined cause, or an element value its record rejects. | message / cause only |
 | `ProtocolTimeoutException` | An APCI timer or a request/response deadline elapses before the peer responds. | message / cause only |
 | `ConnectionClosedException` | A new operation is attempted on a closed connection, or a pending request is failed because the transport reported a loss. | message / cause only |
 | `NegativeConfirmationException` | A *blocking* request ([`interrogate`](#what-each-operation-throws-or-returns), `read`, `synchronizeClock`) receives a confirming ASDU with the [P/N bit](glossary.md) set. | `Cause cause()`, `Optional<Asdu> asdu()` |
 | `RequestInProgressException` | A request is issued while a conflicting request to the same target is still in flight. | message only |
-| `UnsupportedAsduTypeException` | A type identification is undefined, or is defined but has no typed object mapping in this library. | message / cause only |
+| `UnsupportedAsduTypeException` | A type identification is undefined, or is defined but has no codec in this library (the `F_*` types). | message / cause only |
 | `SequenceNumberException` | An inbound APCI N(S)/N(R) violates the `k`/`w` flow-control rules. | message / cause only |
 
 Only `NegativeConfirmationException` exposes typed accessors. The other six carry just the standard
@@ -74,6 +75,11 @@ Not every exception leaves the connection usable.
 - **Recoverable.** A `NegativeConfirmationException`, or a `ProtocolTimeoutException` on a single
   request, leaves the connection open — the peer simply did not answer that one request in time, or
   answered it negatively. You can retry on the same client.
+- **Decode failures depend on what failed.** A malformed frame (bad START octet, length, or control
+  field) closes the connection with an `AsduDecodeException` as the cause. An intact frame whose ASDU
+  cannot be decoded is acknowledged and published as an `UndecodableAsdu` event, and the connection
+  stays open. The `undecodableAsduPolicy(UndecodableAsduPolicy.STRICT)` builder option makes the second
+  case close the connection too.
 
 Which timer expiry is fatal versus per-request is covered in
 [Timers & window](timers-and-window.md) and the architecture's

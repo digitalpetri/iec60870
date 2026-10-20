@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.fakes;
 
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
@@ -169,6 +170,32 @@ public final class FakeServerTransport implements ServerTransport {
     public void deliverBadAcknowledgement(Asdu cause) {
       Objects.requireNonNull(cause, "cause");
       session().fireClosed(new IllegalStateException("bad acknowledgement"));
+    }
+
+    /**
+     * Reports undecodable inbound ASDU octets to the facade through the connection's session.
+     *
+     * @param asdu the raw ASDU octets.
+     * @param cause the decode failure.
+     */
+    public void deliverUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
+      session().deliverUndecodableAsdu(asdu, cause);
+    }
+
+    /**
+     * Returns the raw ASDU octets the server has sent on this connection so far.
+     *
+     * @return the sent raw ASDUs in order.
+     */
+    public List<byte[]> sentRawAsdus() {
+      return session().sentRawAsdus();
+    }
+
+    /**
+     * Makes this connection's session reject raw sends, like a session without raw-send support.
+     */
+    public void disableRawSends() {
+      session().rawSendSupported(false);
     }
 
     /** Signals connection loss to the facade through the connection's session. */

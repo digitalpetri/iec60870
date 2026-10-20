@@ -50,7 +50,26 @@ public final class OutboundAsduQueue {
    * @return the entry, whose completion fails immediately when the queue rejects it.
    */
   public Entry offer(Asdu asdu, boolean reliable) {
-    var entry = new Entry(Objects.requireNonNull(asdu, "asdu"), reliable);
+    return offer(new Entry(Objects.requireNonNull(asdu, "asdu"), null, reliable));
+  }
+
+  /**
+   * Offers raw ASDU octets that bypass the typed encoder, retaining submission order among accepted
+   * entries.
+   *
+   * <p>Raw entries follow the same bound and eviction rules as typed ones. Their {@link
+   * Entry#asdu()} accessor throws; read {@link Entry#rawAsdu()} instead.
+   *
+   * @param asdu the complete ASDU octets; the queue takes a copy.
+   * @param reliable whether to protect this entry against overflow eviction.
+   * @return the entry, whose completion fails immediately when the queue rejects it.
+   */
+  public Entry offerRaw(byte[] asdu, boolean reliable) {
+    return offer(new Entry(null, Objects.requireNonNull(asdu, "asdu").clone(), reliable));
+  }
+
+  private Entry offer(Entry entry) {
+    boolean reliable = entry.reliable;
     if (capacity > 0 && queue.size() >= capacity) {
       Entry evicted =
           (reliable || policy == OutboundQueuePolicy.DROP_OLDEST)
@@ -138,20 +157,40 @@ public final class OutboundAsduQueue {
 
   /** One submission and its first transport-write completion. */
   public static final class Entry {
-    private final Asdu asdu;
+    private final @Nullable Asdu asdu;
+    private final byte @Nullable [] rawAsdu;
     private final boolean reliable;
     private final CompletableFuture<Void> completion = new CompletableFuture<>();
 
-    private Entry(Asdu asdu, boolean reliable) {
+    private Entry(@Nullable Asdu asdu, byte @Nullable [] rawAsdu, boolean reliable) {
       this.asdu = asdu;
+      this.rawAsdu = rawAsdu;
       this.reliable = reliable;
     }
 
     /**
+     * Returns the submitted typed ASDU.
+     *
      * @return the submitted ASDU.
+     * @throws IllegalStateException if this entry was offered with {@link
+     *     OutboundAsduQueue#offerRaw(byte[], boolean)}.
      */
     public Asdu asdu() {
+      if (asdu == null) {
+        throw new IllegalStateException("raw ASDU entry has no typed ASDU");
+      }
       return asdu;
+    }
+
+    /**
+     * Returns the submitted raw ASDU octets.
+     *
+     * @return the octets of an entry offered with {@link OutboundAsduQueue#offerRaw(byte[],
+     *     boolean)}, or {@code null} for a typed entry. The array is shared with the queue and must
+     *     not be modified.
+     */
+    public byte @Nullable [] rawAsdu() {
+      return rawAsdu;
     }
 
     /**

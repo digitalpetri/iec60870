@@ -239,29 +239,29 @@ is no client method, and on the server they fall through to the raw hook (`onRaw
 | 112 | P_ME_NC_1 | Ctrl | `ParameterShortFloat` | Modeled record; raw only at facade |
 | 113 | P_AC_NA_1 | Ctrl | `ParameterActivation` | Modeled record; raw only at facade |
 
-## Out of scope — file transfer (raw-layer only)
+## Out of scope — file transfer
 
 The file-transfer `F_*` types have `AsduType` constants with `supported() == false`. They have **no
 record and no codec entry**.
 
 | TypeID | Mnemonic | Dir | Record | Facade surface |
 |---|---|---|---|---|
-| 120 | F_FR_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 121 | F_SR_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 122 | F_SC_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 123 | F_LS_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 124 | F_AF_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 125 | F_SG_NA_1 | Ctrl | — (none) | Out of scope — raw header only |
-| 126 | F_DR_TA_1 | Mon | — (none) | Out of scope — raw header only |
-| 127 | F_SC_NB_1 | Ctrl | — (none) | Out of scope — raw header only |
+| 120 | F_FR_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 121 | F_SR_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 122 | F_SC_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 123 | F_LS_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 124 | F_AF_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 125 | F_SG_NA_1 | Ctrl | — (none) | Out of scope — received as raw octets |
+| 126 | F_DR_TA_1 | Mon | — (none) | Out of scope — received as raw octets |
+| 127 | F_SC_NB_1 | Ctrl | — (none) | Out of scope — received as raw octets |
 
 **Why they are out of scope, and the consequence.** File transfer in IEC 60870-5 is a *stateful,
 multi-ASDU procedure* (select file, call sections, stream segments, acknowledge, detect the last
 segment), not a stateless record, so the library leaves it present-but-unmodeled rather than ship a
-partial state machine. The consequence: a file-transfer `Asdu` carries its raw header (TypeID, COT,
-CA, IOA) fine, but its **element body does not decode** — `InformationObjectCodecs.codecFor(F_*)`
-throws `UnsupportedAsduTypeException`, because no codec is registered. To use file transfer you parse
-and produce the `F_*` object bodies yourself and drive the procedure from the raw send/receive hooks.
+partial state machine. The consequence: `Asdu.Serde` cannot decode or encode an `F_*` ASDU, because no
+codec is registered. A received one is acknowledged and published as `ClientEvent.UndecodableAsdu` /
+`ServerEvent.UndecodableAsdu` with its raw octets, and a server answers it with a negative
+`UNKNOWN_TYPE_ID` mirror. The facades cannot send one, so file transfer is not supported end to end.
 See [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md), the architecture doc
 [Protocol coverage](../../architecture/protocol-coverage.md), and
 [Errors and extensibility](../../architecture/errors-and-extensibility.md).
@@ -271,17 +271,20 @@ See [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md), the archite
 Type identifications in the private range (the standard reserves `128..255`, with `136..255`
 designated for private use) have **no `AsduType` constant at all**. `AsduType.fromId(int)` rejects an
 inbound private TypeID with `UnsupportedAsduTypeException`, and there is no constant to construct one
-for sending — so private TypeIDs cannot be exchanged through the `Asdu` model. This is a hard
-boundary, distinct from the file-transfer case above (which at least has a constant and a raw
-header). See [Protocol coverage](../../architecture/protocol-coverage.md).
+for sending. A received private TypeID is handled like an `F_*` type: acknowledged, published as an
+`UndecodableAsdu` event with its raw octets, and answered by a server with a negative
+`UNKNOWN_TYPE_ID` mirror. Sending one is not supported. See
+[Protocol coverage](../../architecture/protocol-coverage.md).
 
 ## Causes of transmission (COT) — note
 
 The [cause of transmission (COT)](glossary.md) field is modeled by the
 `com.digitalpetri.iec60870.asdu.Cause` enum, which covers the standard COT range. Private COT values
 (`48..63`) are not modeled and are rejected on decode: `Cause.fromValue(int)` throws
-`AsduDecodeException` for a private, reserved, or undefined value. For the COT concept see the
-[glossary](glossary.md); for what a bad COT raises see the [error model](errors.md).
+`AsduDecodeException` for a private, reserved, or undefined value. A received ASDU with such a cause
+is acknowledged and published as an `UndecodableAsdu` event, and a server answers it with a negative
+`UNKNOWN_CAUSE` mirror. For the COT concept see the [glossary](glossary.md); for what a bad COT raises
+see the [error model](errors.md).
 
 ## Observing any decodable inbound type raw
 

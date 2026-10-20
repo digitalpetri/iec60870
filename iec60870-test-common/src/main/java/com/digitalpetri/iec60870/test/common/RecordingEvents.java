@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.test.common;
 
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.session.Session;
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ import org.jspecify.annotations.Nullable;
 public final class RecordingEvents implements Session.Events {
 
   private final List<Asdu> asdus = new ArrayList<>();
+  private final List<Undecodable> undecodableAsdus = new ArrayList<>();
   private final List<Boolean> dataTransferChanges = new ArrayList<>();
   private int closedCount;
   private @Nullable Throwable lastCloseCause;
@@ -25,6 +27,11 @@ public final class RecordingEvents implements Session.Events {
   @Override
   public void onAsdu(Asdu asdu) {
     asdus.add(asdu);
+  }
+
+  @Override
+  public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
+    undecodableAsdus.add(new Undecodable(asdu, cause));
   }
 
   @Override
@@ -46,6 +53,16 @@ public final class RecordingEvents implements Session.Events {
    */
   public List<Asdu> asdus() {
     return asdus;
+  }
+
+  /**
+   * Returns the undecodable ASDUs reported via {@link Session.Events#onUndecodableAsdu}, in arrival
+   * order.
+   *
+   * @return the live list of undecodable-ASDU reports.
+   */
+  public List<Undecodable> undecodableAsdus() {
+    return undecodableAsdus;
   }
 
   /**
@@ -78,4 +95,12 @@ public final class RecordingEvents implements Session.Events {
   public @Nullable Throwable lastCloseCause() {
     return lastCloseCause;
   }
+
+  /**
+   * One {@link Session.Events#onUndecodableAsdu} report.
+   *
+   * @param asdu the raw ASDU octets.
+   * @param cause the decode failure.
+   */
+  public record Undecodable(byte[] asdu, Iec60870Exception cause) {}
 }

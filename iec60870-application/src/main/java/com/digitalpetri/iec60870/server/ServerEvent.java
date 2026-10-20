@@ -1,7 +1,10 @@
 package com.digitalpetri.iec60870.server;
 
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import java.net.SocketAddress;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -30,7 +33,8 @@ public sealed interface ServerEvent
         ServerEvent.DataTransferStarted,
         ServerEvent.DataTransferStopped,
         ServerEvent.CommandReceived,
-        ServerEvent.AsduReceived {
+        ServerEvent.AsduReceived,
+        ServerEvent.UndecodableAsdu {
 
   /**
    * Returns the remote address of the connection the event relates to.
@@ -166,6 +170,73 @@ public sealed interface ServerEvent
     public AsduReceived {
       Objects.requireNonNull(remoteAddress, "remoteAddress");
       Objects.requireNonNull(asdu, "asdu");
+    }
+  }
+
+  /**
+   * Published for every ASDU received from a controlling station that the session accepted but
+   * could not decode, in place of {@link AsduReceived}.
+   *
+   * <p>The frame was correctly framed, so the session acknowledged it and the connection stays
+   * open. When the type identification is undefined or has no codec, the server answers with the
+   * ASDU mirrored back with P/N=1 and cause {@code UNKNOWN_TYPE_ID} (44); when only the cause of
+   * transmission is undefined, it answers with cause {@code UNKNOWN_CAUSE} (45). Other decode
+   * failures have no defined reply.
+   *
+   * @param remoteAddress the remote address of the connection the ASDU arrived on.
+   * @param asdu the raw ASDU octets, starting at the type identification.
+   * @param cause the decode failure, an {@link com.digitalpetri.iec60870.AsduDecodeException} or an
+   *     {@link com.digitalpetri.iec60870.UnsupportedAsduTypeException}.
+   */
+  record UndecodableAsdu(SocketAddress remoteAddress, byte[] asdu, Iec60870Exception cause)
+      implements ServerEvent {
+
+    /**
+     * Validates the components of the event and copies the octets.
+     *
+     * @param remoteAddress the remote address of the connection the ASDU arrived on.
+     * @param asdu the raw ASDU octets, starting at the type identification.
+     * @param cause the decode failure.
+     * @throws NullPointerException if any component is null.
+     */
+    public UndecodableAsdu {
+      Objects.requireNonNull(remoteAddress, "remoteAddress");
+      asdu = Objects.requireNonNull(asdu, "asdu").clone();
+      Objects.requireNonNull(cause, "cause");
+    }
+
+    /**
+     * Returns a copy of the raw ASDU octets.
+     *
+     * @return the raw ASDU octets, starting at the type identification.
+     */
+    @Override
+    public byte[] asdu() {
+      return asdu.clone();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof UndecodableAsdu other
+          && remoteAddress.equals(other.remoteAddress)
+          && Arrays.equals(asdu, other.asdu)
+          && cause.equals(other.cause);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(remoteAddress, Arrays.hashCode(asdu), cause);
+    }
+
+    @Override
+    public String toString() {
+      return "UndecodableAsdu[remoteAddress="
+          + remoteAddress
+          + ", asdu="
+          + HexFormat.of().formatHex(asdu)
+          + ", cause="
+          + cause
+          + "]";
     }
   }
 }

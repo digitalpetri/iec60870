@@ -8,13 +8,19 @@ import com.digitalpetri.iec60870.UnsupportedAsduTypeException;
  *
  * <p>Each constant carries its numeric {@linkplain #typeId() type identification} and a {@linkplain
  * #supported() support flag} that reports whether the library provides a typed information object
- * record for that type. Types that are present on the wire but not modelled as typed records (the
- * file transfer {@code F_*} types) are included with {@code supported() == false} so that they
- * remain reachable through the raw ASDU and the codec extension points without being silently
- * dropped.
+ * record for that type. The file transfer {@code F_*} types are included with {@code supported() ==
+ * false}: they have no typed record and no codec in the {@linkplain
+ * InformationObjectCodecs#standard() standard registry}, so {@link Asdu.Serde} can neither decode
+ * nor encode an ASDU of these types.
  *
- * <p>Undefined type identifications (values with no defined constant, and the unused value {@code
- * 0}) have no constant; {@link #fromId(int)} throws {@link UnsupportedAsduTypeException} for them.
+ * <p>Undefined type identifications (values with no defined constant, including the private range
+ * {@code 128..255} and the unused value {@code 0}) have no constant; {@link #fromId(int)} throws
+ * {@link UnsupportedAsduTypeException} for them.
+ *
+ * <p>A session does not drop or disconnect on a received ASDU of an unsupported or undefined type.
+ * It acknowledges the frame and reports the raw octets through {@link
+ * com.digitalpetri.iec60870.session.Session.Events#onUndecodableAsdu(byte[],
+ * com.digitalpetri.iec60870.Iec60870Exception)}, which the client and server surface as events.
  */
 public enum AsduType {
 
@@ -200,8 +206,8 @@ public enum AsduType {
   /**
    * Indicates whether the library provides a typed information object record for this type.
    *
-   * <p>When {@code false} the type is still representable as a raw ASDU and reachable through the
-   * codec extension points, but no dedicated {@code .asdu.object} record exists for it.
+   * <p>When {@code false} no dedicated {@code .asdu.object} record or standard codec exists for the
+   * type. A received ASDU of the type is reported as undecodable, with its raw octets.
    *
    * @return {@code true} if a typed record exists for this type; {@code false} otherwise.
    */

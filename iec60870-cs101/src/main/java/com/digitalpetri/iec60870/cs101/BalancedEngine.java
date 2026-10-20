@@ -269,7 +269,9 @@ final class BalancedEngine implements Ft12Engine {
       } else if (frame instanceof Ft12Frame.FixedLength fixed) {
         dispatchControlFrame(fixed.control(), null);
       } else if (frame instanceof Ft12Frame.Variable variable) {
-        dispatchControlFrame(variable.control(), variable.asdu());
+        dispatchControlFrame(variable.control(), InboundUserData.of(variable));
+      } else if (frame instanceof Ft12Frame.UndecodableVariable undecodable) {
+        dispatchControlFrame(undecodable.control(), InboundUserData.of(undecodable));
       }
     } finally {
       lock.unlock();
@@ -511,10 +513,10 @@ final class BalancedEngine implements Ft12Engine {
 
   // --- Inbound dispatch (lock held) -----------------------------------------------------------
 
-  private void dispatchControlFrame(LinkControlField control, @Nullable Asdu asdu) {
+  private void dispatchControlFrame(LinkControlField control, @Nullable InboundUserData userData) {
     if (control.prm()) {
       // The peer initiated this frame: our secondary process answers it.
-      handlePrimaryFromPeer(control, asdu);
+      handlePrimaryFromPeer(control, userData);
     } else {
       // A response to the primary frame we are awaiting a confirmation for.
       handleSecondaryResponse(control);
@@ -653,7 +655,7 @@ final class BalancedEngine implements Ft12Engine {
     }
   }
 
-  private void handlePrimaryFromPeer(LinkControlField control, @Nullable Asdu asdu) {
+  private void handlePrimaryFromPeer(LinkControlField control, @Nullable InboundUserData userData) {
     int fc = control.functionCode();
     switch (fc) {
       case FC_REQUEST_STATUS_OF_LINK ->
@@ -661,7 +663,7 @@ final class BalancedEngine implements Ft12Engine {
           output.send(secondaryFrame(FC_STATUS_OF_LINK));
       case FC_RESET_REMOTE_LINK -> handleResetFromPeer();
       case FC_TEST_FUNCTION -> handleTestFunction(control);
-      case FC_USER_DATA -> handleUserData(control, asdu);
+      case FC_USER_DATA -> handleUserData(control, userData);
       default ->
           // No other primary function code is expected in balanced point-to-point; tell the peer
           // the
@@ -699,7 +701,7 @@ final class BalancedEngine implements Ft12Engine {
     output.send(ack);
   }
 
-  private void handleUserData(LinkControlField control, @Nullable Asdu asdu) {
+  private void handleUserData(LinkControlField control, @Nullable InboundUserData userData) {
     if (!secondaryReset) {
       // User data before a link reset bypasses the link-reset handshake that gates data transfer.
       // The secondary FCB sequence is not yet established, so the frame cannot be validated as a
@@ -722,8 +724,8 @@ final class BalancedEngine implements Ft12Engine {
     expectedFcb = fcb;
     Ft12Frame ack = makeAck();
     lastSecondaryResponse = ack;
-    if (asdu != null) {
-      events.onAsdu(asdu);
+    if (userData != null) {
+      userData.deliverTo(events);
     }
     // Delivery may have synchronously closed the session (an application send failure); if so, do
     // not acknowledge on a closed session.

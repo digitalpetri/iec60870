@@ -1,14 +1,19 @@
 package com.digitalpetri.iec60870.cs104;
 
+import com.digitalpetri.iec60870.AsduDecodeException;
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
+import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
@@ -29,13 +34,17 @@ import org.jspecify.annotations.Nullable;
  *   <li>the session's {@link ApciSession.Output} frames each outbound {@link Apdu} with {@link
  *       ApduFramer#encode(Apdu, ProtocolProfile, ByteBufAllocator)} and hands the resulting
  *       whole-frame {@link ByteBuf} to the transport's {@code send};
- *   <li>a registered {@link TransportListener} deframes each inbound whole-frame {@link ByteBuf}
- *       with {@link ApduFramer#decode(ProtocolProfile, ByteBuf)} and feeds the {@link Apdu} to
- *       {@link ApciSession#onApdu(Apdu)};
- *   <li>a failed outbound send, a transport connection loss, or an inbound decode failure closes
- *       the session and routes the cause to {@link Session.Events#onConnectionLost(Throwable)}
- *       (distinct from the session's own protocol-error {@link Session.Events#onClosed(Throwable)}
- *       self-close).
+ *   <li>a registered {@link TransportListener} decodes the APCI of each inbound whole-frame {@link
+ *       ByteBuf} with {@link ApduFramer#decodeHeader(ByteBuf)}, then decodes the ASDU of an
+ *       I-format frame, and feeds the result to {@link ApciSession#onApdu(Apdu)};
+ *   <li>an I-format frame whose ASDU cannot be decoded goes to {@link
+ *       ApciSession#onUndecodableIFrame(ControlField.TypeI, byte[], Iec60870Exception)} under the
+ *       default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE} policy, so the session
+ *       acknowledges it and reports its octets while the connection stays open;
+ *   <li>a failed outbound send, a transport connection loss, an inbound framing error, or (under
+ *       {@link UndecodableAsduPolicy#STRICT}) an undecodable ASDU closes the session and routes the
+ *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
+ *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close).
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Apdu}&lt;-&gt;octet wiring that the {@code
@@ -53,6 +62,7 @@ public final class Cs104Binding {
   private final ApciSettings settings;
   private final ProtocolProfile profile;
   private final ByteBufAllocator allocator;
+  private final UndecodableAsduPolicy undecodableAsduPolicy;
 
   /**
    * Creates a binding with the {@link UnpooledByteBufAllocator#DEFAULT default unpooled allocator}.
@@ -77,10 +87,32 @@ public final class Cs104Binding {
    */
   public Cs104Binding(
       SessionSettings settings, ProtocolProfile profile, @Nullable ByteBufAllocator allocator) {
+    this(settings, profile, allocator, UndecodableAsduPolicy.DEFAULT);
+  }
+
+  /**
+   * Creates a binding with an explicit outbound-framing allocator and undecodable-ASDU policy.
+   *
+   * @param settings the APCI flow-control parameters for the assembled sessions; if a neutral
+   *     {@link SessionSettings} is supplied it must be an {@link ApciSettings}.
+   * @param profile the wire profile that governs ASDU field widths during framing.
+   * @param allocator the allocator used to obtain outbound frame buffers, or {@code null} for the
+   *     default unpooled allocator.
+   * @param undecodableAsduPolicy what the assembled sessions do with a correctly framed I-frame
+   *     whose ASDU cannot be decoded.
+   * @throws IllegalArgumentException if {@code settings} is not an {@link ApciSettings}.
+   */
+  public Cs104Binding(
+      SessionSettings settings,
+      ProtocolProfile profile,
+      @Nullable ByteBufAllocator allocator,
+      UndecodableAsduPolicy undecodableAsduPolicy) {
     Objects.requireNonNull(settings, "settings");
     this.settings = downcast(settings);
     this.profile = Objects.requireNonNull(profile, "profile");
     this.allocator = allocator != null ? allocator : UnpooledByteBufAllocator.DEFAULT;
+    this.undecodableAsduPolicy =
+        Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
   }
 
   /**
@@ -88,9 +120,8 @@ public final class Cs104Binding {
    *
    * <p>The session's outbound APDUs are framed and written to {@code transport}; inbound frames
    * from the transport's {@link TransportListener} are deframed into the session. A failed send or
-   * a transport connection loss closes the session and notifies {@code events}; a malformed inbound
-   * frame also closes the current transport connection without performing an intentional
-   * disconnect.
+   * a transport connection loss closes the session and notifies {@code events}; a framing error
+   * also closes the current transport connection without performing an intentional disconnect.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -179,7 +210,15 @@ public final class Cs104Binding {
 
           @Override
           public CompletionStage<Void> sendAsync(Apdu apdu) {
-            ByteBuf buffer = ApduFramer.encode(apdu, profile, allocator);
+            return write(ApduFramer.encode(apdu, profile, allocator));
+          }
+
+          @Override
+          public CompletionStage<Void> sendRawAsync(ControlField.TypeI control, byte[] asdu) {
+            return write(ApduFramer.encode(control, asdu, allocator));
+          }
+
+          private CompletionStage<Void> write(ByteBuf buffer) {
             return frameSink
                 .send(buffer)
                 .whenComplete(
@@ -209,32 +248,51 @@ public final class Cs104Binding {
         new TransportListener() {
           @Override
           public void onFrame(ByteBuf frame) {
-            // Deframe and dispatch inbound bytes. A malformed or undecodable frame makes
-            // ApduFramer.decode throw a decode-time RuntimeException, such as AsduDecodeException
-            // for a bad START/length/control field, UnsupportedAsduTypeException for an undefined
-            // TypeID, or IndexOutOfBoundsException for a short/truncated read. Guard the
-            // deframe-and-dispatch path so the failure does not escape back out the transport's
-            // delivery stack: route it to the SAME sink a real transport loss uses
-            // (Session.Events.onConnectionLost) and tear the underlying connection down, converging
-            // every transport on the existing close handling.
+            // Decode in two steps so a content error in the ASDU does not cost the APCI state. A
+            // framing error (bad START/length/control field, or a body that does not fit the frame
+            // format) leaves the byte stream or the APCI untrustworthy: route it to the SAME sink a
+            // real transport loss uses (Session.Events.onConnectionLost) and tear the underlying
+            // connection down. On the client side closeConnection() leaves persistent transports
+            // free to reconnect; on the server side close() tears down only the accepted
+            // connection.
             //
-            // This reproduces, on every transport, the TCP behavior on a decode failure: close the
-            // session, publish a single ConnectionClosed carrying the decode cause, and close the
-            // underlying connection. On the client side closeConnection() leaves persistent
-            // transports free to reconnect; on the server side close() tears down only the accepted
-            // connection. The buffer is owned and released by the transport after onFrame returns
-            // (Netty autoRelease / the SPI's inbound ownership contract), so it is neither retained
-            // nor released here.
-            Apdu apdu;
+            // Once the control field is known, an I-frame whose ASDU cannot be decoded still has a
+            // valid N(S)/N(R). Under REPORT_AND_CONTINUE the session runs its sequence checks,
+            // acknowledges the frame, and reports the octets; under STRICT it is treated like a
+            // framing error. The buffer is owned and released by the transport after onFrame
+            // returns, so it is neither retained nor released here.
+            ApduFramer.Header header;
             try {
-              apdu = ApduFramer.decode(profile, frame);
+              header = ApduFramer.decodeHeader(frame);
             } catch (RuntimeException decodeFailure) {
-              session.close();
-              events.onConnectionLost(decodeFailure);
-              closeConnection.run();
+              closeOnDecodeFailure(decodeFailure);
               return;
             }
-            session.onApdu(apdu);
+            if (!(header.control() instanceof ControlField.TypeI control)) {
+              session.onApdu(new Apdu(header.control(), null));
+              return;
+            }
+            ByteBuf asduOctets = frame.readSlice(header.asduLength());
+            int asduStart = asduOctets.readerIndex();
+            Asdu asdu;
+            try {
+              asdu = Asdu.Serde.decode(profile, asduOctets);
+            } catch (RuntimeException decodeFailure) {
+              if (undecodableAsduPolicy == UndecodableAsduPolicy.STRICT) {
+                closeOnDecodeFailure(decodeFailure);
+                return;
+              }
+              byte[] octets = ByteBufUtil.getBytes(asduOctets, asduStart, header.asduLength());
+              session.onUndecodableIFrame(control, octets, asIec60870Exception(decodeFailure));
+              return;
+            }
+            session.onApdu(new Apdu(control, asdu));
+          }
+
+          private void closeOnDecodeFailure(RuntimeException decodeFailure) {
+            session.close();
+            events.onConnectionLost(decodeFailure);
+            closeConnection.run();
           }
 
           @Override
@@ -245,6 +303,14 @@ public final class Cs104Binding {
         });
 
     return session;
+  }
+
+  private static Iec60870Exception asIec60870Exception(RuntimeException decodeFailure) {
+    // Asdu.Serde.decode reports bad input only as AsduDecodeException or
+    // UnsupportedAsduTypeException; wrap anything else so the event type stays uniform.
+    return decodeFailure instanceof Iec60870Exception e
+        ? e
+        : new AsduDecodeException("ASDU decode failed: " + decodeFailure, decodeFailure);
   }
 
   private static ApciSettings downcast(SessionSettings settings) {

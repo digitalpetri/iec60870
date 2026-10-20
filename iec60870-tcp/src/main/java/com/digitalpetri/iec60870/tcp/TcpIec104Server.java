@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.tcp;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
@@ -84,6 +85,7 @@ public final class TcpIec104Server {
     private @Nullable ServerHandler handler;
     private int maxConnections = 16;
     private @Nullable Executor callbackExecutor;
+    private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup bossEventLoopGroup;
     private @Nullable EventLoopGroup workerEventLoopGroup;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
@@ -182,6 +184,24 @@ public final class TcpIec104Server {
     }
 
     /**
+     * Sets what the link layer does with a received ASDU it cannot decode. Defaults to {@link
+     * UndecodableAsduPolicy#REPORT_AND_CONTINUE}.
+     *
+     * <p>Under the default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE}, a correctly framed
+     * I-frame whose ASDU cannot be decoded is acknowledged and reported as an undecodable ASDU, and
+     * the connection stays open. {@link UndecodableAsduPolicy#STRICT} closes the connection instead
+     * without acknowledging the frame.
+     *
+     * @param undecodableAsduPolicy the undecodable-ASDU policy.
+     * @return this builder.
+     */
+    public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
+      this.undecodableAsduPolicy =
+          Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and runs handler callbacks. Defaults to the core
      * server's default executor.
      *
@@ -271,7 +291,7 @@ public final class TcpIec104Server {
 
       // The builder is the sole 104 assembly point, but it holds no Apdu<->octet wiring itself.
       // Cs104Binding owns the full per-connection ApciSession + framing assembly (see its Javadoc).
-      Cs104Binding binding = new Cs104Binding(apci, profile);
+      Cs104Binding binding = new Cs104Binding(apci, profile, null, undecodableAsduPolicy);
 
       // The outbound-queue bound and policy are passed as scalars rather than the ServerConfig
       // object so Cs104Binding stays free of an iec60870-application import.
