@@ -62,7 +62,7 @@ class PackedOutputCircuitInfoTest {
 
   @Test
   void rejectsOutOfRangeElapsedTime() {
-    // CP16Time2a milliseconds 60000 is outside the valid range [0, 59999].
-    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(60000));
+    // CP16Time2a milliseconds 65536 does not fit the 16-bit wire field.
+    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(65536));
   }
 }

@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.asdu.time;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -11,20 +10,33 @@ import io.netty.buffer.ByteBuf;
  * duration such as a relay operating time or relay duration time. It does not carry a calendar date
  * or a flag for validity.
  *
- * @param milliseconds the elapsed time in milliseconds, in the range {@code 0..59999}.
+ * <p>The component accepts any value the 16-bit wire field can hold, so a received value is kept
+ * exactly as sent. {@link #isWellFormed()} reports whether it is within the specified range.
+ *
+ * @param milliseconds the elapsed time in milliseconds, specified as {@code 0..59999}; any value in
+ *     {@code 0..65535} is accepted.
  */
 public record Cp16Time2a(int milliseconds) {
 
   /**
-   * Validates the component range of a {@code Cp16Time2a}.
+   * Validates that the component fits its wire field.
    *
-   * @param milliseconds the elapsed time in milliseconds, in the range {@code 0..59999}.
-   * @throws IllegalArgumentException if {@code milliseconds} is outside {@code 0..59999}.
+   * @param milliseconds the elapsed time in milliseconds, in the range {@code 0..65535}.
+   * @throws IllegalArgumentException if {@code milliseconds} is outside {@code 0..65535}.
    */
   public Cp16Time2a {
-    if (milliseconds < 0 || milliseconds > 59999) {
-      throw new IllegalArgumentException("milliseconds out of range [0, 59999]: " + milliseconds);
+    if (milliseconds < 0 || milliseconds > 0xFFFF) {
+      throw new IllegalArgumentException("milliseconds out of range [0, 65535]: " + milliseconds);
     }
+  }
+
+  /**
+   * Reports whether the elapsed time is within its specified range, {@code 0..59999}.
+   *
+   * @return {@code true} if {@code milliseconds} is at most {@code 59999}.
+   */
+  public boolean isWellFormed() {
+    return milliseconds <= 59999;
   }
 
   /**
@@ -56,18 +68,15 @@ public record Cp16Time2a(int milliseconds) {
     /**
      * Decodes a {@code Cp16Time2a} from the next two octets of {@code buffer}.
      *
-     * <p>The buffer is owned by the caller; this method reads from it and never releases it.
+     * <p>The buffer is owned by the caller; this method reads from it and never releases it. The
+     * value is kept as received, even when it is out of range; see {@link
+     * Cp16Time2a#isWellFormed()}.
      *
      * @param buffer the source buffer positioned at the first octet of the time element.
      * @return the decoded time element.
-     * @throws AsduDecodeException if the decoded milliseconds value is outside {@code 0..59999}.
      */
     public static Cp16Time2a decode(ByteBuf buffer) {
-      int milliseconds = buffer.readUnsignedShortLE();
-      if (milliseconds > 59999) {
-        throw new AsduDecodeException("CP16Time2a milliseconds out of range: " + milliseconds);
-      }
-      return new Cp16Time2a(milliseconds);
+      return new Cp16Time2a(buffer.readUnsignedShortLE());
     }
   }
 }

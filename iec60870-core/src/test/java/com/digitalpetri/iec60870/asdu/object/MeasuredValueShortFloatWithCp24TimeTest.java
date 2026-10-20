@@ -59,7 +59,7 @@ class MeasuredValueShortFloatWithCp24TimeTest {
 
   @Test
   void rejectsOutOfRangeCp24TimeMinute() {
-    // CP24Time2a minute 60 is outside the valid range [0, 59].
-    assertThrows(IllegalArgumentException.class, () -> new Cp24Time2a(0, 60, false, true));
+    // CP24Time2a minute 64 does not fit the 6-bit wire field.
+    assertThrows(IllegalArgumentException.class, () -> new Cp24Time2a(0, 64, false, true));
   }
 }

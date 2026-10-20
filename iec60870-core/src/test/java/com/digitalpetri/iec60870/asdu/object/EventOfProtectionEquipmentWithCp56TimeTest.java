@@ -68,6 +68,6 @@ class EventOfProtectionEquipmentWithCp56TimeTest {
 
   @Test
   void elapsedTimeOutOfRangeIsRejected() {
-    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(60000));
+    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(65536));
   }
 }

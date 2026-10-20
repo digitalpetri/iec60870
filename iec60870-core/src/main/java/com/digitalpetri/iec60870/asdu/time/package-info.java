@@ -13,6 +13,15 @@
  * encoded least significant octet first (Mode 1, little-endian); the bit-level layout for each
  * octet is documented on the nested {@code Serde} of each type.
  *
+ * <h2>Out-of-range fields</h2>
+ *
+ * Decoding never rejects a time element. Each record accepts any value its wire bit fields can
+ * hold, so a time tag from a device with an unset clock (often all zero with the IV bit set)
+ * decodes with its fields exactly as sent, and the information object that carries it is still
+ * delivered. {@code isWellFormed()} on each record reports whether the fields are within their
+ * specified ranges and, for CP56Time2a, name a real calendar date. It is independent of the IV
+ * flag.
+ *
  * <h2>Conversions</h2>
  *
  * {@link com.digitalpetri.iec60870.asdu.time.Cp56Time2a} offers {@link
@@ -20,7 +29,7 @@
  * {@link com.digitalpetri.iec60870.asdu.time.Cp56Time2a#toInstant(java.time.ZoneOffset)} to bridge
  * between the wire representation and {@link java.time.Instant}. Because CP56Time2a has only a
  * two-digit year and no century field, conversions to {@code Instant} interpret the year against
- * the 2000..2099 century.
+ * the 2000..2099 century. Only a well-formed time tag converts to an {@code Instant}.
  *
  * <h2>Ownership</h2>
  *

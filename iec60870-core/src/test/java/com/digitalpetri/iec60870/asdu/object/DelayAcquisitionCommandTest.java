@@ -49,9 +49,9 @@ class DelayAcquisitionCommandTest {
 
   @Test
   void rejectsOutOfRangeDelay() {
-    // CP16Time2a validation propagates through record construction: 60000 ms exceeds 0..59999.
+    // CP16Time2a validation propagates through record construction: 65536 does not fit 16 bits.
     assertThrows(
         IllegalArgumentException.class,
-        () -> new DelayAcquisitionCommand(InformationObjectAddress.of(0), new Cp16Time2a(60000)));
+        () -> new DelayAcquisitionCommand(InformationObjectAddress.of(0), new Cp16Time2a(65536)));
   }
 }

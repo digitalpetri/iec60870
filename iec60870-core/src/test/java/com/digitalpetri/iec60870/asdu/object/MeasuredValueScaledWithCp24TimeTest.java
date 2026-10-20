@@ -66,7 +66,7 @@ class MeasuredValueScaledWithCp24TimeTest {
     assertThrows(
         NullPointerException.class,
         () -> new MeasuredValueScaledWithCp24Time(null, (short) 0, quality, time));
-    // CP24Time2a also rejects an out-of-range milliseconds value.
-    assertThrows(IllegalArgumentException.class, () -> new Cp24Time2a(60000, 0, false, true));
+    // CP24Time2a also rejects a milliseconds value that does not fit its wire field.
+    assertThrows(IllegalArgumentException.class, () -> new Cp24Time2a(65536, 0, false, true));
   }
 }

@@ -57,7 +57,7 @@ class SinglePointWithCp56TimeTest {
 
   @Test
   void rejectsOutOfRangeTime() {
-    // CP56Time2a validation propagates through the record construction: minute 60 is invalid.
+    // CP56Time2a validation propagates through the record construction: minute 64 does not fit.
     assertThrows(
         IllegalArgumentException.class,
         () ->
@@ -65,6 +65,6 @@ class SinglePointWithCp56TimeTest {
                 InformationObjectAddress.of(0),
                 true,
                 new Qds(false, false, false, false, false),
-                new Cp56Time2a(0, 60, 0, 1, 0, 1, 0, false, false, true)));
+                new Cp56Time2a(0, 64, 0, 1, 0, 1, 0, false, false, true)));
   }
 }
