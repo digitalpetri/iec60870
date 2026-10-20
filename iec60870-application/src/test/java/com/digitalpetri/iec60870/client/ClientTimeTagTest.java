@@ -123,6 +123,34 @@ class ClientTimeTagTest {
   }
 
   @Test
+  void clientInterrogationResultUsesClientTimePolicy() {
+    try (Harness h = new Harness(b -> b.timePolicy(BERLIN))) {
+      CompletableFuture<InterrogationResult> result =
+          h.client.interrogateAsync(POINT.commonAddress()).toCompletableFuture();
+      Asdu request = h.sent(0);
+      var local = new Cp56Time2a(0, 0, 14, 1, 1, 6, 26, false, true, true);
+
+      h.session().deliverAsdu(withCause(request, Cause.ACTIVATION_CONFIRMATION));
+      h.session()
+          .deliverAsdu(
+              new Asdu(
+                  AsduType.M_SP_TB_1,
+                  false,
+                  Cause.INTERROGATED_BY_STATION,
+                  false,
+                  false,
+                  OriginatorAddress.none(),
+                  POINT.commonAddress(),
+                  List.of(new SinglePointWithCp56Time(POINT.objectAddress(), true, GOOD, local))));
+      h.session().deliverAsdu(withCause(request, Cause.ACTIVATION_TERMINATION));
+
+      InterrogationResult snapshot = result.join();
+      assertEquals(BERLIN, snapshot.timePolicy());
+      assertEquals(Optional.of(TIME), snapshot.pointValues().get(0).value().timestamp());
+    }
+  }
+
+  @Test
   void interrogationPointValuesUsePolicyWithoutCp24Completion() {
     var local = new Cp56Time2a(0, 0, 14, 1, 1, 6, 26, false, true, true);
     var result =
@@ -409,6 +437,18 @@ class ClientTimeTagTest {
       throw new IllegalArgumentException("not a time-tagged command: " + sent);
     }
     return echo(request, object);
+  }
+
+  private static Asdu withCause(Asdu request, Cause cause) {
+    return new Asdu(
+        request.type(),
+        request.sequence(),
+        cause,
+        false,
+        request.test(),
+        request.originatorAddress(),
+        request.commonAddress(),
+        request.objects());
   }
 
   private static Asdu echo(Asdu request, InformationObject object) {

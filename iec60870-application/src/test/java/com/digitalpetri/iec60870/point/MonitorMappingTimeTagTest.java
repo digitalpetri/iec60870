@@ -149,6 +149,13 @@ class MonitorMappingTimeTagTest {
   }
 
   @Test
+  void extractRejectsNullObject() {
+    // noinspection DataFlowIssue - deliberate null passed to verify extract rejects it
+    assertThrows(
+        NullPointerException.class, () -> MonitorMapping.extract(null, TimePolicy.utc(), RECEIVED));
+  }
+
+  @Test
   void untimedObjectHasNoTimeTag() {
     PointValueExtraction e =
         MonitorMapping.extract(new MeasuredValueShortFloat(IOA, 1.5f, GOOD)).orElseThrow();

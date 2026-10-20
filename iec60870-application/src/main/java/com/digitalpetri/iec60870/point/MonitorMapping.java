@@ -163,6 +163,7 @@ public final class MonitorMapping {
    */
   public static Optional<PointValueExtraction> extract(
       InformationObject monitorObject, TimePolicy policy, Instant receivedAt) {
+    Objects.requireNonNull(monitorObject, "monitorObject");
     Objects.requireNonNull(policy, "policy");
     Objects.requireNonNull(receivedAt, "receivedAt");
     PointValue<?> value = valueOf(monitorObject);

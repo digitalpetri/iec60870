@@ -23,6 +23,7 @@ import com.digitalpetri.iec60870.diagnostics.Direction;
 import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import java.time.Duration;
@@ -789,7 +790,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
             qoi,
             config.protocolProfile().cotLength() == 2,
             future,
-            maxInterrogationResponseObjects);
+            maxInterrogationResponseObjects,
+            config.timePolicy());
     if (!register(request)) {
       future.completeExceptionally(
           alreadyInFlight("interrogation of common address " + station.value()));
@@ -1576,6 +1578,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     private final boolean hasOriginatorAddress;
     private final CompletableFuture<InterrogationResult> future;
     private final int maxObjects;
+    private final TimePolicy timePolicy;
     private final List<InformationObject> collected = new ArrayList<>();
     private boolean confirmed;
     private boolean overflowed;
@@ -1586,12 +1589,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
         QualifierOfInterrogation qoi,
         boolean hasOriginatorAddress,
         CompletableFuture<InterrogationResult> future,
-        int maxObjects) {
+        int maxObjects,
+        TimePolicy timePolicy) {
       this.activation = activation;
       this.responseCause = qoi.value().intValue();
       this.hasOriginatorAddress = hasOriginatorAddress;
       this.future = future;
       this.maxObjects = maxObjects;
+      this.timePolicy = timePolicy;
     }
 
     @Override
@@ -1650,7 +1655,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     void deliver() {
-      future.complete(new InterrogationResult(activation.commonAddress(), collected, true));
+      future.complete(
+          new InterrogationResult(activation.commonAddress(), collected, true, timePolicy));
     }
 
     @Override
