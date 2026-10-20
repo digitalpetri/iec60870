@@ -187,9 +187,8 @@ is still observable — it is never silently dropped. Match `AsduReceived` in yo
 import com.digitalpetri.iec60870.client.ClientEvent;
 
 // inside Flow.Subscriber<ClientEvent>#onNext(ClientEvent event):
-switch (event) {
-  case ClientEvent.AsduReceived a -> inspect(a.asdu());  // every inbound ASDU, modeled or not
-  default -> {}
+if (event instanceof ClientEvent.AsduReceived a) {
+  inspect(a.asdu());  // every inbound ASDU that decodes, modeled or not
 }
 ```
 
@@ -213,10 +212,8 @@ import com.digitalpetri.iec60870.client.ClientEvent;
 import java.util.HexFormat;
 
 // inside Flow.Subscriber<ClientEvent>#onNext(ClientEvent event):
-switch (event) {
-  case ClientEvent.UndecodableAsdu u ->
-      log.warn("undecodable ASDU {}: {}", HexFormat.of().formatHex(u.asdu()), u.cause().getMessage());
-  default -> {}
+if (event instanceof ClientEvent.UndecodableAsdu u) {
+  log.warn("undecodable ASDU {}: {}", HexFormat.of().formatHex(u.asdu()), u.cause().getMessage());
 }
 ```
 
