@@ -6,6 +6,7 @@ import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.point.TimeTag;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
@@ -127,18 +128,23 @@ public sealed interface ClientEvent
    * update, which distinguishes time-tag variants that the point value otherwise collapses (for
    * example untimed {@code M_SP_NA_1} from CP24-tagged {@code M_SP_TA_1}).
    *
+   * <p>{@code timeTag} keeps the raw time tag fields and their IV, SU, and RES1/GEN flags, and the
+   * instant that {@link ClientConfig#timePolicy()} resolved from them. {@link #timestamp()} is the
+   * usable acquisition time: the resolved instant, unless the tag is marked invalid.
+   *
    * @param address the fully qualified address of the updated point.
-   * @param value the decoded point value, including its quality.
+   * @param value the decoded point value, including its quality; its {@link PointValue#timestamp()}
+   *     mirrors {@link #timestamp()}.
    * @param asduType the type identification of the ASDU that carried this update.
    * @param cause the cause of transmission of the carrying ASDU.
-   * @param timestamp the acquisition timestamp recovered from the object's time tag, if present.
+   * @param timeTag the object's time tag, or empty for an untimed object.
    */
   record PointUpdated(
       PointAddress address,
       PointValue<?> value,
       AsduType asduType,
       Cause cause,
-      Optional<Instant> timestamp)
+      Optional<TimeTag> timeTag)
       implements ClientEvent {
 
     /**
@@ -148,16 +154,26 @@ public sealed interface ClientEvent
      * @param value the decoded point value, including its quality.
      * @param asduType the type identification of the ASDU that carried this update.
      * @param cause the cause of transmission of the carrying ASDU.
-     * @param timestamp the acquisition timestamp recovered from the object's time tag, if present.
+     * @param timeTag the object's time tag, or empty for an untimed object.
      * @throws NullPointerException if {@code address}, {@code value}, {@code asduType}, {@code
-     *     cause}, or {@code timestamp} is null.
+     *     cause}, or {@code timeTag} is null.
      */
     public PointUpdated {
       Objects.requireNonNull(address, "address");
       Objects.requireNonNull(value, "value");
       Objects.requireNonNull(asduType, "asduType");
       Objects.requireNonNull(cause, "cause");
-      Objects.requireNonNull(timestamp, "timestamp");
+      Objects.requireNonNull(timeTag, "timeTag");
+    }
+
+    /**
+     * Returns the acquisition timestamp: the time tag's resolved instant, unless the tag is marked
+     * invalid (IV=1) or could not be resolved.
+     *
+     * @return the acquisition timestamp, or empty if there is no usable time tag.
+     */
+    public Optional<Instant> timestamp() {
+      return timeTag.flatMap(TimeTag::timestamp);
     }
   }
 

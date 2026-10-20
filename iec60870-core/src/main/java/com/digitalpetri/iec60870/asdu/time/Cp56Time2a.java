@@ -32,7 +32,9 @@ import java.time.ZoneOffset;
  * date and time; only a well-formed tag converts to an {@link Instant}.
  *
  * <p>Because the year is a two-digit field with no century, conversions to and from {@link Instant}
- * interpret the year against the 2000..2099 century.
+ * interpret the year against the 2000..2099 century. These conversions use a fixed offset and
+ * ignore the flags; the application layer's {@code TimePolicy} adds zone rules, summer-time
+ * handling, and a configurable century.
  *
  * @param milliseconds the milliseconds within the minute, specified as {@code 0..59999}; any value
  *     in {@code 0..65535} is accepted.

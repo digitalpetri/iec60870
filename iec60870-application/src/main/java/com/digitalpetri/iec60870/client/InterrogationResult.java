@@ -6,6 +6,8 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
+import com.digitalpetri.iec60870.point.TimePolicy;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -51,18 +53,40 @@ public record InterrogationResult(
   }
 
   /**
-   * Projects the reported monitor objects onto domain point values.
+   * Projects the reported monitor objects onto domain point values, resolving time tags with {@link
+   * TimePolicy#utc()}.
+   *
+   * @return the point values reported by the interrogation, in receive order.
+   * @see #pointValues(TimePolicy)
+   */
+  public List<PointEntry> pointValues() {
+    return pointValues(TimePolicy.utc());
+  }
+
+  /**
+   * Projects the reported monitor objects onto domain point values, resolving time tags with {@code
+   * policy}.
    *
    * <p>Each entry pairs the object's {@link PointAddress} (the interrogated {@link #station()} plus
    * the object's information object address) with the extracted {@link PointValue}. Objects that
-   * are not supported monitor types are skipped.
+   * are not supported monitor types are skipped. The result does not record when each object
+   * arrived, so CP24Time2a tags are never completed here, whatever the policy says.
    *
+   * <pre>{@code
+   * List<PointEntry> entries = snapshot.pointValues(clientConfig.timePolicy());
+   * }</pre>
+   *
+   * @param policy the policy that resolves time tags.
    * @return the point values reported by the interrogation, in receive order.
+   * @throws NullPointerException if {@code policy} is null.
    */
-  public List<PointEntry> pointValues() {
+  public List<PointEntry> pointValues(TimePolicy policy) {
+    TimePolicy withoutCompletion = policy.withCompleteCp24(false);
     List<PointEntry> entries = new ArrayList<>();
     for (InformationObject object : objects) {
-      Optional<PointValueExtraction> extraction = MonitorMapping.extract(object);
+      // With completion off the receive time is never read.
+      Optional<PointValueExtraction> extraction =
+          MonitorMapping.extract(object, withoutCompletion, Instant.EPOCH);
       if (extraction.isEmpty()) {
         continue;
       }

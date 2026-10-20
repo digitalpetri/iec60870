@@ -6,6 +6,7 @@ import com.digitalpetri.iec60870.asdu.element.Oci;
 import com.digitalpetri.iec60870.asdu.element.Qdp;
 import com.digitalpetri.iec60870.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -29,7 +30,7 @@ public record PackedOutputCircuitInfoWithCp56Time(
     Qdp quality,
     Cp16Time2a elapsedTime,
     Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** Serde for the {@link PackedOutputCircuitInfoWithCp56Time} information elements. */
   public static final class Serde {

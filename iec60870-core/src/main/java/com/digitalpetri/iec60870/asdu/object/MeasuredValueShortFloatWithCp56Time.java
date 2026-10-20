@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -23,7 +24,7 @@ import java.util.Objects;
  */
 public record MeasuredValueShortFloatWithCp56Time(
     InformationObjectAddress address, float value, Qds quality, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Validates the components of a {@code MeasuredValueShortFloatWithCp56Time}.

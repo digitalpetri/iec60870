@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfCommand;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -28,7 +29,7 @@ import java.util.Objects;
  */
 public record SingleCommandWithCp56Time(
     InformationObjectAddress address, boolean on, QualifierOfCommand qualifier, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** SCS — single command state bit (bit 1). */
   private static final int SCS_MASK = 0x01;

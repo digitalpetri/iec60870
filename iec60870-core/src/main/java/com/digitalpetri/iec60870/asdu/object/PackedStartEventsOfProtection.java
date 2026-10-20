@@ -6,6 +6,7 @@ import com.digitalpetri.iec60870.asdu.element.Qdp;
 import com.digitalpetri.iec60870.asdu.element.Spe;
 import com.digitalpetri.iec60870.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec60870.asdu.time.Cp24Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp24TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -29,7 +30,7 @@ public record PackedStartEventsOfProtection(
     Qdp quality,
     Cp16Time2a elapsedTime,
     Cp24Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp24TimeTagged {
 
   /**
    * Validates that all required components are present.

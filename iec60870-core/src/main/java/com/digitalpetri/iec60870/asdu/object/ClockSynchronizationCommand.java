@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.asdu.object;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -20,7 +21,7 @@ import io.netty.buffer.ByteBuf;
  * @param time the CP56Time2a clock value to synchronize to.
  */
 public record ClockSynchronizationCommand(InformationObjectAddress address, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Serde for the {@link ClockSynchronizationCommand} information elements (after the IOA).

@@ -71,6 +71,7 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .server   Iec60870Server (+ DefaultIec60870Server), Station, PointDefinition, StationRegistry,│
    │             ServerHandler, ServerContext, ServerEvent, ServerConfig, request/decision types│
    │   .point    PointValue<T>, PointType, Quality, PointCapability, TimeTagStyle, MonitorMapping │
+   │             TimePolicy, TimeTag, PointValueExtraction                                        │
    │   .catalog  PointCatalog, CatalogEntry, ObservedCatalog, ObservationMode, MergePolicy       │
    └──────────────────────────────────────────────────────────────────────────────────────────┘
    ┌──────────────────────────────────────────────────────────────────────────────────────────┐
@@ -95,7 +96,7 @@ See [two-layer-api.md](two-layer-api.md) for the concrete types and short code s
    │   .asdu          Asdu, AsduType, Cause, InformationObject, InformationObjectCodec(s)         │
    │   .asdu.object   one record per supported TypeID (SinglePointInformation, ... )            │
    │   .asdu.element  reusable elements/qualifiers (Qds, Vti, NormalizedValue, QualifierOf*, ...) │
-   │   .asdu.time     Cp56Time2a, Cp24Time2a, Cp16Time2a                                         │
+   │   .asdu.time     Cp56Time2a, Cp24Time2a, Cp16Time2a, Cp56TimeTagged, Cp24TimeTagged         │
    │   .address       CommonAddress, InformationObjectAddress, OriginatorAddress, PointAddress   │
    │                                                                                            │
    │  CONFIG + ERRORS (package root)                                                             │

@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp24Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp24TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -22,7 +23,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record SinglePointWithCp24Time(
     InformationObjectAddress address, boolean on, Qds quality, Cp24Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp24TimeTagged {
 
   /** SPI — single-point information bit (bit 1) of the SIQ octet. */
   private static final int SPI_MASK = 0x01;

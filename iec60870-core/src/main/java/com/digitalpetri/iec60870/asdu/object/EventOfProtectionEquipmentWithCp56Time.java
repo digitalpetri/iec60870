@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Sep;
 import com.digitalpetri.iec60870.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -21,7 +22,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record EventOfProtectionEquipmentWithCp56Time(
     InformationObjectAddress address, Sep event, Cp16Time2a elapsedTime, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** Serde for the {@link EventOfProtectionEquipmentWithCp56Time} information elements. */
   public static final class Serde {

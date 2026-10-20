@@ -8,6 +8,7 @@ import com.digitalpetri.iec60870.cs104.ApciDiagnostics;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;
@@ -79,9 +80,9 @@ public final class TcpIec104Server {
    *
    * <p>Transport knobs ({@code bindAddress}, {@code port}, {@code tls}, {@code eventLoopGroup})
    * configure the Netty transport; protocol knobs ({@code profile}, {@code apci}, {@code
-   * addStation}, {@code handler}, {@code callbackExecutor}) configure the core server. {@code
-   * maxConnections} bounds both the accepted channels and the core connection set. The builder is
-   * not thread-safe.
+   * addStation}, {@code handler}, {@code timePolicy}, {@code callbackExecutor}) configure the core
+   * server. {@code maxConnections} bounds both the accepted channels and the core connection set.
+   * The builder is not thread-safe.
    */
   public static final class Builder {
 
@@ -95,6 +96,7 @@ public final class TcpIec104Server {
     private int maxConnections = 16;
     private @Nullable Executor callbackExecutor;
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
+    private TimePolicy timePolicy = TimePolicy.utc();
     private @Nullable EventLoopGroup bossEventLoopGroup;
     private @Nullable EventLoopGroup workerEventLoopGroup;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
@@ -210,6 +212,19 @@ public final class TcpIec104Server {
     public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
       this.undecodableAsduPolicy =
           Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
+     * Sets the rules that encode the time tags of published updates, read answers, and return
+     * information. Defaults to {@link TimePolicy#utc()}.
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     * @see ServerConfig.Builder#timePolicy(TimePolicy)
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
       return this;
     }
 
@@ -330,7 +345,8 @@ public final class TcpIec104Server {
               .stations(stations)
               .maxConnections(maxConnections)
               .diagnostics(diagnostics)
-              .loggingContext(loggingContext);
+              .loggingContext(loggingContext)
+              .timePolicy(timePolicy);
       if (handler != null) {
         serverConfigBuilder.handler(handler);
       }

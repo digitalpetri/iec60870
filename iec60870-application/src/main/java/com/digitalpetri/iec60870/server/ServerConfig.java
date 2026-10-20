@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -22,10 +23,10 @@ import org.jspecify.annotations.Nullable;
  * <p>This configuration covers the protocol-layer behavior of the server: the wire profile, the
  * APCI flow-control parameters, the hosted stations, the request handler, the policy for a full
  * outbound queue, the bound on each connection's outbound queue, the time-tag style used when
- * reporting monitor data, the maximum number of concurrent connections, the bound on each
- * connection's inbound dispatch backlog, the executor that delivers events and runs handler
- * callbacks, and the per-connection diagnostics listener and logging context. Transport concerns
- * (host, port, TLS) are configured on the transport, not here.
+ * reporting monitor data, the time policy that encodes those time tags, the maximum number of
+ * concurrent connections, the bound on each connection's inbound dispatch backlog, the executor
+ * that delivers events and runs handler callbacks, and the per-connection diagnostics listener and
+ * logging context. Transport concerns (host, port, TLS) are configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -49,6 +50,8 @@ import org.jspecify.annotations.Nullable;
  *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
  * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
  *     interrogation answers. Default station and group interrogation answers use no time tags.
+ * @param timePolicy the rules that encode the time tags of published updates, read answers, and
+ *     return information.
  * @param maxConnections the maximum number of concurrent controlling-station connections.
  * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on its
  *     serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded chain.
@@ -67,6 +70,7 @@ public record ServerConfig(
     int maxOutboundQueue,
     Duration outboundBlockTimeout,
     TimeTagStyle timeTagStyle,
+    TimePolicy timePolicy,
     int maxConnections,
     int maxInboundQueue,
     Executor callbackExecutor,
@@ -88,6 +92,8 @@ public record ServerConfig(
    *     capacity under the {@link OutboundQueuePolicy#BLOCK} policy before giving up on a value.
    * @param timeTagStyle the time-tag style used for published updates, read answers, and counter
    *     interrogation answers. Default station and group interrogation answers use no time tags.
+   * @param timePolicy the rules that encode the time tags of published updates, read answers, and
+   *     return information.
    * @param maxConnections the maximum number of concurrent controlling-station connections.
    * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on
    *     its serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded
@@ -108,6 +114,7 @@ public record ServerConfig(
     Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
     Objects.requireNonNull(outboundBlockTimeout, "outboundBlockTimeout");
     Objects.requireNonNull(timeTagStyle, "timeTagStyle");
+    Objects.requireNonNull(timePolicy, "timePolicy");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     Objects.requireNonNull(diagnostics, "diagnostics");
     loggingContext = Map.copyOf(loggingContext);
@@ -152,6 +159,7 @@ public record ServerConfig(
     private int maxOutboundQueue = 1000;
     private Duration outboundBlockTimeout = Duration.ofSeconds(15);
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
+    private TimePolicy timePolicy = TimePolicy.utc();
     private int maxConnections = 16;
     private int maxInboundQueue = 1024;
     private Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics =
@@ -277,6 +285,21 @@ public record ServerConfig(
     }
 
     /**
+     * Sets the rules that encode the time tags of published updates, read answers, and return
+     * information. Defaults to {@link TimePolicy#utc()}.
+     *
+     * <p>Handlers can read the policy from {@link ServerContext#timePolicy()} to resolve the time
+     * tags of incoming requests with the same rules.
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
+      return this;
+    }
+
+    /**
      * Sets the maximum number of concurrent controlling-station connections. Defaults to {@code
      * 16}.
      *
@@ -376,6 +399,7 @@ public record ServerConfig(
           maxOutboundQueue,
           outboundBlockTimeout,
           timeTagStyle,
+          timePolicy,
           maxConnections,
           maxInboundQueue,
           callbackExecutor,

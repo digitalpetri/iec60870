@@ -190,7 +190,7 @@ entries, skipping non-monitor objects.
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,
 `ReconnectScheduled(attempt, delay, cause)`, `DataTransferStarted`/`Stopped`,
-`PointUpdated(address, value, asduType, cause, timestamp)`, `AsduReceived(asdu)`,
+`PointUpdated(address, value, asduType, cause, timeTag)`, `AsduReceived(asdu)`,
 `UndecodableAsdu(asdu, cause)`, `NegativeConfirmation(asdu, cause)`, and
 `ProtocolWarning(message)`. Every
 received monitor ASDU yields one `PointUpdated` per information object **and** an always-published
@@ -263,6 +263,35 @@ for a 32-bit bit string, `Short` for scaled, `NormalizedValue` for normalized, `
 short-float, and `BinaryCounterReading` for integrated totals. Factories (`single`, `doublePoint`,
 `scaled`, `normalized`, `shortFloat`, `counter`, …) create good-quality values, refined with
 `withQuality(...)` / `withTimestamp(...)`.
+
+### Time tags
+
+IEC 60870-5 time tags carry wall-clock fields with no time zone. `TimePolicy` (in `.point`) is the
+single conversion path between those fields and `Instant`. It names the zone of the peer's clock and
+the rules for the SU bit, the day-of-week field, the two-digit year's century, and CP24Time2a
+completion. `TimePolicy.utc()` is the default for both facades and reproduces fixed-UTC encoding byte
+for byte.
+
+- **Receive.** `MonitorMapping.extract(object, policy, receivedAt)` returns a `PointValueExtraction`
+  whose `TimeTag` keeps the raw `Cp56Time2a` or `Cp24Time2a`, its IV, SU, and RES1/GEN flags, and the
+  resolved `instant()`. The client captures `receivedAt` once per ASDU and copies the `TimeTag` onto
+  `PointUpdated`. The `timestamp()` accessors on the extraction, the event, and `PointValue` drop the
+  instant of a tag marked invalid. A CP24 tag has an empty instant unless the policy completes it from
+  the receive time, in which case `TimeTag.inferred()` is set. `TimeTag.from(object, policy,
+  receivedAt)` resolves the tag of any record that implements `Cp56TimeTagged` or `Cp24TimeTagged`
+  (core interfaces on every timed record), including the protection-event types the point model does
+  not map.
+- **Send.** The client encodes command time tags (types 58–64) and clock synchronization with
+  `ClientConfig.timePolicy()`. The server encodes spontaneous publishes, read answers, counter
+  interrogation answers, and return information with `ServerConfig.timePolicy()`, and exposes it to
+  handlers as `ServerContext.timePolicy()` so they can read a `ClockSyncRequest` or command time tag
+  with the same rules.
+- **Echo matching.** A command confirmation must echo the sent objects. For time-tagged commands
+  `ClientConfig.commandTimeTagMatch()` decides how the echoed tag is compared: `INSTANT` (default)
+  compares milliseconds through year and ignores day of week, IV, SU, and RES1/GEN; `EXACT` compares
+  every field; `IGNORE` skips the tag. Type, address, value, qualifier, and S/E must match in every
+  mode. Clock-sync confirmations are correlated by family, common address, cause, and IOA, and do not
+  compare the tag.
 
 The `.catalog` package adds an optional, dependency-free model of *which points exist*. A
 `PointCatalog` is an immutable, address-keyed set of `CatalogEntry` records; because IEC 104 has no

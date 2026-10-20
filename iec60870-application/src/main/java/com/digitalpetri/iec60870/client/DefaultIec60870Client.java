@@ -18,7 +18,6 @@ import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
-import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
 import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import com.digitalpetri.iec60870.diagnostics.Direction;
 import com.digitalpetri.iec60870.diagnostics.LoggingContext;
@@ -28,7 +27,6 @@ import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -853,8 +851,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     Objects.requireNonNull(station, "station");
     Objects.requireNonNull(time, "time");
 
-    var command =
-        new ClockSynchronizationCommand(ZERO_ADDRESS, Cp56Time2a.from(time, ZoneOffset.UTC));
+    var command = new ClockSynchronizationCommand(ZERO_ADDRESS, config.timePolicy().toCp56(time));
     Asdu asdu =
         new Asdu(
             AsduType.C_CS_NA_1,
@@ -956,8 +953,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
 
     if (isMonitorCause(asdu.cause())) {
+      Instant receivedAt = Instant.now();
       for (InformationObject object : asdu.objects()) {
-        Optional<PointValueExtraction> extraction = MonitorMapping.extract(object);
+        Optional<PointValueExtraction> extraction =
+            MonitorMapping.extract(object, config.timePolicy(), receivedAt);
         if (extraction.isEmpty()) {
           continue;
         }
@@ -965,7 +964,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
         PointAddress address = new PointAddress(asdu.commonAddress(), object.address());
         publish(
             new ClientEvent.PointUpdated(
-                address, value.value(), asdu.type(), asdu.cause(), value.timestamp()));
+                address, value.value(), asdu.type(), asdu.cause(), value.timeTag()));
       }
     }
     publisher.afterInbound();
@@ -1420,14 +1419,16 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private static final class PendingCommand extends PendingRequest {
 
     private final PointAddress target;
+    private final TimeTagMatch timeTagMatch;
     private final Asdu execute;
     private final CompletableFuture<CommandResult> future = new CompletableFuture<>();
     private Asdu activation;
     private boolean executeQueued;
     private @Nullable Asdu confirmation;
 
-    PendingCommand(PointAddress target, Asdu activation, Asdu execute) {
+    PendingCommand(PointAddress target, TimeTagMatch timeTagMatch, Asdu activation, Asdu execute) {
       this.target = target;
+      this.timeTagMatch = timeTagMatch;
       this.activation = activation;
       this.execute = execute;
     }
@@ -1450,7 +1451,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
           || (!asdu.originatorAddress().equals(OriginatorAddress.none())
               && !asdu.originatorAddress().equals(activation.originatorAddress()))
           || !asdu.commonAddress().equals(activation.commonAddress())
-          || !asdu.objects().equals(activation.objects())) {
+          || !CommandAsdus.echoes(asdu.objects(), activation.objects(), timeTagMatch)) {
         return Outcome.IGNORED;
       }
       boolean confirmationCause =
@@ -1828,7 +1829,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
         Asdu execute = commandActivation(command, false);
         Asdu activation =
             mode == CommandMode.SELECT_BEFORE_OPERATE ? commandActivation(command, true) : execute;
-        request = new PendingCommand(command.target(), activation, execute);
+        request =
+            new PendingCommand(command.target(), config.commandTimeTagMatch(), activation, execute);
       } catch (RuntimeException e) {
         return CompletableFuture.failedFuture(e);
       }
@@ -1849,7 +1851,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
           false,
           config.originatorAddress(),
           command.target().commonAddress(),
-          List.of(CommandAsdus.toObject(command, select)));
+          List.of(CommandAsdus.toObject(command, select, config.timePolicy())));
     }
   }
 

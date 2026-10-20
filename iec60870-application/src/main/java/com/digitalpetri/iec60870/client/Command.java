@@ -54,7 +54,9 @@ public sealed interface Command
   /**
    * Returns the optional CP56Time2a time tag carried by this command.
    *
-   * <p>When present the {@link CommandService} selects the time-tagged ASDU type for this command.
+   * <p>When present the {@link CommandService} selects the time-tagged ASDU type for this command
+   * and encodes the instant with {@link ClientConfig#timePolicy()}. The station's echo must carry
+   * the same time as {@link ClientConfig#commandTimeTagMatch()} defines it.
    *
    * @return the command time tag, if any.
    */
