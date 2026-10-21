@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.tcp;
 
+import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.UndecodableAsduPolicy;
@@ -12,6 +13,7 @@ import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;
+import com.digitalpetri.iec60870.server.ServerContext;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
 import com.digitalpetri.iec60870.session.Session;
@@ -94,6 +96,8 @@ public final class TcpIec104Server {
     private final List<Station> stations = new ArrayList<>();
     private @Nullable ServerHandler handler;
     private int maxConnections = 16;
+    private int maxOutboundQueue = 1000;
+    private OutboundQueuePolicy eventQueuePolicy = OutboundQueuePolicy.DEFAULT;
     private @Nullable Executor callbackExecutor;
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private TimePolicy timePolicy = TimePolicy.utc();
@@ -194,6 +198,37 @@ public final class TcpIec104Server {
      */
     public Builder maxConnections(int maxConnections) {
       this.maxConnections = maxConnections;
+      return this;
+    }
+
+    /**
+     * Sets the bound on each connection's session queue and its separate deferred-event buffer
+     * during interrogations. Defaults to {@code 1000} each; {@code 0} leaves both unbounded.
+     *
+     * <p>Published values follow {@link #eventQueuePolicy(OutboundQueuePolicy)} when the queue is
+     * full. Raw {@link ServerContext#send} replies are reliable; failure to queue one closes the
+     * connection.
+     *
+     * @param maxOutboundQueue the outbound queue bound, or {@code 0} for unbounded; must not be
+     *     negative.
+     * @return this builder.
+     * @see ServerConfig.Builder#maxOutboundQueue(int)
+     */
+    public Builder maxOutboundQueue(int maxOutboundQueue) {
+      this.maxOutboundQueue = maxOutboundQueue;
+      return this;
+    }
+
+    /**
+     * Sets the policy applied to published values when a started connection's outbound queue is
+     * full. Defaults to {@link OutboundQueuePolicy#DEFAULT}.
+     *
+     * @param eventQueuePolicy the event-queue policy.
+     * @return this builder.
+     * @see ServerConfig.Builder#eventQueuePolicy(OutboundQueuePolicy)
+     */
+    public Builder eventQueuePolicy(OutboundQueuePolicy eventQueuePolicy) {
+      this.eventQueuePolicy = Objects.requireNonNull(eventQueuePolicy, "eventQueuePolicy");
       return this;
     }
 
@@ -336,14 +371,14 @@ public final class TcpIec104Server {
               .loggingContext(loggingContext)
               .build();
 
-      NettyServerTransport transport = new NettyServerTransport(transportConfig);
-
       ServerConfig.Builder serverConfigBuilder =
           ServerConfig.builder()
               .protocolProfile(profile)
               .sessionSettings(apci)
               .stations(stations)
               .maxConnections(maxConnections)
+              .maxOutboundQueue(maxOutboundQueue)
+              .eventQueuePolicy(eventQueuePolicy)
               .diagnostics(diagnostics)
               .loggingContext(loggingContext)
               .timePolicy(timePolicy);
@@ -354,6 +389,7 @@ public final class TcpIec104Server {
         serverConfigBuilder.callbackExecutor(callbackExecutor);
       }
       ServerConfig serverConfig = serverConfigBuilder.build();
+      NettyServerTransport transport = new NettyServerTransport(transportConfig);
 
       // The builder is the sole 104 assembly point, but it holds no Apdu<->octet wiring itself.
       // Cs104Binding owns the full per-connection ApciSession + framing assembly (see its Javadoc).
