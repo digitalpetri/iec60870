@@ -109,14 +109,13 @@ final class EventStream<T> implements Flow.Publisher<T> {
   public void subscribe(Flow.Subscriber<? super T> subscriber) {
     Objects.requireNonNull(subscriber, "subscriber");
     synchronized (publishLock) {
-      for (TrackedSubscriber existing : subscribers) {
-        if (existing.delegate == subscriber) {
-          subscriber.onError(new IllegalStateException("Duplicate subscribe"));
-          return;
-        }
-      }
       var tracked = new TrackedSubscriber(subscriber, published);
-      subscribers.add(tracked);
+      // Wrappers are equal when their delegates are. The publisher then rejects a duplicate itself
+      // by failing the existing subscription through its serial delivery, so only a new
+      // subscriber is tracked.
+      if (!subscribers.contains(tracked)) {
+        subscribers.add(tracked);
+      }
       publisher.subscribe(tracked);
     }
   }
@@ -342,6 +341,17 @@ final class EventStream<T> implements Flow.Publisher<T> {
     public void onComplete() {
       remove(this);
       delegate.onComplete();
+    }
+
+    @Override
+    public boolean equals(@Nullable Object other) {
+      return other instanceof EventStream<?>.TrackedSubscriber tracked
+          && delegate.equals(tracked.delegate);
+    }
+
+    @Override
+    public int hashCode() {
+      return delegate.hashCode();
     }
   }
 }

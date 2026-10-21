@@ -293,6 +293,10 @@ Everything above runs under one contract, distilled from
 - **Blocking is allowed on the callback executor** — both in event subscribers and in blocking
   handler forms — but **never block a transport I/O thread**. The library already hops application
   work onto the callback executor for you.
+- **Blocking client calls from `onNext` need a free callback thread.** A blocking call such as
+  `client.interrogate(...)` completes on the callback executor. It works from `onNext` on the default
+  common pool, and the event backlog does not hold it up, but with a single-threaded
+  `callbackExecutor` it waits forever for the thread it is blocking. Use the `*Async` form there.
 - **Use the `*Async` handler form** when the answer is itself non-blocking and I/O-bound (for example
   a database lookup that returns a `CompletionStage`), so you do not tie up the callback thread.
 - **The client event stream is lossless.** A slow client subscriber, or one that calls

@@ -112,10 +112,12 @@ public interface Iec60870Client extends AutoCloseable {
    * subscriber may therefore block or do slow work in {@code onNext}, at the cost of slowing the
    * data stream. A subscriber stalled longer than the peer's acknowledgement timeout ends in a
    * {@link ClientEvent.ConnectionClosed} with a cause. Lifecycle events are always delivered, after
-   * the events published before them. While a subscriber is so far behind that its buffer is nearly
-   * full, {@link #connect()}, {@link #startDataTransfer()}, and {@link #stopDataTransfer()} fail
-   * with {@link com.digitalpetri.iec60870.EventBacklogExceededException} so their lifecycle events
-   * still fit.
+   * the events published before them. A blocking client call made from {@code onNext} completes on
+   * the callback executor, so it needs a free thread there, such as the default common pool; with a
+   * single-threaded executor, use the {@code *Async} form instead. While a subscriber is so far
+   * behind that its buffer is nearly full, {@link #connect()}, {@link #startDataTransfer()}, and
+   * {@link #stopDataTransfer()} fail with {@link
+   * com.digitalpetri.iec60870.EventBacklogExceededException} so their lifecycle events still fit.
    *
    * @return the event publisher.
    */

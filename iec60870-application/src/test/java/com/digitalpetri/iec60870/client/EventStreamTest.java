@@ -4,6 +4,7 @@ import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -217,13 +218,23 @@ class EventStreamTest {
   }
 
   @Test
-  void duplicateSubscribeFailsTheSecondSubscription() {
+  void duplicateSubscribeFailsTheExistingSubscriptionThroughItsDelivery() {
     var stream = new EventStream<Integer>(executor, 10, pauses::add);
     var subscriber = new TestSubscriber(Long.MAX_VALUE);
     stream.subscribe(subscriber);
-    stream.subscribe(subscriber);
+    drain();
+    publish(stream, 3);
 
+    stream.subscribe(subscriber);
+    // The error is delivered by the publisher's delivery task, never inline from subscribe().
+    assertNull(subscriber.error.get());
+
+    drain();
     assertInstanceOf(IllegalStateException.class, subscriber.error.get());
+    publish(stream, 3);
+    drain();
+    assertEquals(List.of(), subscriber.received, "the failed subscription receives nothing more");
+    assertEquals(0, stream.maxBacklog(), "neither subscription is still tracked");
   }
 
   @Test
