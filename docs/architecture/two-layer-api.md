@@ -189,8 +189,10 @@ entries, skipping non-monitor objects.
 
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,
-`DataTransferStarted`/`Stopped`, `PointUpdated(address, value, asduType, cause, timestamp)`,
-`AsduReceived(asdu)`, `NegativeConfirmation(asdu, cause)`, and `ProtocolWarning(message)`. Every
+`ReconnectScheduled(attempt, delay, cause)`, `DataTransferStarted`/`Stopped`,
+`PointUpdated(address, value, asduType, cause, timestamp)`, `AsduReceived(asdu)`,
+`UndecodableAsdu(asdu, cause)`, `NegativeConfirmation(asdu, cause)`, and
+`ProtocolWarning(message)`. Every
 received monitor ASDU yields one `PointUpdated` per information object **and** an always-published
 `AsduReceived`, so a subscriber can work at the point level, the ASDU level, or both. Events are
 delivered serially — a subscriber never observes two events concurrently.
