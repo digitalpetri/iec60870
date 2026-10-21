@@ -304,18 +304,34 @@ counterInterrogationHandler(void* parameter, IMasterConnection con, CS101_ASDU a
 
     /* low 6 bits = RQT request qualifier */
     int rqt = qcc & 0x3f;
+    /* high 2 bits = FRZ freeze mode; 0 = read */
+    int frz = (qcc >> 6) & 0x03;
 
     if (rqt == IEC60870_QCC_RQT_GENERAL) {
-        printf("CI general\n");
         IMasterConnection_sendACT_CON(con, asdu, false);
-        sendIntegratedTotals(con, CS101_COT_REQUESTED_BY_GENERAL_COUNTER);
-        IMasterConnection_sendACT_TERM(con, asdu);
+        if (frz == 0) {
+            printf("CI general\n");
+            sendIntegratedTotals(con, CS101_COT_REQUESTED_BY_GENERAL_COUNTER);
+            IMasterConnection_sendACT_TERM(con, asdu);
+        }
+        else {
+            /* Freeze, freeze with reset, and reset are ACT + ACTCON only and
+             * transmit no counters (IEC 60870-5-101 7.4.8, mode C). */
+            printf("CI general frz=%i\n", frz);
+        }
     }
     else if (rqt == IEC60870_QCC_RQT_GROUP_1) {
-        printf("CI group=1\n");
         IMasterConnection_sendACT_CON(con, asdu, false);
-        sendIntegratedTotals(con, CS101_COT_REQUESTED_BY_GROUP_1_COUNTER);
-        IMasterConnection_sendACT_TERM(con, asdu);
+        if (frz == 0) {
+            printf("CI group=1\n");
+            sendIntegratedTotals(con, CS101_COT_REQUESTED_BY_GROUP_1_COUNTER);
+            IMasterConnection_sendACT_TERM(con, asdu);
+        }
+        else {
+            /* Freeze, freeze with reset, and reset are ACT + ACTCON only and
+             * transmit no counters (IEC 60870-5-101 7.4.8, mode C). */
+            printf("CI group=1 frz=%i\n", frz);
+        }
     }
     else {
         printf("CI group=%i rejected\n", rqt);

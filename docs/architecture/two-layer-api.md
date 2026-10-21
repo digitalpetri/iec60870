@@ -95,6 +95,10 @@ public interface Iec60870Client extends AutoCloseable {
   List<InformationObject> read(PointAddress point);
   CommandService commands();
   void synchronizeClock(CommonAddress station, Instant time);
+  CounterInterrogationResult counterInterrogate(CommonAddress station, QualifierOfCounterInterrogation qcc);
+  TestResult test(CommonAddress station, AsduType type);  // C_TS_TA_1 or C_TS_NA_1
+  void resetProcess(CommonAddress station, QualifierOfResetProcess qrp);
+  ParameterService parameters();                    // P_ME load, P_AC activate/deactivate
   void send(Asdu asdu);
   boolean isConnected();
   void close();
@@ -146,6 +150,45 @@ carries a cause for every unplanned close, including a peer that closed the conn
 `disconnect()` and `close()` publish it with no cause, and `close()` does so before the event stream
 completes. A failed attempt that never opened a connection publishes only `ReconnectScheduled`. All
 of these events go through the lossless event stream's lifecycle reserve, so none is dropped.
+
+**Request correlation.** IEC 60870-5 carries no request identifier, so every correlated method
+registers a pending request that matches replies by their ASDU fields. Correlation runs in the
+session callback before events are published, so it never depends on a subscriber keeping up. Each
+request is matched on its common address and test flag, and on an originator address of zero or the
+client's own. Its confirmation must echo the sent object at IOA 0: the QOI or QCC, the reset
+qualifier (QRP), the fixed test pattern (FBP), or the parameter activation qualifier (QPA). For
+C_TS_TA_1 it echoes the test sequence counter (TSC), which the client draws from a wrapping 16-bit
+counter; the echoed time is not compared. A parameter load matches on type and IOA only, because its
+confirmation carries the value now in operation.
+
+| Request | Completes on | Timeout | In flight at once |
+|---|---|---|---|
+| `interrogate` (C_IC_NA_1) | ACT_TERM, collecting COT = QOI after ACT_CON | `requestTimeout` | one per CA |
+| `counterInterrogate`, `FreezeMode.READ` (C_CI_NA_1) | ACT_TERM, collecting M_IT with COT 37 (RQT 5) or 37 + RQT after ACT_CON | `requestTimeout` | one per CA |
+| `counterInterrogate`, freeze or reset | ACT_CON | `commandTimeout` | (same as above) |
+| `read` (C_RD_NA_1) | the response with COT 5 | `requestTimeout` | one per point |
+| `synchronizeClock` (C_CS_NA_1) | ACT_CON | `commandTimeout` | one per CA |
+| `test` (C_TS_TA_1, C_TS_NA_1) | ACT_CON | `commandTimeout` | one per CA |
+| `resetProcess` (C_RP_NA_1) | ACT_CON | `commandTimeout` | one per CA |
+| `parameters().load` (P_ME_NA_1..NC_1) | ACT_CON | `commandTimeout` | one per CA and IOA |
+| `parameters().activate` / `deactivate` (P_AC_NA_1) | ACT_CON / DEACT_CON | `commandTimeout` | one per CA and IOA |
+
+Requests of different kinds never conflict, so a general and a counter interrogation of the same
+station run side by side: their confirmations differ by TypeID and their data by COT. A conflicting
+request fails with `RequestInProgressException` before anything is sent. A timeout is one deadline
+armed at send. Connection loss fails every pending request with `ConnectionClosedException`.
+`maxInterrogationResponseObjects` bounds the objects that both interrogation kinds collect.
+
+A negative confirmation fails the request with `NegativeConfirmationException`, except a command
+or a parameter load, which return a result with `positive() == false`. The counter interrogation,
+test, reset, and parameter services also treat causes 44 to 47 (unknown type, cause, CA, or IOA) on
+a matching reply as a rejection even when P/N is 0, so a station that answers that way fails fast.
+`interrogate` and `synchronizeClock` keep their earlier rule and need P/N set.
+
+The methods that take a station reject the global common address (255 or 65535, by
+`ProtocolProfile.commonAddressLength()`) with `IllegalArgumentException`. Each station answers a
+broadcast with its own address, so the client cannot know when a broadcast is complete; broadcasts
+go through `send(Asdu)`.
 
 **Commands.** `client.commands()` returns a `CommandService`. A `Command` is a sealed domain type
 (`SingleCommandRequest`, `DoubleCommandRequest`, `RegulatingStepCommandRequest`, the three

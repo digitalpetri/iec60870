@@ -4,11 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.digitalpetri.iec60870.NegativeConfirmationException;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.address.CommonAddress;
-import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
@@ -18,7 +19,6 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec60870.asdu.element.DoubleCommandState;
 import com.digitalpetri.iec60870.asdu.element.DoublePointState;
-import com.digitalpetri.iec60870.asdu.element.FixedTestBitPattern;
 import com.digitalpetri.iec60870.asdu.element.FreezeMode;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
@@ -26,16 +26,16 @@ import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfResetProcess;
 import com.digitalpetri.iec60870.asdu.element.StepCommandState;
 import com.digitalpetri.iec60870.asdu.element.Vti;
-import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.IntegratedTotals;
-import com.digitalpetri.iec60870.asdu.object.ResetProcessCommand;
-import com.digitalpetri.iec60870.asdu.object.TestCommand;
+import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Command;
 import com.digitalpetri.iec60870.client.CommandMode;
 import com.digitalpetri.iec60870.client.CommandResult;
+import com.digitalpetri.iec60870.client.CounterInterrogationResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.TestResult;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
@@ -78,11 +78,9 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
  * {@code INTEROP-SERVER READY} log marker. One container is shared by all {@code @Test} methods via
  * {@code @TestInstance(PER_CLASS)}.
  *
- * <p>The high-level {@link Iec60870Client} exposes interrogation, group interrogation, read, the
- * full command surface, and clock sync directly. Counter interrogation, the test command, and the
- * reset process command have no dedicated high-level method on this client, so they are exercised
- * with raw {@link Iec60870Client#send(Asdu)} calls and their confirmations are observed through
- * {@link Iec60870Client#events()}.
+ * <p>Every request goes through the high-level {@link Iec60870Client}: interrogation, group
+ * interrogation, counter interrogation, read, the full command surface, clock sync, the test
+ * command (C_TS_TA_1), and the reset process command.
  *
  * <p><b>Every monitor type round-trips against the live peer.</b> {@code interop_server} emits each
  * interrogation point as its own non-sequence {@code CS101_ASDU} (one {@code
@@ -350,77 +348,88 @@ class ClientVsLib60870ServerInteropTest {
   // --- Counter interrogation ------------------------------------------------------------------
 
   @Test
-  @DisplayName("Counter interrogation returns integrated totals (1070=1000, 1071=1000)")
+  @DisplayName("General counter read returns integrated totals (1070=1000, 1071=1000)")
   void counterInterrogation() {
-    // No high-level counter-interrogation method on Iec60870Client: send a raw C_CI_NA_1 (general
-    // counter request) and collect the M_IT_NA_1 data ASDUs from events().
     events().clear();
 
-    Asdu request =
-        new Asdu(
-            AsduType.C_CI_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            OriginatorAddress.of(3),
-            STATION,
-            List.of(
-                new CounterInterrogationCommand(
-                    InformationObjectAddress.of(0),
-                    // RQT_GENERAL = 5; freeze mode is accepted but ignored by the fixed image.
-                    new QualifierOfCounterInterrogation(5, FreezeMode.READ))));
+    CounterInterrogationResult result = client().counterInterrogate(STATION);
 
-    client().send(request);
-
-    // Expect: ACT_CON (positive), the counter data ASDU(s) with COT REQUESTED_BY_GENERAL_COUNTER,
-    // then ACT_TERM. Wait for the data ASDU carrying the two integrated totals.
-    Asdu data =
-        events()
-            .awaitAsdu(
-                a ->
-                    a.type() == AsduType.M_IT_NA_1
-                        && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                        && !a.objects().isEmpty(),
-                WAIT_TIMEOUT);
-    assertNotNull(data, "expected M_IT_NA_1 counter data with COT REQUESTED_BY_GENERAL_COUNTER");
+    Map<Long, BinaryCounterReading> counters = countersByIoa(result.objects());
+    assertEquals(2, counters.size(), "general counter read must return both totals");
+    assertEquals(1000, counters.get((long) IOA_COUNTER).value(), "1070 counter value == 1000");
+    assertEquals(1000, counters.get((long) IOA_COUNTER_T).value(), "1071 counter value == 1000");
 
     // Integrated totals decode to a PointValue whose logical type is INTEGRATED_TOTALS.
-    PointValue<?> counterValue =
-        MonitorMapping.extract(data.objects().get(0))
-            .map(PointValueExtraction::value)
-            .orElseThrow(() -> new AssertionError("counter data object did not decode"));
-    assertEquals(PointType.INTEGRATED_TOTALS, counterValue.type(), "counter point type");
+    assertEquals(PointType.INTEGRATED_TOTALS, result.pointValues().get(0).value().type());
 
-    // Also confirm the positive ACT_CON for the counter interrogation was received.
-    Asdu actCon =
+    // The data carried the general counter cause and is also published as PointUpdated.
+    ClientEvent.PointUpdated update =
         events()
-            .awaitAsdu(
-                a -> a.type() == AsduType.C_CI_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
+            .awaitPointUpdated(
+                u ->
+                    u.address().objectAddress().value().longValue() == IOA_COUNTER
+                        && u.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER,
                 WAIT_TIMEOUT);
-    assertNotNull(actCon, "expected ACT_CON for counter interrogation");
-    assertFalse(actCon.negative(), "counter interrogation ACT_CON must be positive");
+    assertNotNull(update, "counter data must be published with COT REQUESTED_BY_GENERAL_COUNTER");
+  }
 
-    Map<Long, BinaryCounterReading> counters = countersByIoa(data);
-    assertTrue(counters.containsKey((long) IOA_COUNTER), "counter at 1070 must be reported");
+  @Test
+  @DisplayName("Group 1 counter read returns integrated totals with COT 38")
+  void counterGroup1Interrogation() {
+    events().clear();
+
+    CounterInterrogationResult result =
+        client()
+            .counterInterrogate(STATION, QualifierOfCounterInterrogation.group(1, FreezeMode.READ));
+
+    Map<Long, BinaryCounterReading> counters = countersByIoa(result.objects());
+    assertEquals(2, counters.size(), "group 1 counter read must return both totals");
     assertEquals(1000, counters.get((long) IOA_COUNTER).value(), "1070 counter value == 1000");
 
-    // 1071 may arrive in the same or a subsequent data ASDU; merge.
-    if (!counters.containsKey((long) IOA_COUNTER_T)) {
-      Asdu more =
-          events()
-              .awaitAsdu(
-                  a ->
-                      a.type() == AsduType.M_IT_NA_1
-                          && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                          && countersByIoa(a).containsKey((long) IOA_COUNTER_T),
-                  WAIT_TIMEOUT);
-      if (more != null) {
-        counters.putAll(countersByIoa(more));
-      }
-    }
-    assertTrue(counters.containsKey((long) IOA_COUNTER_T), "counter at 1071 must be reported");
-    assertEquals(1000, counters.get((long) IOA_COUNTER_T).value(), "1071 counter value == 1000");
+    ClientEvent.PointUpdated update =
+        events()
+            .awaitPointUpdated(
+                u ->
+                    u.address().objectAddress().value().longValue() == IOA_COUNTER
+                        && u.cause() == Cause.REQUESTED_BY_GROUP_1_COUNTER,
+                WAIT_TIMEOUT);
+    assertNotNull(update, "group 1 counter data must carry COT REQUESTED_BY_GROUP_1_COUNTER");
+  }
+
+  @Test
+  @DisplayName("Counter freeze completes on ACT_CON and a read follows")
+  void counterFreezeThenRead() {
+    CounterInterrogationResult freeze =
+        client()
+            .counterInterrogate(
+                STATION, QualifierOfCounterInterrogation.general(FreezeMode.FREEZE_NO_RESET));
+    assertTrue(freeze.objects().isEmpty(), "a freeze transmits no counters");
+
+    assertEquals(2, client().counterInterrogate(STATION).objects().size());
+  }
+
+  @Test
+  @DisplayName("Counter group 2 is rejected with a negative ACT_CON")
+  void counterGroup2Rejected() {
+    NegativeConfirmationException e =
+        assertThrows(
+            NegativeConfirmationException.class,
+            () ->
+                client()
+                    .counterInterrogate(
+                        STATION, QualifierOfCounterInterrogation.group(2, FreezeMode.READ)));
+    assertTrue(e.asdu().orElseThrow().negative(), "contract section 4: ACT_CON with P/N = 1");
+  }
+
+  @Test
+  @DisplayName("Counter read of an unknown CA fails fast on COT 46")
+  void counterInterrogationOfUnknownStationFailsFast() {
+    // The fixture answers an unknown CA with COT 46 and P/N left at 0.
+    NegativeConfirmationException e =
+        assertThrows(
+            NegativeConfirmationException.class,
+            () -> client().counterInterrogate(CommonAddress.of(2)));
+    assertEquals(Cause.UNKNOWN_COMMON_ADDRESS, e.cause());
   }
 
   // --- Read -----------------------------------------------------------------------------------
@@ -589,57 +598,25 @@ class ClientVsLib60870ServerInteropTest {
   }
 
   @Test
-  @DisplayName("Test command is positively confirmed (ACT_CON)")
+  @DisplayName("Test command (C_TS_TA_1) is positively confirmed with the same TSC")
   void testCommand() {
-    // No high-level test-command method: send a raw C_TS_NA_1 and observe the positive ACT_CON.
-    events().clear();
-    Asdu request =
-        new Asdu(
-            AsduType.C_TS_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            OriginatorAddress.of(3),
-            STATION,
-            List.of(new TestCommand(InformationObjectAddress.of(0), FixedTestBitPattern.DEFAULT)));
-    client().send(request);
+    // IEC 60870-5-104 clause 6 selects only C_TS_TA_1; the lib60870-C core echoes it with COT 7.
+    TestResult first = client().test(STATION);
+    TestResult second = client().test(STATION);
 
-    Asdu actCon =
-        events()
-            .awaitAsdu(
-                a -> a.type() == AsduType.C_TS_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-                WAIT_TIMEOUT);
-    assertNotNull(actCon, "expected ACT_CON for test command");
-    assertFalse(actCon.negative(), "test command ACT_CON must be positive");
+    assertEquals(AsduType.C_TS_TA_1, first.confirmation().type());
+    assertFalse(first.roundTripTime().isNegative(), "round-trip time must not be negative");
+    int firstTsc = testSequenceCounter(first);
+    assertEquals((firstTsc + 1) & 0xFFFF, testSequenceCounter(second), "the TSC increments");
   }
 
   @Test
   @DisplayName("Reset process is positively confirmed and re-issues End-of-Initialization")
   void resetProcess() {
-    // No high-level reset method: send a raw C_RP_NA_1 (general) and observe the positive ACT_CON.
     events().clear();
-    Asdu request =
-        new Asdu(
-            AsduType.C_RP_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            OriginatorAddress.of(3),
-            STATION,
-            List.of(
-                new ResetProcessCommand(
-                    InformationObjectAddress.of(0), QualifierOfResetProcess.GENERAL)));
-    client().send(request);
 
-    Asdu actCon =
-        events()
-            .awaitAsdu(
-                a -> a.type() == AsduType.C_RP_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-                WAIT_TIMEOUT);
-    assertNotNull(actCon, "expected ACT_CON for reset process");
-    assertFalse(actCon.negative(), "reset process ACT_CON must be positive");
+    // resetProcess throws on a negative confirmation; returning means a positive ACT_CON arrived.
+    client().resetProcess(STATION, QualifierOfResetProcess.GENERAL);
 
     // Contract section 6: a reset process re-issues End-of-Initialization (M_EI_NA_1).
     Asdu endOfInit = events().awaitAsdu(a -> a.type() == AsduType.M_EI_NA_1, WAIT_TIMEOUT);
@@ -676,14 +653,14 @@ class ClientVsLib60870ServerInteropTest {
   //    accept/reject purely by IOA and the interop_client accept test uses the non-time command
   //    forms; the non-time command TypeIDs (45..51) are fully covered above. Time-tagged command
   //    encode/decode is covered by core unit tests.
-  //  * Group interrogations 3..16 and counter groups 2..4: the contract documents these as
+  //  * Group interrogations 3..16 and counter groups 3..4: the contract documents these as
   //    negative (ACT_CON P/N=1) but the server only assigns real points to station/group 1/group 2
-  //    and general/group-1 counter; the negative-rejection path for the unused groups is left to
-  //    the LIMITED (interop_client-driven) scenario and core unit tests.
+  //    and general/group-1 counter; counter group 2 stands in for the rejection path above, and the
+  //    rest is left to the LIMITED (interop_client-driven) scenario and core unit tests.
   static {
     log.info(
         "Coverage note: TLS, time-tagged command TypeIDs (58..64), and group 3..16 / counter "
-            + "group 2..4 rejection paths are intentionally not exercised in this BROAD scenario "
+            + "group 3..4 rejection paths are intentionally not exercised in this BROAD scenario "
             + "(see class comment).");
   }
 
@@ -807,15 +784,21 @@ class ClientVsLib60870ServerInteropTest {
                 LinkedHashMap::new));
   }
 
-  /** Projects an integrated-totals ASDU onto {@code IOA -> BinaryCounterReading}. */
-  private static Map<Long, BinaryCounterReading> countersByIoa(Asdu asdu) {
+  /** Projects integrated-totals objects onto {@code IOA -> BinaryCounterReading}. */
+  private static Map<Long, BinaryCounterReading> countersByIoa(List<InformationObject> objects) {
     Map<Long, BinaryCounterReading> out = new LinkedHashMap<>();
-    for (InformationObject o : asdu.objects()) {
+    for (InformationObject o : objects) {
       if (o instanceof IntegratedTotals it) {
         out.put(it.address().value().longValue(), it.counter());
       }
     }
     return out;
+  }
+
+  private static int testSequenceCounter(TestResult result) {
+    return ((TestCommandWithCp56Time) result.confirmation().objects().get(0))
+        .testSequenceCounter()
+        .intValue();
   }
 
   // --- Event recorder -------------------------------------------------------------------------

@@ -110,13 +110,16 @@ exercised instead through the **read** command (section 5), which returns each I
 
 | Request | QCC | Response COT | Points returned |
 |---------|-----|--------------|-----------------|
-| General counter | RQT_GENERAL (5) + any FRZ | REQUESTED_BY_GENERAL_COUNTER (37) | both integrated totals (IOAs 1070, 1071) reported as M_IT_NA_1 |
-| Group 1 counter | RQT_GROUP_1 (1) + any FRZ | REQUESTED_BY_GROUP_1_COUNTER (38) | integrated totals (IOAs 1070, 1071) |
+| General counter read | RQT_GENERAL (5) + FRZ 0 | REQUESTED_BY_GENERAL_COUNTER (37) | both integrated totals (IOAs 1070, 1071) reported as M_IT_NA_1 |
+| Group 1 counter read | RQT_GROUP_1 (1) + FRZ 0 | REQUESTED_BY_GROUP_1_COUNTER (38) | integrated totals (IOAs 1070, 1071) |
+| Freeze / freeze with reset / reset | RQT_GENERAL or RQT_GROUP_1 + FRZ 1..3 | n/a | none |
 | Other (groups 2..4) | RQT_GROUP_2..4 | n/a | rejected: ACT_CON with P/N = 1 |
 
-Sequence: `ACT_CON` (positive), then the counter data ASDU(s), then `ACT_TERM`. The freeze qualifier
-(FRZ bits) is accepted but the counter value is **not** mutated by freeze in this fixed image — the
-counter at IOA 1070 always reads **1000** and at IOA 1071 always reads **1000**.
+A read (FRZ 0) is answered with `ACT_CON` (positive), then the counter data ASDU(s), then
+`ACT_TERM`. A freeze, freeze with reset, or reset (FRZ 1..3) is answered with `ACT_CON` (positive)
+only, as in mode C of IEC 60870-5-101 7.4.8, which transmits no counters. The counter value is
+**not** mutated by a freeze or reset in this fixed image: the counter at IOA 1070 always reads
+**1000** and at IOA 1071 always reads **1000**.
 
 ---
 
@@ -133,7 +136,7 @@ unknown IOA returns `ACT_CON`/negative semantics via the stack (`UNKNOWN_IOA`), 
 | Request | TypeID | Server behaviour |
 |---------|-------:|------------------|
 | Clock synchronization | C_CS_NA_1 (103) | Accept; stack auto-sends `ACT_CON` (positive). Server logs the received time. |
-| Test command | C_TS_NA_1 (104) | Accept; reply `ACT_CON` (positive) echoing the command. |
+| Test command | C_TS_NA_1 (104) | Accept; reply `ACT_CON` (positive) echoing the command. IEC 60870-5-104 selects only C_TS_TA_1, so the CS104 client test sends C_TS_TA_1; this row serves the CS101 peers. |
 | Test command w/ timestamp | C_TS_TA_1 (107) | Accept; reply `ACT_CON` (positive) echoing the command. |
 | Reset process | C_RP_NA_1 (105) | Accept; reply `ACT_CON` (positive) echoing the command, then re-issue End-of-Initialization. |
 | End of initialization | M_EI_NA_1 (70) | Emitted **once at startup** (COT = INITIALIZED, COI = 0) and again after a reset-process command. |
@@ -210,7 +213,7 @@ The server prints stable, greppable markers. Anchor waits on these substrings:
 | `END-OF-INIT sent` | end-of-initialization emitted |
 | `CONN opened` / `CONN activated` / `CONN closed` | connection lifecycle |
 | `IC station` / `IC group=N` | station / group N interrogation handled |
-| `CI general` / `CI group=N` | counter interrogation handled |
+| `CI general` / `CI group=N` / `CI general frz=N` | counter interrogation handled (`frz=N` for a freeze or reset) |
 | `READ ioa=N` | read command handled |
 | `CLOCKSYNC` | clock sync accepted |
 | `TEST` | test command accepted |

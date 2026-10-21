@@ -37,7 +37,7 @@ When each is used:
 | `AsduDecodeException` | A frame or an ASDU cannot be decoded: bad START octet or length (framing), or a truncated ASDU, undefined cause, or element value its record rejects (content) | `Apdu.Serde` / `Asdu.Serde` / element `Serde`s during decode |
 | `ProtocolTimeoutException` | An APCI timer or a request/response deadline elapses before the peer responds | `ApciSession` t1 expiry; client `commandTimeout` / `requestTimeout` |
 | `ConnectionClosedException` | A new operation is attempted on a closed connection, or a pending request is failed because the transport reported a loss | `ApciSession.close()`; client/server on disconnect |
-| `NegativeConfirmationException` | A *blocking* request (e.g. `interrogate`, `read`, `synchronizeClock`) receives a confirming ASDU with the P/N bit set | client request correlation |
+| `NegativeConfirmationException` | A correlated request (e.g. `interrogate`, `read`, `synchronizeClock`, `counterInterrogate`, `test`, `resetProcess`, parameter activation) receives a confirming ASDU with the P/N bit set, or, for the counter, test, reset, and parameter services, a cause of 44 to 47 | client request correlation |
 | `UnsupportedAsduTypeException` | `AsduType.fromId(int)` sees an undefined type identification, or the codec registry has no codec for the type (the `F_*` types) | decode dispatch; `AsduType.fromId` |
 | `SequenceNumberException` | An inbound I-frame's N(S) does not match V(R), or an N(R) acknowledges frames that were never sent | `ApciSession.onApdu(...)` |
 | `RequestInProgressException` | A blocking request is issued while a conflicting request to the same target is still in flight (their responses could not be told apart) | client request serialization in `DefaultIec60870Client` |
@@ -107,6 +107,10 @@ a normal, expected outcome:
   command does **not** throw when the station rejects it: `positive() == false` means a negative
   confirmation arrived, and `cause()` / `confirmation()` describe it. Only transport/session failures
   (timeout, disconnect) throw.
+- **`ParameterResult(target, positive, cause, valueInOperation, confirmation)`** — returned by
+  `ParameterService.load`. A station confirms a parameter load with the value now in operation, the
+  old value when it rejects the load, so a rejection is `positive() == false` with that value, not an
+  exception.
 - **`InterrogationResult(station, objects, terminated)`** — `terminated()` reports whether the station
   sent `ACT_TERM`; `false` means the collection ended another way (such as a timeout) without raising.
   (A negative `ACT_CON` to the interrogation itself *does* raise `NegativeConfirmationException`.)

@@ -7,8 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.digitalpetri.iec60870.address.CommonAddress;
-import com.digitalpetri.iec60870.address.InformationObjectAddress;
-import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
@@ -17,7 +15,6 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.BinaryCounterReading;
 import com.digitalpetri.iec60870.asdu.element.DoubleCommandState;
 import com.digitalpetri.iec60870.asdu.element.DoublePointState;
-import com.digitalpetri.iec60870.asdu.element.FixedTestBitPattern;
 import com.digitalpetri.iec60870.asdu.element.FreezeMode;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
@@ -25,16 +22,15 @@ import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfResetProcess;
 import com.digitalpetri.iec60870.asdu.element.StepCommandState;
 import com.digitalpetri.iec60870.asdu.element.Vti;
-import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.IntegratedTotals;
-import com.digitalpetri.iec60870.asdu.object.ResetProcessCommand;
-import com.digitalpetri.iec60870.asdu.object.TestCommand;
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Command;
 import com.digitalpetri.iec60870.client.CommandMode;
 import com.digitalpetri.iec60870.client.CommandResult;
+import com.digitalpetri.iec60870.client.CounterInterrogationResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.TestResult;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
@@ -84,20 +80,19 @@ final class InteropClientContract {
   static void assertBroadClientContract(
       Iec60870Client client,
       InteropEventRecorder events,
-      OriginatorAddress originator,
       Duration waitTimeout,
       Duration periodicTimeout) {
 
     assertStationInterrogation(client, events, waitTimeout);
     assertGroup1Interrogation(client, events, waitTimeout);
     assertGroup2Interrogation(client, events, waitTimeout);
-    assertCounterInterrogation(client, events, originator, waitTimeout);
+    assertCounterInterrogation(client, events, waitTimeout);
     assertReadEveryMonitorType(client, events, waitTimeout);
     assertAcceptedCommands(client);
     assertRejectedCommand(client);
     assertClockSync(client);
-    assertTestCommand(client, events, originator, waitTimeout);
-    assertResetProcess(client, events, originator, waitTimeout);
+    assertTestCommand(client);
+    assertResetProcess(client, events, waitTimeout);
     assertPeriodicUpdate(events, periodicTimeout);
   }
 
@@ -181,61 +176,34 @@ final class InteropClientContract {
   }
 
   private static void assertCounterInterrogation(
-      Iec60870Client client,
-      InteropEventRecorder events,
-      OriginatorAddress originator,
-      Duration waitTimeout) {
+      Iec60870Client client, InteropEventRecorder events, Duration waitTimeout) {
     events.clear();
 
-    Asdu request =
-        new Asdu(
-            AsduType.C_CI_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            originator,
-            STATION,
-            List.of(
-                new CounterInterrogationCommand(
-                    InformationObjectAddress.of(0),
-                    new QualifierOfCounterInterrogation(5, FreezeMode.READ))));
-    client.send(request);
+    CounterInterrogationResult result = client.counterInterrogate(STATION);
 
-    Asdu data =
-        events.awaitAsdu(
-            a ->
-                a.type() == AsduType.M_IT_NA_1
-                    && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                    && !a.objects().isEmpty(),
-            waitTimeout);
-    assertNotNull(data, "expected M_IT_NA_1 counter data");
-
-    Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_CI_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            waitTimeout);
-    assertNotNull(actCon, "expected ACT_CON for counter interrogation");
-    assertFalse(actCon.negative(), "counter interrogation ACT_CON must be positive");
-
-    Map<Long, BinaryCounterReading> counters = countersByIoa(data);
-    if (!counters.containsKey((long) IOA_COUNTER_T)) {
-      Asdu more =
-          events.awaitAsdu(
-              a ->
-                  a.type() == AsduType.M_IT_NA_1
-                      && a.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER
-                      && countersByIoa(a).containsKey((long) IOA_COUNTER_T),
-              waitTimeout);
-      if (more != null) {
-        counters.putAll(countersByIoa(more));
-      }
-    }
-
+    Map<Long, BinaryCounterReading> counters = countersByIoa(result.objects());
     assertTrue(counters.containsKey((long) IOA_COUNTER), "counter at 1070 must be reported");
     assertEquals(VAL_COUNTER, counters.get((long) IOA_COUNTER).value(), "1070 counter value");
     assertTrue(counters.containsKey((long) IOA_COUNTER_T), "counter at 1071 must be reported");
     assertEquals(VAL_COUNTER, counters.get((long) IOA_COUNTER_T).value(), "1071 counter value");
+
+    ClientEvent.PointUpdated update =
+        events.awaitPointUpdated(
+            u ->
+                u.address().objectAddress().value().longValue() == IOA_COUNTER
+                    && u.cause() == Cause.REQUESTED_BY_GENERAL_COUNTER,
+            waitTimeout);
+    assertNotNull(update, "counter data must carry COT REQUESTED_BY_GENERAL_COUNTER");
+
+    CounterInterrogationResult group1 =
+        client.counterInterrogate(
+            STATION, QualifierOfCounterInterrogation.group(1, FreezeMode.READ));
+    assertEquals(2, group1.objects().size(), "group 1 counter read must return both totals");
+
+    CounterInterrogationResult freeze =
+        client.counterInterrogate(
+            STATION, QualifierOfCounterInterrogation.general(FreezeMode.FREEZE_NO_RESET));
+    assertTrue(freeze.objects().isEmpty(), "a freeze transmits no counters");
   }
 
   private static void assertReadEveryMonitorType(
@@ -341,56 +309,17 @@ final class InteropClientContract {
     client.synchronizeClock(STATION, Instant.now());
   }
 
-  private static void assertTestCommand(
-      Iec60870Client client,
-      InteropEventRecorder events,
-      OriginatorAddress originator,
-      Duration waitTimeout) {
-    events.clear();
-    client.send(
-        new Asdu(
-            AsduType.C_TS_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            originator,
-            STATION,
-            List.of(new TestCommand(InformationObjectAddress.of(0), FixedTestBitPattern.DEFAULT))));
-
-    Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_TS_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            waitTimeout);
-    assertNotNull(actCon, "expected ACT_CON for test command");
-    assertFalse(actCon.negative(), "test command ACT_CON must be positive");
+  private static void assertTestCommand(Iec60870Client client) {
+    // IEC 60870-5-101 links use the untimed test command.
+    TestResult result = client.test(STATION, AsduType.C_TS_NA_1);
+    assertEquals(AsduType.C_TS_NA_1, result.confirmation().type());
+    assertFalse(result.roundTripTime().isNegative(), "round-trip time must not be negative");
   }
 
   private static void assertResetProcess(
-      Iec60870Client client,
-      InteropEventRecorder events,
-      OriginatorAddress originator,
-      Duration waitTimeout) {
+      Iec60870Client client, InteropEventRecorder events, Duration waitTimeout) {
     events.clear();
-    client.send(
-        new Asdu(
-            AsduType.C_RP_NA_1,
-            false,
-            Cause.ACTIVATION,
-            false,
-            false,
-            originator,
-            STATION,
-            List.of(
-                new ResetProcessCommand(
-                    InformationObjectAddress.of(0), QualifierOfResetProcess.GENERAL))));
-
-    Asdu actCon =
-        events.awaitAsdu(
-            a -> a.type() == AsduType.C_RP_NA_1 && a.cause() == Cause.ACTIVATION_CONFIRMATION,
-            waitTimeout);
-    assertNotNull(actCon, "expected ACT_CON for reset process");
-    assertFalse(actCon.negative(), "reset process ACT_CON must be positive");
+    client.resetProcess(STATION, QualifierOfResetProcess.GENERAL);
 
     Asdu endOfInit = events.awaitAsdu(a -> a.type() == AsduType.M_EI_NA_1, waitTimeout);
     assertNotNull(endOfInit, "reset process should re-issue End-of-Initialization");
@@ -510,9 +439,9 @@ final class InteropClientContract {
                 LinkedHashMap::new));
   }
 
-  private static Map<Long, BinaryCounterReading> countersByIoa(Asdu asdu) {
+  private static Map<Long, BinaryCounterReading> countersByIoa(List<InformationObject> objects) {
     Map<Long, BinaryCounterReading> out = new LinkedHashMap<>();
-    for (InformationObject object : asdu.objects()) {
+    for (InformationObject object : objects) {
       if (object instanceof IntegratedTotals integratedTotals) {
         out.put(integratedTotals.address().value().longValue(), integratedTotals.counter());
       }

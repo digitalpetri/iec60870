@@ -38,6 +38,36 @@ public record QualifierOfCounterInterrogation(int request, FreezeMode freeze) {
     Objects.requireNonNull(freeze, "freeze");
   }
 
+  /** The {@code RQT} value of a general counter request. */
+  public static final int GENERAL_REQUEST = 5;
+
+  /**
+   * Returns a general counter request ({@code RQT} 5) with the given freeze mode.
+   *
+   * @param freeze the freeze mode applied to every counter.
+   * @return the qualifier.
+   * @throws NullPointerException if {@code freeze} is {@code null}.
+   */
+  public static QualifierOfCounterInterrogation general(FreezeMode freeze) {
+    return new QualifierOfCounterInterrogation(GENERAL_REQUEST, freeze);
+  }
+
+  /**
+   * Returns a request for one counter group ({@code RQT} 1..4) with the given freeze mode.
+   *
+   * @param group the counter group, in the range {@code 1..4}.
+   * @param freeze the freeze mode applied to the group's counters.
+   * @return the qualifier.
+   * @throws IllegalArgumentException if {@code group} is outside {@code 1..4}.
+   * @throws NullPointerException if {@code freeze} is {@code null}.
+   */
+  public static QualifierOfCounterInterrogation group(int group, FreezeMode freeze) {
+    if (group < 1 || group > 4) {
+      throw new IllegalArgumentException("counter group out of range [1, 4]: " + group);
+    }
+    return new QualifierOfCounterInterrogation(group, freeze);
+  }
+
   /** Serde for the {@link QualifierOfCounterInterrogation} octet (QCC, 7.2.6.23). */
   public static final class Serde {
 

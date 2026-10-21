@@ -14,16 +14,28 @@ import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.InformationObject;
+import com.digitalpetri.iec60870.asdu.element.FixedTestBitPattern;
+import com.digitalpetri.iec60870.asdu.element.FreezeMode;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfParameterActivation;
+import com.digitalpetri.iec60870.asdu.element.QualifierOfResetProcess;
 import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
+import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
+import com.digitalpetri.iec60870.asdu.object.ParameterActivation;
+import com.digitalpetri.iec60870.asdu.object.ParameterNormalized;
+import com.digitalpetri.iec60870.asdu.object.ParameterScaled;
+import com.digitalpetri.iec60870.asdu.object.ParameterShortFloat;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
+import com.digitalpetri.iec60870.asdu.object.ResetProcessCommand;
+import com.digitalpetri.iec60870.asdu.object.TestCommand;
+import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import com.digitalpetri.iec60870.diagnostics.Direction;
 import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
-import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import java.time.Duration;
@@ -50,6 +62,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -110,6 +125,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final SessionEvents sessionEvents = new SessionEvents();
   private final Session session;
   private final CommandService commandService;
+  private final ParameterService parameterService;
+
+  /** The next C_TS_TA_1 test sequence counter; only its low 16 bits are sent. */
+  private final AtomicInteger testSequenceCounter = new AtomicInteger();
 
   // Serialize command submission with session reset. Enqueueing never waits for a running
   // operation: an inline callback may hold the session lock that the current sender needs.
@@ -226,6 +245,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
         Objects.requireNonNull(sessionFactory.apply(sessionEvents, this.scheduler), "session");
 
     this.commandService = new DefaultCommandService();
+    this.parameterService = new DefaultParameterService();
   }
 
   // --- Iec60870Client: lifecycle ----------------------------------------------------------------
@@ -770,6 +790,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     Objects.requireNonNull(station, "station");
     Objects.requireNonNull(qoi, "qoi");
+    requireStationAddress(station);
 
     var command = new InterrogationCommand(ZERO_ADDRESS, qoi);
     Asdu asdu =
@@ -784,14 +805,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
             List.of(command));
 
     CompletableFuture<InterrogationResult> future = new CompletableFuture<>();
-    PendingInterrogation request =
-        new PendingInterrogation(
+    PendingInterrogation<InterrogationResult> request =
+        PendingInterrogation.general(
             asdu,
             qoi,
             config.protocolProfile().cotLength() == 2,
-            future,
             maxInterrogationResponseObjects,
-            config.timePolicy());
+            objects -> new InterrogationResult(station, objects, true, config.timePolicy()),
+            future);
     if (!register(request)) {
       future.completeExceptionally(
           alreadyInFlight("interrogation of common address " + station.value()));
@@ -852,6 +873,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
   public CompletionStage<Void> synchronizeClockAsync(CommonAddress station, Instant time) {
     Objects.requireNonNull(station, "station");
     Objects.requireNonNull(time, "time");
+    requireStationAddress(station);
 
     var command = new ClockSynchronizationCommand(ZERO_ADDRESS, config.timePolicy().toCp56(time));
     Asdu asdu =
@@ -891,6 +913,157 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
     armAndSend(request, asdu, config.commandTimeout());
     return result;
+  }
+
+  // --- Iec60870Client: counter interrogation ----------------------------------------------------
+
+  @Override
+  public CounterInterrogationResult counterInterrogate(CommonAddress station) {
+    return await(counterInterrogateAsync(station));
+  }
+
+  @Override
+  public CounterInterrogationResult counterInterrogate(
+      CommonAddress station, QualifierOfCounterInterrogation qcc) {
+    return await(counterInterrogateAsync(station, qcc));
+  }
+
+  @Override
+  public CompletionStage<CounterInterrogationResult> counterInterrogateAsync(
+      CommonAddress station) {
+    return counterInterrogateAsync(
+        station, QualifierOfCounterInterrogation.general(FreezeMode.READ));
+  }
+
+  @Override
+  public CompletionStage<CounterInterrogationResult> counterInterrogateAsync(
+      CommonAddress station, QualifierOfCounterInterrogation qcc) {
+
+    Objects.requireNonNull(station, "station");
+    Objects.requireNonNull(qcc, "qcc");
+    requireStationAddress(station);
+    boolean read = qcc.freeze() == FreezeMode.READ;
+    if (read && (qcc.request() < 1 || qcc.request() > 5)) {
+      // Only RQT 1..5 have a response cause (COT 38..41 and 37), so nothing else could complete.
+      throw new IllegalArgumentException(
+          "a counter read requires an RQT in 1..5: " + qcc.request());
+    }
+
+    Asdu asdu =
+        new Asdu(
+            AsduType.C_CI_NA_1,
+            false,
+            Cause.ACTIVATION,
+            false,
+            false,
+            config.originatorAddress(),
+            station,
+            List.of(new CounterInterrogationCommand(ZERO_ADDRESS, qcc)));
+
+    CompletableFuture<CounterInterrogationResult> future = new CompletableFuture<>();
+    PendingInterrogation<CounterInterrogationResult> request =
+        PendingInterrogation.counter(
+            asdu,
+            qcc,
+            config.protocolProfile().cotLength() == 2,
+            maxInterrogationResponseObjects,
+            objects -> new CounterInterrogationResult(station, qcc, objects, config.timePolicy()),
+            future);
+    if (!register(request)) {
+      future.completeExceptionally(
+          alreadyInFlight("counter interrogation of common address " + station.value()));
+      return future;
+    }
+    // A read waits for the station's data and termination; a freeze or reset only for ACT_CON.
+    armAndSend(request, asdu, read ? config.requestTimeout() : config.commandTimeout());
+    return future;
+  }
+
+  // --- Iec60870Client: test command -------------------------------------------------------------
+
+  @Override
+  public TestResult test(CommonAddress station) {
+    return await(testAsync(station));
+  }
+
+  @Override
+  public TestResult test(CommonAddress station, AsduType type) {
+    return await(testAsync(station, type));
+  }
+
+  @Override
+  public CompletionStage<TestResult> testAsync(CommonAddress station) {
+    return testAsync(station, AsduType.C_TS_TA_1);
+  }
+
+  @Override
+  public CompletionStage<TestResult> testAsync(CommonAddress station, AsduType type) {
+    Objects.requireNonNull(station, "station");
+    Objects.requireNonNull(type, "type");
+    requireStationAddress(station);
+
+    InformationObject command;
+    Predicate<InformationObject> echoes;
+    if (type == AsduType.C_TS_TA_1) {
+      UShort tsc = UShort.valueOf(testSequenceCounter.getAndIncrement() & 0xFFFF);
+      command =
+          new TestCommandWithCp56Time(ZERO_ADDRESS, tsc, config.timePolicy().toCp56(Instant.now()));
+      // IEC 60870-5-104 8.8 asks for the time to be echoed too, but a station that re-encodes it
+      // (another zone, day of week) still answered this request; the caller can inspect the echo.
+      echoes =
+          o ->
+              o instanceof TestCommandWithCp56Time echo
+                  && echo.address().equals(ZERO_ADDRESS)
+                  && echo.testSequenceCounter().equals(tsc);
+    } else if (type == AsduType.C_TS_NA_1) {
+      command = new TestCommand(ZERO_ADDRESS, FixedTestBitPattern.DEFAULT);
+      echoes = command::equals;
+    } else {
+      throw new IllegalArgumentException("not a test command type: " + type);
+    }
+
+    return requestConfirmation(
+        controlAsdu(type, Cause.ACTIVATION, station, command),
+        Cause.ACTIVATION_CONFIRMATION,
+        echoes,
+        "test of common address " + station.value(),
+        request ->
+            new TestResult(
+                station, request.roundTripTime(), requirePositive(request.confirmation())));
+  }
+
+  // --- Iec60870Client: reset process ------------------------------------------------------------
+
+  @Override
+  public void resetProcess(CommonAddress station, QualifierOfResetProcess qrp) {
+    await(resetProcessAsync(station, qrp));
+  }
+
+  @Override
+  public CompletionStage<Void> resetProcessAsync(
+      CommonAddress station, QualifierOfResetProcess qrp) {
+
+    Objects.requireNonNull(station, "station");
+    Objects.requireNonNull(qrp, "qrp");
+    requireStationAddress(station);
+
+    var command = new ResetProcessCommand(ZERO_ADDRESS, qrp);
+    return requestConfirmation(
+        controlAsdu(AsduType.C_RP_NA_1, Cause.ACTIVATION, station, command),
+        Cause.ACTIVATION_CONFIRMATION,
+        command::equals,
+        "reset of common address " + station.value(),
+        request -> {
+          requirePositive(request.confirmation());
+          return null;
+        });
+  }
+
+  // --- Iec60870Client: parameters ---------------------------------------------------------------
+
+  @Override
+  public ParameterService parameters() {
+    return parameterService;
   }
 
   // --- Iec60870Client: raw send -----------------------------------------------------------------
@@ -1143,6 +1316,116 @@ public final class DefaultIec60870Client implements Iec60870Client {
    */
   private static RequestInProgressException alreadyInFlight(String target) {
     return new RequestInProgressException(target + " already in flight");
+  }
+
+  /**
+   * Rejects the global common address, which every station answers with its own address.
+   *
+   * <p>IEC 60870-5-101 7.2.4 allows the global address for broadcast interrogation, counter
+   * interrogation, clock synchronization, and reset. The client cannot know how many stations will
+   * answer, so a correlated request to it has no defined completion.
+   *
+   * @param station the requested common address.
+   * @throws IllegalArgumentException if {@code station} is the global address for the configured
+   *     common address length.
+   */
+  private void requireStationAddress(CommonAddress station) {
+    int global = config.protocolProfile().commonAddressLength() == 1 ? 0xFF : 0xFFFF;
+    if (station.value().intValue() == global) {
+      throw new IllegalArgumentException(
+          "the global common address "
+              + global
+              + " has no correlated response; broadcast with send(Asdu) instead");
+    }
+  }
+
+  /**
+   * Builds a single-object control-direction ASDU from this client.
+   *
+   * @param type the ASDU type.
+   * @param cause the cause of transmission, activation or deactivation.
+   * @param station the common address.
+   * @param object the information object.
+   * @return the ASDU.
+   */
+  private Asdu controlAsdu(
+      AsduType type, Cause cause, CommonAddress station, InformationObject object) {
+    return new Asdu(
+        type, false, cause, false, false, config.originatorAddress(), station, List.of(object));
+  }
+
+  /**
+   * Registers and sends an activation that completes on its echoed confirmation, mapping the
+   * confirmation to a result.
+   *
+   * @param activation the activation or deactivation ASDU, with one object.
+   * @param confirmationCause the cause of a confirmation, {@link Cause#ACTIVATION_CONFIRMATION} or
+   *     {@link Cause#DEACTIVATION_CONFIRMATION}.
+   * @param echoes whether an object in a reply is the echo of the sent object.
+   * @param target a short description of the request, for the conflict message.
+   * @param mapper maps the correlated request to the result; may throw to fail the stage.
+   * @param <R> the result type.
+   * @return a stage for the result.
+   */
+  private <R> CompletionStage<R> requestConfirmation(
+      Asdu activation,
+      Cause confirmationCause,
+      Predicate<InformationObject> echoes,
+      String target,
+      Function<PendingActivation, R> mapper) {
+
+    CompletableFuture<R> result = new CompletableFuture<>();
+    PendingActivation request = new PendingActivation(activation, confirmationCause, echoes);
+    request.future.whenComplete(
+        (ignored, error) -> {
+          if (error != null) {
+            result.completeExceptionally(error);
+            return;
+          }
+          try {
+            result.complete(mapper.apply(request));
+          } catch (RuntimeException e) {
+            result.completeExceptionally(e);
+          }
+        });
+    if (!register(request)) {
+      result.completeExceptionally(alreadyInFlight(target));
+      return result;
+    }
+    armAndSend(request, activation, config.commandTimeout());
+    return result;
+  }
+
+  /**
+   * Returns a confirmation if it is positive.
+   *
+   * @param confirmation the correlated confirmation.
+   * @return {@code confirmation}.
+   * @throws NegativeConfirmationException if the P/N bit is set or the cause reports an unknown
+   *     type, cause, or address.
+   */
+  private static Asdu requirePositive(Asdu confirmation) {
+    if (confirmation.negative() || isUnknownCause(confirmation.cause())) {
+      throw new NegativeConfirmationException(confirmation.cause(), confirmation);
+    }
+    return confirmation;
+  }
+
+  /**
+   * Reports whether a cause tells the controlling station that its request was not understood.
+   *
+   * @param cause the cause of transmission.
+   * @return {@code true} for causes 44 to 47.
+   */
+  private static boolean isUnknownCause(Cause cause) {
+    return switch (cause) {
+      case UNKNOWN_TYPE_ID,
+          UNKNOWN_CAUSE,
+          UNKNOWN_COMMON_ADDRESS,
+          UNKNOWN_INFORMATION_OBJECT_ADDRESS ->
+          true;
+      default -> false;
+    };
   }
 
   /**
@@ -1570,39 +1853,97 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
   }
 
-  /** A request awaiting interrogation confirmation then monitor objects until ACT_TERM. */
-  private static final class PendingInterrogation extends PendingRequest {
+  /**
+   * A general, group, or counter interrogation: an activation confirmation, then monitor objects
+   * until ACT_TERM, or only the confirmation for a counter freeze or reset.
+   *
+   * @param <R> the result built from the collected objects.
+   */
+  private static final class PendingInterrogation<R> extends PendingRequest {
 
     private final Asdu activation;
+    private final boolean counter;
     private final int responseCause;
+    private final boolean completeOnConfirmation;
     private final boolean hasOriginatorAddress;
-    private final CompletableFuture<InterrogationResult> future;
     private final int maxObjects;
-    private final TimePolicy timePolicy;
+    private final Function<List<InformationObject>, R> resultFactory;
+    private final CompletableFuture<R> future;
     private final List<InformationObject> collected = new ArrayList<>();
     private boolean confirmed;
     private boolean overflowed;
     private @Nullable Asdu negativeConfirmation;
 
-    PendingInterrogation(
+    private PendingInterrogation(
+        Asdu activation,
+        boolean counter,
+        int responseCause,
+        boolean completeOnConfirmation,
+        boolean hasOriginatorAddress,
+        int maxObjects,
+        Function<List<InformationObject>, R> resultFactory,
+        CompletableFuture<R> future) {
+      this.activation = activation;
+      this.counter = counter;
+      this.responseCause = responseCause;
+      this.completeOnConfirmation = completeOnConfirmation;
+      this.hasOriginatorAddress = hasOriginatorAddress;
+      this.maxObjects = maxObjects;
+      this.resultFactory = resultFactory;
+      this.future = future;
+    }
+
+    /** A general or group interrogation (C_IC_NA_1) collecting objects with COT equal to QOI. */
+    static <R> PendingInterrogation<R> general(
         Asdu activation,
         QualifierOfInterrogation qoi,
         boolean hasOriginatorAddress,
-        CompletableFuture<InterrogationResult> future,
         int maxObjects,
-        TimePolicy timePolicy) {
-      this.activation = activation;
-      this.responseCause = qoi.value().intValue();
-      this.hasOriginatorAddress = hasOriginatorAddress;
-      this.future = future;
-      this.maxObjects = maxObjects;
-      this.timePolicy = timePolicy;
+        Function<List<InformationObject>, R> resultFactory,
+        CompletableFuture<R> future) {
+      return new PendingInterrogation<>(
+          activation,
+          false,
+          qoi.value().intValue(),
+          false,
+          hasOriginatorAddress,
+          maxObjects,
+          resultFactory,
+          future);
+    }
+
+    /**
+     * A counter interrogation (C_CI_NA_1). A read collects integrated totals with COT 37 (RQT 5) or
+     * 37 + RQT (RQT 1..4) until ACT_TERM; a freeze or reset completes on ACT_CON (IEC 60870-5-101,
+     * 7.4.8).
+     */
+    static <R> PendingInterrogation<R> counter(
+        Asdu activation,
+        QualifierOfCounterInterrogation qcc,
+        boolean hasOriginatorAddress,
+        int maxObjects,
+        Function<List<InformationObject>, R> resultFactory,
+        CompletableFuture<R> future) {
+      int rqt = qcc.request();
+      return new PendingInterrogation<>(
+          activation,
+          true,
+          rqt == QualifierOfCounterInterrogation.GENERAL_REQUEST
+              ? Cause.REQUESTED_BY_GENERAL_COUNTER.value()
+              : Cause.REQUESTED_BY_GENERAL_COUNTER.value() + rqt,
+          qcc.freeze() != FreezeMode.READ,
+          hasOriginatorAddress,
+          maxObjects,
+          resultFactory,
+          future);
     }
 
     @Override
     boolean conflictsWith(PendingRequest other) {
-      // Preserve one outstanding interrogation per station, including across different groups.
-      return other instanceof PendingInterrogation that
+      // One outstanding interrogation of each kind per station, across groups and freeze modes. A
+      // general and a counter interrogation differ in control type and response causes.
+      return other instanceof PendingInterrogation<?> that
+          && activation.type() == that.activation.type()
           && activation.commonAddress().equals(that.activation.commonAddress());
     }
 
@@ -1619,28 +1960,29 @@ public final class DefaultIec60870Client implements Iec60870Client {
           && !asdu.originatorAddress().equals(activation.originatorAddress())) {
         return Outcome.IGNORED;
       }
-      if (asdu.type() == AsduType.C_IC_NA_1) {
-        // Confirmations and terminations echo the single IOA 0 command and its requested QOI.
+      if (asdu.type() == activation.type()) {
+        // Confirmations and terminations echo the single IOA 0 command and its requested qualifier.
         if (!asdu.objects().equals(activation.objects())) {
           return Outcome.IGNORED;
         }
         // A negative confirmation may carry an error cause (for example UNKNOWN_COMMON_ADDRESS)
         // rather than ACTIVATION_CONFIRMATION when the controlled station declines the request;
-        // a matching negative C_IC_NA_1 confirmation still rejects this request.
-        if (asdu.negative()) {
+        // a matching negative confirmation still rejects this request. A counter interrogation
+        // also fails on an unknown-field cause with P/N=0, which some stations send.
+        if (asdu.negative() || (counter && isUnknownCause(asdu.cause()))) {
           negativeConfirmation = asdu;
           return Outcome.FAILED;
         }
         return switch (asdu.cause()) {
           case ACTIVATION_CONFIRMATION -> {
             confirmed = true;
-            yield Outcome.ACCEPTED;
+            yield completeOnConfirmation ? Outcome.COMPLETED : Outcome.ACCEPTED;
           }
           case ACTIVATION_TERMINATION -> confirmed ? Outcome.COMPLETED : Outcome.IGNORED;
           default -> Outcome.IGNORED;
         };
       }
-      if (confirmed && isInterrogationResponse(asdu.cause())) {
+      if (confirmed && !completeOnConfirmation && isResponse(asdu)) {
         // Bound the accumulated response (maxObjects == 0 disables the bound); see
         // ClientConfig#maxInterrogationResponseObjects.
         if (maxObjects > 0 && collected.size() + asdu.objects().size() > maxObjects) {
@@ -1655,8 +1997,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     void deliver() {
-      future.complete(
-          new InterrogationResult(activation.commonAddress(), collected, true, timePolicy));
+      future.complete(resultFactory.apply(collected));
     }
 
     @Override
@@ -1664,7 +2005,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
       if (overflowed) {
         future.completeExceptionally(
             new Iec60870Exception(
-                "interrogation response exceeded the maximum of "
+                (counter ? "counter interrogation" : "interrogation")
+                    + " response exceeded the maximum of "
                     + maxObjects
                     + " objects without an activation termination"));
         return;
@@ -1678,9 +2020,118 @@ public final class DefaultIec60870Client implements Iec60870Client {
       future.completeExceptionally(cause);
     }
 
-    private boolean isInterrogationResponse(Cause cause) {
+    private boolean isResponse(Asdu asdu) {
+      if (counter) {
+        // M_IT_* carry COT 3 or 37..41 only; spontaneous counters stay out of the result.
+        return asdu.cause().value() == responseCause
+            && (asdu.type() == AsduType.M_IT_NA_1
+                || asdu.type() == AsduType.M_IT_TA_1
+                || asdu.type() == AsduType.M_IT_TB_1);
+      }
       // Standard station/group QOI and response COT share values 20..36 (IEC 60870-5-101, 7.4.5).
-      return responseCause >= 20 && responseCause <= 36 && cause.value() == responseCause;
+      return responseCause >= 20 && responseCause <= 36 && asdu.cause().value() == responseCause;
+    }
+  }
+
+  /**
+   * A system or parameter activation that completes on its echoed confirmation: test (C_TS_NA_1,
+   * C_TS_TA_1), reset process (C_RP_NA_1), parameter load (P_ME_NA_1, P_ME_NB_1, P_ME_NC_1), and
+   * parameter activation (P_AC_NA_1).
+   *
+   * <p>A reply matches when it has the activation's type, common address, and test flag, an
+   * originator address of zero or the client's own, and exactly one object that the echo predicate
+   * accepts. Its cause must be the expected confirmation cause or one of causes 44 to 47, which a
+   * station sends with or without P/N set when it does not understand the request. The request
+   * completes with the matching reply whatever its P/N bit; the caller decides what a negative
+   * reply means.
+   */
+  private static final class PendingActivation extends PendingRequest {
+
+    private final Asdu activation;
+    private final Cause confirmationCause;
+    private final Predicate<InformationObject> echoes;
+    private final CompletableFuture<Asdu> future = new CompletableFuture<>();
+    private final long sentNanos = System.nanoTime();
+    private long confirmedNanos;
+    private @Nullable Asdu confirmation;
+
+    PendingActivation(
+        Asdu activation, Cause confirmationCause, Predicate<InformationObject> echoes) {
+      this.activation = activation;
+      this.confirmationCause = confirmationCause;
+      this.echoes = echoes;
+    }
+
+    /** Returns the correlated confirmation; valid once the request completed. */
+    Asdu confirmation() {
+      return Objects.requireNonNull(confirmation);
+    }
+
+    /** Returns the time from creating the request to correlating its confirmation. */
+    Duration roundTripTime() {
+      return Duration.ofNanos(Math.max(0, confirmedNanos - sentNanos));
+    }
+
+    @Override
+    boolean conflictsWith(PendingRequest other) {
+      return other instanceof PendingActivation that
+          && family(activation.type()) == family(that.activation.type())
+          && activation.commonAddress().equals(that.activation.commonAddress())
+          && objectAddress().equals(that.objectAddress());
+    }
+
+    private InformationObjectAddress objectAddress() {
+      return activation.objects().get(0).address();
+    }
+
+    /**
+     * Groups types whose requests compete for one target: both test commands for a station, and the
+     * three parameter loads for one parameter (IEC 60870-5-101, 7.2.6.24).
+     */
+    private static AsduType family(AsduType type) {
+      return switch (type) {
+        case C_TS_NA_1, C_TS_TA_1 -> AsduType.C_TS_TA_1;
+        case P_ME_NA_1, P_ME_NB_1, P_ME_NC_1 -> AsduType.P_ME_NA_1;
+        default -> type;
+      };
+    }
+
+    @Override
+    Outcome accept(Asdu asdu) {
+      // OA zero means no specific originator: one-octet COT omits OA, and peers may leave it
+      // unused even with two octets. A different nonzero OA still belongs to another source.
+      if (asdu.type() != activation.type()
+          || asdu.test() != activation.test()
+          || (!asdu.originatorAddress().equals(OriginatorAddress.none())
+              && !asdu.originatorAddress().equals(activation.originatorAddress()))
+          || !asdu.commonAddress().equals(activation.commonAddress())
+          || asdu.objects().size() != 1
+          || !echoes.test(asdu.objects().get(0))) {
+        return Outcome.IGNORED;
+      }
+      // Other causes, such as P_ME interrogation responses (COT 20..36), are not confirmations.
+      if (asdu.cause() != confirmationCause && !isUnknownCause(asdu.cause())) {
+        return Outcome.IGNORED;
+      }
+      confirmation = asdu;
+      confirmedNanos = System.nanoTime();
+      return Outcome.COMPLETED;
+    }
+
+    @Override
+    void deliver() {
+      future.complete(confirmation());
+    }
+
+    @Override
+    void deliverFailure() {
+      // PendingActivation never records a failure outcome; see accept().
+      future.completeExceptionally(new ConnectionClosedException("confirmation lost"));
+    }
+
+    @Override
+    void fail(Throwable cause) {
+      future.completeExceptionally(cause);
     }
   }
 
@@ -1858,6 +2309,100 @@ public final class DefaultIec60870Client implements Iec60870Client {
           config.originatorAddress(),
           command.target().commonAddress(),
           List.of(CommandAsdus.toObject(command, select, config.timePolicy())));
+    }
+  }
+
+  /** The parameter service backing {@link #parameters()}. */
+  private final class DefaultParameterService implements ParameterService {
+
+    @Override
+    public ParameterResult load(ParameterRequest request) {
+      return await(loadAsync(request));
+    }
+
+    @Override
+    public CompletionStage<ParameterResult> loadAsync(ParameterRequest request) {
+      Objects.requireNonNull(request, "request");
+      PointAddress target = request.target();
+      requireStationAddress(target.commonAddress());
+
+      InformationObjectAddress ioa = target.objectAddress();
+      AsduType type;
+      InformationObject object;
+      if (request instanceof ParameterRequest.Normalized r) {
+        type = AsduType.P_ME_NA_1;
+        object = new ParameterNormalized(ioa, r.value(), r.qualifier());
+      } else if (request instanceof ParameterRequest.Scaled r) {
+        type = AsduType.P_ME_NB_1;
+        object = new ParameterScaled(ioa, r.value(), r.qualifier());
+      } else if (request instanceof ParameterRequest.ShortFloat r) {
+        type = AsduType.P_ME_NC_1;
+        object = new ParameterShortFloat(ioa, r.value(), r.qualifier());
+      } else {
+        throw new IllegalArgumentException("unsupported parameter request: " + request);
+      }
+
+      // The confirmation carries the value now in operation, which differs from the sent value
+      // when the station rejects the load (IEC 60870-5-101, 7.4.9), so match on the address only.
+      return requestConfirmation(
+          controlAsdu(type, Cause.ACTIVATION, target.commonAddress(), object),
+          Cause.ACTIVATION_CONFIRMATION,
+          o -> o.address().equals(ioa),
+          "parameter load of " + target,
+          pending -> {
+            Asdu ack = pending.confirmation();
+            boolean confirmed = ack.cause() == Cause.ACTIVATION_CONFIRMATION;
+            return new ParameterResult(
+                target,
+                confirmed && !ack.negative(),
+                ack.cause(),
+                confirmed ? Optional.of(ack.objects().get(0)) : Optional.empty(),
+                ack);
+          });
+    }
+
+    @Override
+    public void activate(PointAddress target, QualifierOfParameterActivation qpa) {
+      await(activateAsync(target, qpa));
+    }
+
+    @Override
+    public CompletionStage<Void> activateAsync(
+        PointAddress target, QualifierOfParameterActivation qpa) {
+      return parameterActivation(target, qpa, Cause.ACTIVATION, Cause.ACTIVATION_CONFIRMATION);
+    }
+
+    @Override
+    public void deactivate(PointAddress target, QualifierOfParameterActivation qpa) {
+      await(deactivateAsync(target, qpa));
+    }
+
+    @Override
+    public CompletionStage<Void> deactivateAsync(
+        PointAddress target, QualifierOfParameterActivation qpa) {
+      return parameterActivation(target, qpa, Cause.DEACTIVATION, Cause.DEACTIVATION_CONFIRMATION);
+    }
+
+    private CompletionStage<Void> parameterActivation(
+        PointAddress target,
+        QualifierOfParameterActivation qpa,
+        Cause cause,
+        Cause confirmationCause) {
+
+      Objects.requireNonNull(target, "target");
+      Objects.requireNonNull(qpa, "qpa");
+      requireStationAddress(target.commonAddress());
+
+      var object = new ParameterActivation(target.objectAddress(), qpa);
+      return requestConfirmation(
+          controlAsdu(AsduType.P_AC_NA_1, cause, target.commonAddress(), object),
+          confirmationCause,
+          object::equals,
+          "parameter activation of " + target,
+          pending -> {
+            requirePositive(pending.confirmation());
+            return null;
+          });
     }
   }
 

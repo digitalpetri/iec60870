@@ -80,7 +80,7 @@ class Cs101OverTcpInteropTest {
         client.connect();
         assertTrue(client.isConnected(), "client should be connected after balanced link reset");
         InteropClientContract.assertBroadClientContract(
-            client, events, OriginatorAddress.none(), WAIT_TIMEOUT, Duration.ofSeconds(10));
+            client, events, WAIT_TIMEOUT, Duration.ofSeconds(10));
       } finally {
         client.close();
       }

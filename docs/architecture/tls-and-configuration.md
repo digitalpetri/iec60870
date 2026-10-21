@@ -105,7 +105,8 @@ neutral `SessionSettings` handle instead (see below), defaulting to `ApciSetting
 configs also hold the non-transport behavioral knobs:
 
 - **`ClientConfig`** — `originatorAddress`, an optional `pointCatalog`, `startDataTransferOnConnect`
-  (default `true`), `commandTimeout` (10 s), `requestTimeout` (30 s, for interrogation/read/clock-sync),
+  (default `true`), `commandTimeout` (10 s, for commands, clock sync, counter freeze and reset, test,
+  reset process, and parameters), `requestTimeout` (30 s, for interrogation, counter read, and read),
   `maxInterrogationResponseObjects` (1,000,000), `callbackExecutor`, `eventBacklogLimit` (4096
   events, the subscriber backlog at which the client pauses inbound data; also on the `Tcp*Client`
   and `SerialIec101Client` builders), the `TimePolicy` for received, command, and clock-sync time

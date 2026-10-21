@@ -10,7 +10,7 @@ for the same flow end to end.
 
 A connected [`Iec60870Client`](../../architecture/two-layer-api.md), a general interrogation snapshot
 read two ways (from the returned result and from the event listener), and a counter interrogation
-issued through the raw escape hatch. The client is the **controlling station** (master); the station
+that freezes and reads integrated totals. The client is the **controlling station** (master); the station
 it talks to is the **controlled station** (server), addressed by its
 [Common Address (CA)](../reference/glossary.md) — a `CommonAddress` you pass to `interrogate`.
 
@@ -152,52 +152,53 @@ is empty. See [host a server](./host-a-server.md) for group assignment.
 
 ## Step 5 — Counter (integrated-totals) interrogation
 
-The high-level client has **no `counterInterrogate(...)` method**. Counter interrogation
-(`C_CI_NA_1`) is issued through the raw `send(Asdu)` escape hatch, and the frozen counter values
-arrive asynchronously on `events()` as integrated-totals (`M_IT`) updates — `send(...)` is
-fire-and-forget, so there is no `InterrogationResult` analog for counters. Read the results off the
-event stream (next section), not off a return value.
+`counterInterrogate(station)` reads every counter of a station with a general counter
+interrogation (`C_CI_NA_1`) and returns a `CounterInterrogationResult` once the station sends its
+activation termination. The overload that takes a `QualifierOfCounterInterrogation` (QCC) selects a
+counter group and a freeze action: the request field (RQT) is `1..4` for counter group `1..4` or `5`
+for all counters, and the `FreezeMode` is `READ`, `FREEZE_NO_RESET`, `FREEZE_WITH_RESET`, or `RESET`.
 
-Build the `C_CI_NA_1` ASDU by hand and send it. The qualifier of counter interrogation (QCC) selects
-which counter group to read and what freeze action to apply: the request field (RQT) is `1..4` for a
-specific counter group or `5` for a general counter request, and the `FreezeMode` chooses the freeze
-action (`READ`, `FREEZE_NO_RESET`, `FREEZE_WITH_RESET`, or `RESET`). The
-[Information Object Address (IOA)](../reference/glossary.md) is `0` for `C_CI_NA_1`.
+A read collects only the integrated totals (`M_IT`) whose cause matches the request: COT 37 for a
+general read, 38 to 41 for groups 1 to 4. Spontaneous counters and other groups are not collected.
+A freeze or reset transmits no counters (IEC 60870-5-101 7.4.8), so it completes on the station's
+activation confirmation with an empty result. Read the frozen values afterwards, which is the
+freeze-then-read cycle of mode C.
 
 Imports omitted.
 
 ```java
-// The high-level client has no counterInterrogate(...) method; build C_CI_NA_1 by hand
-// and send it through the raw escape hatch. Frozen counters arrive on events() as M_IT.
-int request = 5; // RQT: 1..4 select counter group 1..4; 5 is a general counter request
-Asdu counterInterrogation =
-    new Asdu(
-        AsduType.C_CI_NA_1,
-        false,                       // sequence (SQ)
-        Cause.ACTIVATION,            // COT 6
-        false,                       // negative
-        false,                       // test
-        OriginatorAddress.none(),
-        station,                     // CommonAddress.of(1)
-        List.of(
-            new CounterInterrogationCommand(
-                InformationObjectAddress.of(0),
-                new QualifierOfCounterInterrogation(request, FreezeMode.READ))));
+// Freeze group 1, then read the frozen values.
+client.counterInterrogate(station, QualifierOfCounterInterrogation.group(1, FreezeMode.FREEZE_NO_RESET));
+CounterInterrogationResult counters =
+    client.counterInterrogate(station, QualifierOfCounterInterrogation.group(1, FreezeMode.READ));
 
-client.send(counterInterrogation);
-// The station replies ACT_CON, streams M_IT (integrated-totals) objects, then ACT_TERM —
-// all delivered asynchronously through events(); see "Receive results via the event listener".
+for (InterrogationResult.PointEntry entry : counters.pointValues()) {
+  BinaryCounterReading reading = (BinaryCounterReading) entry.value().value();
+  System.out.println(entry.address() + " = " + reading.value());
+}
 ```
 
-For the general raw `send(Asdu)` pattern (building, encoding, and decoding ASDUs), see
-[work with raw ASDUs](./work-with-raw-asdus.md). For the integrated-totals point model and the
+A read uses the request timeout; a freeze or reset uses the command timeout. A negative activation
+confirmation, or a cause of 44 to 47 (unknown type, cause, common address, or IOA), throws
+`NegativeConfirmationException`. One counter interrogation can be in flight per station; a second
+fails with `RequestInProgressException` without sending anything. It runs independently of a
+general interrogation of the same station, because the two differ in type and response causes.
+Collected counters are also published as `PointUpdated` events.
+
+The global common address (255 or 65535, by common address length) is rejected with
+`IllegalArgumentException`, because every station answers a broadcast with its own address. To
+freeze every station at once, send the broadcast `C_CI_NA_1` with `send(Asdu)` and read each station
+afterwards.
+
+For the raw `send(Asdu)` pattern, see [work with raw ASDUs](./work-with-raw-asdus.md). For the
+integrated-totals point model and the
 `BinaryCounterReading` value type, see
 [choosing a point type](../reference/choosing-a-point-type.md).
 
 ## Receive results via the event listener
 
 The event listener is the alternative to the returned result, and it is how *all* asynchronous data
-arrives: spontaneous updates, interrogated data, and the frozen counter readings from Step 5.
+arrives: spontaneous updates, interrogated data, and the counter readings from Step 5.
 Subscribe a `Flow.Subscriber<ClientEvent>` to `client.events()` **before** connecting so no early
 events are missed.
 
@@ -261,8 +262,8 @@ See [`iec60870-examples/README.md`](../../../iec60870-examples/README.md) for bu
 - [How-To: Host a server](./host-a-server.md) — group and counter-group assignment on the controlled
   station.
 - [How-To: Handle events](./handle-events.md) — the full listener surface and threading rules.
-- [How-To: Work with raw ASDUs](./work-with-raw-asdus.md) — the `send(Asdu)` pattern behind counter
-  interrogation.
+- [How-To: Work with raw ASDUs](./work-with-raw-asdus.md) — the `send(Asdu)` pattern for broadcast
+  requests and unmodeled types.
 - [Reference: Glossary](../reference/glossary.md) — CA, QOI, COT, STARTDT, ACT_CON/ACT_TERM, IOA.
 - [Reference: Timers & window](../reference/timers-and-window.md) — STARTDT/STOPDT and `t1`.
 - [Reference: Choosing a point type](../reference/choosing-a-point-type.md) — integrated totals and

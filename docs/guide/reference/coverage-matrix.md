@@ -15,9 +15,9 @@ station), **Ctrl** = [control direction](glossary.md) (controlling → controlle
 
 > **The one insight this page exists to convey:** `supported() == true` means a typed
 > `com.digitalpetri.iec60870.asdu.object` record and a standard codec exist. It does **not** mean the
-> high-level facade has a dedicated method for that type. Some supported types — parameter loading,
-> delay acquisition, end-of-initialization, counter interrogation from the client side — are
-> codec-enabled but reachable only through the **raw** send/receive surface. The **Facade surface**
+> high-level facade has a dedicated method for that type. Some supported types — delay acquisition,
+> end-of-initialization, and parameter loading on the server side — are codec-enabled but reachable
+> only through the **raw** send/receive surface. The **Facade surface**
 > column below is where that distinction lives.
 
 ## How to read this page
@@ -161,33 +161,35 @@ The CP56Time2a twins (58–64) are produced by the same `Command.*Request` carry
 ## System information
 
 This is where the modeled-versus-facade distinction bites hardest, so the **Facade surface** column
-is exact and per-row. Several of these types are modeled (record + codec) yet have no client facade
-method — the server answers them automatically, or they are reachable only by raw send.
+is exact and per-row. Two of these types are modeled (record + codec) yet have no facade method on
+either side and are reachable only by raw send and receive.
 
 | TypeID | Mnemonic | Dir | Record | Facade surface |
 |---|---|---|---|---|
 | 70 | M_EI_NA_1 | Sys/Mon | `EndOfInitialization` | Modeled record; raw only at facade |
 | 100 | C_IC_NA_1 | Ctrl | `InterrogationCommand` | `Iec60870Client.interrogate` / server answers ([`onInterrogation`](../how-to/host-a-server.md)) |
-| 101 | C_CI_NA_1 | Ctrl | `CounterInterrogationCommand` | Server answers automatically; **client raw only** |
+| 101 | C_CI_NA_1 | Ctrl | `CounterInterrogationCommand` | `Iec60870Client.counterInterrogate` / server answers reads automatically |
 | 102 | C_RD_NA_1 | Ctrl | `ReadCommand` | `Iec60870Client.read` / `readAsync` / server answers (`onRead`) |
 | 103 | C_CS_NA_1 | Ctrl | `ClockSynchronizationCommand` | `Iec60870Client.synchronizeClock` / server answers (`onClockSync`) |
-| 104 | C_TS_NA_1 | Ctrl | `TestCommand` | Server answers automatically; **client raw only** |
-| 105 | C_RP_NA_1 | Ctrl | `ResetProcessCommand` | Server answers (`onReset`); **client raw only** |
+| 104 | C_TS_NA_1 | Ctrl | `TestCommand` | `Iec60870Client.test(station, C_TS_NA_1)` / server answers automatically |
+| 105 | C_RP_NA_1 | Ctrl | `ResetProcessCommand` | `Iec60870Client.resetProcess` / server answers (`onReset`) |
 | 106 | C_CD_NA_1 | Ctrl | `DelayAcquisitionCommand` | Modeled record; raw only at facade |
-| 107 | C_TS_TA_1 | Ctrl | `TestCommandWithCp56Time` | Server answers automatically; **client raw only** |
+| 107 | C_TS_TA_1 | Ctrl | `TestCommandWithCp56Time` | `Iec60870Client.test` / server answers automatically |
 
-The client exposes facade methods for interrogation (`interrogate`), read (`read` / `readAsync`),
-and clock sync (`synchronizeClock`) only. There is **no** client method for counter interrogation
-(C_CI_NA_1), test (C_TS_NA_1 / C_TS_TA_1), or reset process (C_RP_NA_1): to drive those from the
-controlling station, build the `Asdu` and call `client.send(...)` (see the snippet below). The server
-side still understands all of them — its standard dispatch answers C_IC, C_CI, C_RD, C_CS, C_TS, and
-C_RP — but `M_EI_NA_1` (70) and `C_CD_NA_1` (106) fall through to the raw hooks on both sides.
+Each client method sends one activation and completes on the correlated reply, with the timeout,
+conflict, and connection-loss handling of `interrogate`. A counter read (`FreezeMode.READ`)
+completes on the activation termination with the counters; a counter freeze or reset, a test, and a
+reset process complete on the activation confirmation. The server side answers C_IC, C_CI, C_RD,
+C_CS, C_TS, and C_RP through its standard dispatch; its built-in counter interrogation rejects a
+freeze or reset with a negative confirmation, so a station that supports freezing claims C_CI_NA_1
+in `onRawAsdu`. `M_EI_NA_1` (70) and `C_CD_NA_1` (106) fall through to the raw hooks on both sides.
 
-### Reaching a "raw only at facade" type from the client
+### Broadcast requests
 
-Counter interrogation (C_CI_NA_1) has a typed record but no client facade method, so you send it
-raw. The same pattern works for the other raw-only control types — construct the matching record (or,
-for an unmodeled body, a raw header) and call `Iec60870Client.send(Asdu)`:
+The client methods reject the global common address (255 with a one-octet CA, 65535 with two)
+with `IllegalArgumentException`: each station answers a broadcast with its own address, so a
+broadcast request has no defined completion. Send a broadcast counter freeze, clock
+synchronization, or reset with `Iec60870Client.send(Asdu)` and watch `events()` for the replies:
 
 ```java
 import com.digitalpetri.iec60870.address.CommonAddress;
@@ -201,9 +203,8 @@ import com.digitalpetri.iec60870.asdu.element.QualifierOfCounterInterrogation;
 import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import java.util.List;
 
-// C_CI_NA_1 has a typed record but no client facade method — send it raw.
-// RQT 5 is a general counter request; FreezeMode.READ reads without freezing or resetting.
-Asdu counterInterrogation =
+// Freeze every counter of every station at once (RQT 5, FRZ 1).
+Asdu broadcastFreeze =
     new Asdu(
         AsduType.C_CI_NA_1,
         false, // SQ
@@ -211,34 +212,35 @@ Asdu counterInterrogation =
         false, // P/N
         false, // test
         OriginatorAddress.none(),
-        CommonAddress.of(1),
+        CommonAddress.of(65535),
         List.of(
             new CounterInterrogationCommand(
                 InformationObjectAddress.of(0),
-                new QualifierOfCounterInterrogation(5, FreezeMode.READ))));
+                QualifierOfCounterInterrogation.general(FreezeMode.FREEZE_NO_RESET))));
 
-client.send(counterInterrogation);
+client.send(broadcastFreeze);
 ```
 
 The `Asdu` constructor field order — `type, sequence, cause, negative, test, originatorAddress,
 commonAddress, objects` — matches the [`RawAsduExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/RawAsduExample.java)
-in the examples module. The IOA is `0` for counter interrogation. Use the [common address (CA)](glossary.md)
-of the target station. See [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md) and
+in the examples module. See [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md) and
 [How-To: Connect & interrogate](../how-to/connect-and-interrogate.md).
 
 ## Parameter, control direction
 
-The four parameter-loading types are modeled (record + codec) but **raw only at the facade**: there
-is no client method, and on the server they fall through to the raw hook (`onRawAsdu`, otherwise
-`handleUnknown`). Drive them from raw send/receive — see
-[How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md).
+The client loads and activates parameters through `Iec60870Client.parameters()`. A load completes
+on the activation confirmation, which carries the parameter now in operation: the new value when
+the station accepted it, the old value when it rejected it (IEC 60870-5-101 7.4.9). A rejection is
+therefore a `ParameterResult` with `positive() == false`, not an exception. The server has no
+parameter handler; these types fall through to the raw hook (`onRawAsdu`, otherwise
+`handleUnknown`).
 
 | TypeID | Mnemonic | Dir | Record | Facade surface |
 |---|---|---|---|---|
-| 110 | P_ME_NA_1 | Ctrl | `ParameterNormalized` | Modeled record; raw only at facade |
-| 111 | P_ME_NB_1 | Ctrl | `ParameterScaled` | Modeled record; raw only at facade |
-| 112 | P_ME_NC_1 | Ctrl | `ParameterShortFloat` | Modeled record; raw only at facade |
-| 113 | P_AC_NA_1 | Ctrl | `ParameterActivation` | Modeled record; raw only at facade |
+| 110 | P_ME_NA_1 | Ctrl | `ParameterNormalized` | `parameters().load(ParameterRequest.Normalized)`; server raw only |
+| 111 | P_ME_NB_1 | Ctrl | `ParameterScaled` | `parameters().load(ParameterRequest.Scaled)`; server raw only |
+| 112 | P_ME_NC_1 | Ctrl | `ParameterShortFloat` | `parameters().load(ParameterRequest.ShortFloat)`; server raw only |
+| 113 | P_AC_NA_1 | Ctrl | `ParameterActivation` | `parameters().activate` / `deactivate`; server raw only |
 
 ## Out of scope — file transfer
 

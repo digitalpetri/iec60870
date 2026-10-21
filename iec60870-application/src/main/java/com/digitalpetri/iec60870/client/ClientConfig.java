@@ -43,10 +43,13 @@ import org.jspecify.annotations.Nullable;
  * @param pointCatalog the optional point catalog describing known points, or {@code null} if none.
  * @param startDataTransferOnConnect whether every connection the client establishes, including
  *     automatic reconnects, also starts data transfer.
- * @param commandTimeout the maximum time to await a command confirmation.
- * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
+ * @param commandTimeout the maximum time to await a confirmation: commands, clock synchronization,
+ *     counter freeze and reset, test, reset process, and parameter load and activation.
+ * @param requestTimeout the maximum time to await a response that carries data: general and group
+ *     interrogation, counter read, and read.
  * @param maxInterrogationResponseObjects the bound on the number of information objects a single
- *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
+ *     interrogation or counter read will accumulate before the request is failed, or {@code 0} for
+ *     no bound.
  * @param callbackExecutor the executor used to deliver events and complete blocking calls.
  * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at which
  *     the client pauses inbound data.
@@ -85,10 +88,14 @@ public record ClientConfig(
    *     none.
    * @param startDataTransferOnConnect whether every connection the client establishes, including
    *     automatic reconnects, also starts data transfer.
-   * @param commandTimeout the maximum time to await a command confirmation.
-   * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
+   * @param commandTimeout the maximum time to await a confirmation: commands, clock
+   *     synchronization, counter freeze and reset, test, reset process, and parameter load and
+   *     activation.
+   * @param requestTimeout the maximum time to await a response that carries data: general and group
+   *     interrogation, counter read, and read.
    * @param maxInterrogationResponseObjects the bound on the number of information objects a single
-   *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
+   *     interrogation or counter read will accumulate before the request is failed, or {@code 0}
+   *     for no bound.
    * @param callbackExecutor the executor used to deliver events and complete blocking calls.
    * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at
    *     which the client pauses inbound data.
@@ -245,7 +252,12 @@ public record ClientConfig(
     }
 
     /**
-     * Sets the maximum time to await a command confirmation. Defaults to 10 seconds.
+     * Sets the maximum time to await a confirmation. Defaults to 10 seconds.
+     *
+     * <p>Applies to {@link Iec60870Client#commands()}, {@link Iec60870Client#synchronizeClock},
+     * counter freeze and reset through {@link Iec60870Client#counterInterrogate}, {@link
+     * Iec60870Client#test}, {@link Iec60870Client#resetProcess}, and {@link
+     * Iec60870Client#parameters()}. For select-before-operate, each phase has its own timeout.
      *
      * @param commandTimeout the command timeout; must be positive.
      * @return this builder.
@@ -256,8 +268,11 @@ public record ClientConfig(
     }
 
     /**
-     * Sets the maximum time to await an interrogation, read, or clock-sync response. Defaults to 30
-     * seconds.
+     * Sets the maximum time to await a response that carries data. Defaults to 30 seconds.
+     *
+     * <p>Applies to {@link Iec60870Client#interrogate}, a counter read through {@link
+     * Iec60870Client#counterInterrogate}, and {@link Iec60870Client#read}. The deadline starts when
+     * the request is sent and is not extended while data arrives.
      *
      * @param requestTimeout the request timeout; must be positive.
      * @return this builder.
@@ -268,9 +283,10 @@ public record ClientConfig(
     }
 
     /**
-     * Sets the bound on the number of information objects a single interrogation will accumulate
-     * before its response collection is treated as a fault and the request is failed. Defaults to
-     * {@code 1_000_000}; a value of {@code 0} leaves the accumulation unbounded.
+     * Sets the bound on the number of information objects a single interrogation or counter read
+     * will accumulate before its response collection is treated as a fault and the request is
+     * failed. Defaults to {@code 1_000_000}; a value of {@code 0} leaves the accumulation
+     * unbounded.
      *
      * <p>IEC 60870-5 places no aggregate limit on the objects an interrogation may report, so a
      * peer that confirms the interrogation but never sends an activation termination could

@@ -19,7 +19,8 @@ commands, you are on the wrong page: see [Connect & interrogate](./connect-and-i
 | Use the raw layer when… | Stay on the facade when… |
 |---|---|
 | You are writing a conformance or exact-wire test and must control every octet. | You are doing standard reads, commands, or [interrogation](./connect-and-interrogate.md). |
-| A **supported** TypeID is delivered but the facade does not act on it, and you want to inspect it. | You want clock sync, general interrogation, or counter interrogation — those are higher-level and safer. |
+| A **supported** TypeID is delivered but the facade does not act on it, and you want to inspect it. | You want clock sync, general or counter interrogation, a test command, a process reset, or a parameter load — those are correlated, time-limited, and safer. |
+| You must address every station at once with the global common address; the facade rejects it because a broadcast has no single reply. | You address one station. |
 | A peer sends a private TypeID, a private cause, or an `F_*` type, and you want to log or inspect it. | The standard helpers already cover your case. |
 
 For the long-form version of this decision, see the
