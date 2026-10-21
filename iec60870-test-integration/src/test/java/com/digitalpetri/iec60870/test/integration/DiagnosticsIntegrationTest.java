@@ -346,8 +346,9 @@ class DiagnosticsIntegrationTest {
 
   @Test
   void unframeableOctetsFromThePeerAreCountedAndReported() throws Exception {
-    // A peer that answers the connection with octets that do not start with 0x68.
-    byte[] garbage = HexFormat.of().parseHex("0004070000");
+    // A peer that answers the connection with octets that do not start with 0x68. Two octets are
+    // the least the decoder needs to reject the stream, so a split read reports the same octets.
+    byte[] garbage = HexFormat.of().parseHex("0004");
     ServerSocket peer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
     resources.add(peer);
     Thread writer =
