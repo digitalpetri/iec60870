@@ -26,6 +26,7 @@ import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ServerTransport;
@@ -304,7 +305,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
       // Validate and build the monitor ASDU before changing the station image.
       InformationObject object =
-          MonitorMapping.toMonitorObject(type, point.objectAddress(), value, config.timeTagStyle());
+          MonitorMapping.toMonitorObject(
+              type, point.objectAddress(), value, config.timeTagStyle(), config.timePolicy());
       Asdu asdu =
           new Asdu(
               MonitorTypes.of(type, config.timeTagStyle()),
@@ -918,7 +920,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
                             PointType.INTEGRATED_TOTALS,
                             point.address(),
                             point.value(),
-                            config.timeTagStyle());
+                            config.timeTagStyle(),
+                            config.timePolicy());
                     return new Asdu(
                         MonitorTypes.of(PointType.INTEGRATED_TOTALS, config.timeTagStyle()),
                         false,
@@ -1130,7 +1133,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
       // the image uncorrupted.
       InformationObject monitor =
           MonitorMapping.toMonitorObject(
-              type, target.objectAddress(), value, config.timeTagStyle());
+              type, target.objectAddress(), value, config.timeTagStyle(), config.timePolicy());
       station.get().updateValue(target.objectAddress(), value);
 
       send(
@@ -1319,6 +1322,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
       }
 
       @Override
+      public TimePolicy timePolicy() {
+        return config.timePolicy();
+      }
+
+      @Override
       public InterrogationResponse defaultInterrogation(InterrogationRequest request) {
         Objects.requireNonNull(request, "request");
         Optional<Station> station = registry.station(request.station());
@@ -1329,7 +1337,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
         for (Station.InterrogatedPoint point : station.get().select(request.qualifier())) {
           objects.add(
               MonitorMapping.toMonitorObject(
-                  point.type(), point.address(), point.value(), TimeTagStyle.NONE));
+                  point.type(),
+                  point.address(),
+                  point.value(),
+                  TimeTagStyle.NONE,
+                  config.timePolicy()));
         }
         return InterrogationResponse.of(objects);
       }
@@ -1352,7 +1364,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
         }
         InformationObject object =
             MonitorMapping.toMonitorObject(
-                definition.get().type(), ioa, value.get(), config.timeTagStyle());
+                definition.get().type(),
+                ioa,
+                value.get(),
+                config.timeTagStyle(),
+                config.timePolicy());
         return ReadResponse.of(object);
       }
 

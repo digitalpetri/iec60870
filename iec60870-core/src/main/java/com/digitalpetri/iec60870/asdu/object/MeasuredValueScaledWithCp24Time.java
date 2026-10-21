@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp24Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp24TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -21,7 +22,7 @@ import java.util.Objects;
  */
 public record MeasuredValueScaledWithCp24Time(
     InformationObjectAddress address, short value, Qds quality, Cp24Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp24TimeTagged {
 
   /**
    * Validates that all required reference components are present.

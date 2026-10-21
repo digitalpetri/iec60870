@@ -6,6 +6,8 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValue;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
+import com.digitalpetri.iec60870.point.TimePolicy;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -19,7 +21,10 @@ import java.util.Optional;
  * #pointValues()} to project the monitor objects onto domain {@link PointValue} entries keyed by
  * {@link PointAddress}; objects that are not monitor types are skipped. {@link #terminated()}
  * reports whether the station sent an activation termination ({@code ACT_TERM}); a {@code false}
- * value indicates the collection ended for another reason, such as a timeout.
+ * value indicates the collection ended for another reason, such as a timeout. {@link #timePolicy()}
+ * is the policy {@link #pointValues()} resolves time tags with; a result from the client carries
+ * {@link ClientConfig#timePolicy()}, so its timestamps agree with the client's {@link
+ * ClientEvent.PointUpdated} events.
  *
  * <pre>{@code
  * InterrogationResult snapshot = client.interrogate(CommonAddress.of(1));
@@ -32,9 +37,13 @@ import java.util.Optional;
  * @param objects the information objects reported by the station, in receive order.
  * @param terminated {@code true} if the station sent an activation termination, {@code false}
  *     otherwise.
+ * @param timePolicy the policy that {@link #pointValues()} resolves time tags with.
  */
 public record InterrogationResult(
-    CommonAddress station, List<InformationObject> objects, boolean terminated) {
+    CommonAddress station,
+    List<InformationObject> objects,
+    boolean terminated,
+    TimePolicy timePolicy) {
 
   /**
    * Validates the result and defensively copies the objects list.
@@ -43,26 +52,61 @@ public record InterrogationResult(
    * @param objects the information objects reported by the station, in receive order.
    * @param terminated {@code true} if the station sent an activation termination, {@code false}
    *     otherwise.
-   * @throws NullPointerException if {@code station} or {@code objects} is null.
+   * @param timePolicy the policy that {@link #pointValues()} resolves time tags with.
+   * @throws NullPointerException if {@code station}, {@code objects}, or {@code timePolicy} is
+   *     null.
    */
   public InterrogationResult {
     Objects.requireNonNull(station, "station");
+    Objects.requireNonNull(timePolicy, "timePolicy");
     objects = List.copyOf(objects);
   }
 
   /**
-   * Projects the reported monitor objects onto domain point values.
+   * Creates a result whose {@link #pointValues()} resolves time tags with {@link TimePolicy#utc()}.
+   *
+   * @param station the common address that was interrogated.
+   * @param objects the information objects reported by the station, in receive order.
+   * @param terminated {@code true} if the station sent an activation termination, {@code false}
+   *     otherwise.
+   * @throws NullPointerException if {@code station} or {@code objects} is null.
+   */
+  public InterrogationResult(
+      CommonAddress station, List<InformationObject> objects, boolean terminated) {
+    this(station, objects, terminated, TimePolicy.utc());
+  }
+
+  /**
+   * Projects the reported monitor objects onto domain point values, resolving time tags with {@link
+   * #timePolicy()}.
+   *
+   * @return the point values reported by the interrogation, in receive order.
+   * @see #pointValues(TimePolicy)
+   */
+  public List<PointEntry> pointValues() {
+    return pointValues(timePolicy);
+  }
+
+  /**
+   * Projects the reported monitor objects onto domain point values, resolving time tags with {@code
+   * policy}.
    *
    * <p>Each entry pairs the object's {@link PointAddress} (the interrogated {@link #station()} plus
    * the object's information object address) with the extracted {@link PointValue}. Objects that
-   * are not supported monitor types are skipped.
+   * are not supported monitor types are skipped. The result does not record when each object
+   * arrived, so CP24Time2a tags are never completed here, whatever the policy says.
    *
+   * @param policy the policy that resolves time tags.
    * @return the point values reported by the interrogation, in receive order.
+   * @throws NullPointerException if {@code policy} is null.
    */
-  public List<PointEntry> pointValues() {
+  public List<PointEntry> pointValues(TimePolicy policy) {
+    TimePolicy withoutCompletion = policy.withCompleteCp24(false);
     List<PointEntry> entries = new ArrayList<>();
     for (InformationObject object : objects) {
-      Optional<PointValueExtraction> extraction = MonitorMapping.extract(object);
+      // With completion off the receive time is never read.
+      Optional<PointValueExtraction> extraction =
+          MonitorMapping.extract(object, withoutCompletion, Instant.EPOCH);
       if (extraction.isEmpty()) {
         continue;
       }

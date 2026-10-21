@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.server;
 
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import java.net.SocketAddress;
 import java.util.Optional;
 
@@ -34,6 +35,20 @@ public interface ServerContext {
    *     common address.
    */
   Optional<Station> station();
+
+  /**
+   * Returns the time policy the server uses to encode the time tags it publishes.
+   *
+   * <p>Use it to read time tags in requests with the same rules, for example the new clock value of
+   * a clock synchronization request or the time tag of a time-tagged command:
+   *
+   * <pre>{@code
+   * Optional<Instant> newTime = context.timePolicy().toInstant(request.time());
+   * }</pre>
+   *
+   * @return the server's time policy.
+   */
+  TimePolicy timePolicy();
 
   /**
    * Builds the standard answer to an interrogation from the matched station's value image.

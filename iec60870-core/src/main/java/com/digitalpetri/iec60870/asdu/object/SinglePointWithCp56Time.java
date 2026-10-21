@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -24,7 +25,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record SinglePointWithCp56Time(
     InformationObjectAddress address, boolean on, Qds quality, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** SPI — single-point status bit (bit 1). */
   private static final int SPI_MASK = 0x01;

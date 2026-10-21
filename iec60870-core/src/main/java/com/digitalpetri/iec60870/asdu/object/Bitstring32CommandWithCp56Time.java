@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.asdu.object;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -18,7 +19,8 @@ import java.util.Objects;
  * @param time the CP56Time2a time tag.
  */
 public record Bitstring32CommandWithCp56Time(
-    InformationObjectAddress address, int bits, Cp56Time2a time) implements InformationObject {
+    InformationObjectAddress address, int bits, Cp56Time2a time)
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Validates that the required components are present.

@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.asdu.time;
 
 import io.netty.buffer.ByteBuf;
+import java.time.Duration;
 
 /**
  * CP16Time2a — two octet binary time, as defined by IEC 60870-5-4 §6.8 and IEC 60870-5-101
@@ -37,6 +38,18 @@ public record Cp16Time2a(int milliseconds) {
    */
   public boolean isWellFormed() {
     return milliseconds <= 59999;
+  }
+
+  /**
+   * Returns this elapsed time as a {@link Duration}.
+   *
+   * <p>CP16Time2a is a duration, not a point in time, so no time zone applies. A value that is not
+   * {@linkplain #isWellFormed() well-formed} converts as received.
+   *
+   * @return the elapsed time.
+   */
+  public Duration toDuration() {
+    return Duration.ofMillis(milliseconds);
   }
 
   /**

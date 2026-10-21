@@ -8,10 +8,12 @@ import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.ReconnectPolicy;
+import com.digitalpetri.iec60870.client.TimeTagMatch;
 import com.digitalpetri.iec60870.cs104.ApciDiagnostics;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import com.digitalpetri.iec60870.diagnostics.LoggingContext;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.transport.tcp.NettyClientTransport;
 import com.digitalpetri.iec60870.transport.tcp.NettyClientTransportConfig;
 import io.netty.bootstrap.Bootstrap;
@@ -70,7 +72,8 @@ public final class TcpIec104Client {
    * <p>Transport knobs ({@code host}, {@code port}, {@code localBind}, {@code tls}, {@code
    * eventLoopGroup}, {@code bootstrapCustomizer}) configure the Netty transport; protocol knobs
    * ({@code profile}, {@code apci}, {@code originatorAddress}, {@code startDataTransferOnConnect},
-   * {@code callbackExecutor}) configure the core client. The builder is not thread-safe.
+   * {@code timePolicy}, {@code commandTimeTagMatch}, {@code callbackExecutor}) configure the core
+   * client. The builder is not thread-safe.
    */
   public static final class Builder {
 
@@ -86,6 +89,8 @@ public final class TcpIec104Client {
     private int eventBacklogLimit = ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT;
     private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
+    private TimePolicy timePolicy = TimePolicy.utc();
+    private TimeTagMatch commandTimeTagMatch = TimeTagMatch.INSTANT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
     private ApciDiagnostics diagnostics = ApciDiagnostics.NONE;
@@ -206,6 +211,32 @@ public final class TcpIec104Client {
     public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
       this.undecodableAsduPolicy =
           Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
+     * Sets the rules that convert time tags: received monitor objects, command time tags, and clock
+     * synchronization. Defaults to {@link TimePolicy#utc()}.
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     * @see ClientConfig.Builder#timePolicy(TimePolicy)
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
+      return this;
+    }
+
+    /**
+     * Sets how the time tag of a command's echo is compared with the tag the client sent. Defaults
+     * to {@link TimeTagMatch#INSTANT}.
+     *
+     * @param commandTimeTagMatch the time-tag match mode.
+     * @return this builder.
+     * @see ClientConfig.Builder#commandTimeTagMatch(TimeTagMatch)
+     */
+    public Builder commandTimeTagMatch(TimeTagMatch commandTimeTagMatch) {
+      this.commandTimeTagMatch = Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
       return this;
     }
 
@@ -349,7 +380,9 @@ public final class TcpIec104Client {
               .protocolProfile(profile)
               .sessionSettings(apci)
               .originatorAddress(originatorAddress)
-              .startDataTransferOnConnect(startDataTransferOnConnect);
+              .startDataTransferOnConnect(startDataTransferOnConnect)
+              .timePolicy(timePolicy)
+              .commandTimeTagMatch(commandTimeTagMatch);
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }

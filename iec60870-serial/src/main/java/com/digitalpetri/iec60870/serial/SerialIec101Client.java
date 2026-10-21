@@ -7,8 +7,10 @@ import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.ReconnectPolicy;
+import com.digitalpetri.iec60870.client.TimeTagMatch;
 import com.digitalpetri.iec60870.cs101.Cs101Binding;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.transport.serial.Rs485Options;
 import com.digitalpetri.iec60870.transport.serial.SerialClientTransport;
 import com.digitalpetri.iec60870.transport.serial.SerialPortConfig;
@@ -69,8 +71,8 @@ public final class SerialIec101Client {
    * <p>Transport knobs ({@code serialPort}, {@code baudRate}, {@code dataBits}, {@code parity},
    * {@code stopBits}, {@code readTimeout}, {@code writeTimeout}) configure the serial port;
    * protocol knobs ({@code profile}, {@code linkSettings}, {@code originatorAddress}, {@code
-   * startDataTransferOnConnect}, {@code callbackExecutor}) configure the core client. The builder
-   * is not thread-safe.
+   * startDataTransferOnConnect}, {@code timePolicy}, {@code commandTimeTagMatch}, {@code
+   * callbackExecutor}) configure the core client. The builder is not thread-safe.
    */
   public static final class Builder {
 
@@ -87,6 +89,8 @@ public final class SerialIec101Client {
     private int eventBacklogLimit = ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT;
     private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
+    private TimePolicy timePolicy = TimePolicy.utc();
+    private TimeTagMatch commandTimeTagMatch = TimeTagMatch.INSTANT;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
     private @Nullable Rs485Options rs485;
@@ -224,6 +228,32 @@ public final class SerialIec101Client {
     }
 
     /**
+     * Sets the rules that convert time tags: received monitor objects, command time tags, and clock
+     * synchronization. Defaults to {@link TimePolicy#utc()}.
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     * @see ClientConfig.Builder#timePolicy(TimePolicy)
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
+      return this;
+    }
+
+    /**
+     * Sets how the time tag of a command's echo is compared with the tag the client sent. Defaults
+     * to {@link TimeTagMatch#INSTANT}.
+     *
+     * @param commandTimeTagMatch the time-tag match mode.
+     * @return this builder.
+     * @see ClientConfig.Builder#commandTimeTagMatch(TimeTagMatch)
+     */
+    public Builder commandTimeTagMatch(TimeTagMatch commandTimeTagMatch) {
+      this.commandTimeTagMatch = Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and completes blocking calls. Defaults to the core
      * client's default executor.
      *
@@ -336,7 +366,9 @@ public final class SerialIec101Client {
               .protocolProfile(profile)
               .sessionSettings(linkSettings)
               .originatorAddress(originatorAddress)
-              .startDataTransferOnConnect(startDataTransferOnConnect);
+              .startDataTransferOnConnect(startDataTransferOnConnect)
+              .timePolicy(timePolicy)
+              .commandTimeTagMatch(commandTimeTagMatch);
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }

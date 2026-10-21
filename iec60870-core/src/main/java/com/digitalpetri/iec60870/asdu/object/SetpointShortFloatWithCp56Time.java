@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.QualifierOfSetpoint;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 import java.util.Objects;
 
@@ -23,7 +24,7 @@ import java.util.Objects;
  */
 public record SetpointShortFloatWithCp56Time(
     InformationObjectAddress address, float value, QualifierOfSetpoint qualifier, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Validates that the required components are present.

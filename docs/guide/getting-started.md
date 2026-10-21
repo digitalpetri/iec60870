@@ -290,7 +290,8 @@ throw `com.digitalpetri.iec60870.*` exceptions (`ProtocolTimeoutException`, `Con
 try/catch; neither does the snippet above.)
 
 `synchronizeClock(station, Instant.now())` performs a [clock synchronization](reference/glossary.md)
-(`C_CS_NA_1`).
+(`C_CS_NA_1`). The client sends UTC wall-clock time unless you configure a `TimePolicy` for a station
+that runs on local time; see [time tags and time zones](how-to/handle-events.md#time-tags-and-time-zones).
 
 Finally, the subscriber. It requests every event and prints point updates and connection-close
 events; the other lifecycle events are omitted for brevity.

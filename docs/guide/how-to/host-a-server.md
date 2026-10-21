@@ -65,6 +65,7 @@ The library is a `0.1.0-SNAPSHOT` pre-release and is not yet published; see
 | `tls(TlsOptions)` | secure the link; `null` = plaintext | `null` | secure deployments — see [secure with TLS](./secure-with-tls.md) |
 | `apci(ApciSettings)` | k/w window + t0–t3 timers | `ApciSettings.defaults()` | align with the peer — see [tune the APCI session](./tune-apci.md) |
 | `profile(ProtocolProfile)` | CA / IOA / COT field widths | `ProtocolProfile.iec104Default()` | match the peer's addressing sizes — see [tune the APCI session](./tune-apci.md) |
+| `timePolicy(TimePolicy)` | zone and rules for the time tags the server publishes | `TimePolicy.utc()` | emulate a station whose clock runs on local time — see [time tags and time zones](./handle-events.md#time-tags-and-time-zones) |
 | `callbackExecutor(Executor)` | event/handler executor | `ForkJoinPool.commonPool()` | use an order-preserving or dedicated pool |
 
 > The `TcpIec104Server.Builder` has **no** `config(...)` method. Configure the server with the

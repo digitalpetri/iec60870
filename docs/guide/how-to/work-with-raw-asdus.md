@@ -44,6 +44,12 @@ The raw layer maps IEC 104 jargon onto a small set of concrete Java types, all u
 | [Quality descriptor (QDS)](../reference/glossary.md), qualifiers, … | `Qds`, `QualifierOfInterrogation`, … | `asdu.element` |
 | Time tags | `Cp16Time2a`, `Cp24Time2a`, `Cp56Time2a` | `asdu.time` |
 
+Every record with a CP56 or CP24 time tag implements `Cp56TimeTagged` or `Cp24TimeTagged`, so you can
+read `time()` without a per-type `instanceof` chain. To resolve it with the same zone rules the client
+uses, call `TimeTag.from(object, clientTimePolicy, receivedAt)`. That covers types the point model
+does not map, such as the protection-equipment events (`M_EP_*`). Their `Cp16Time2a` elapsed times
+are durations, so no zone applies; `toDuration()` converts them.
+
 Every wire type nests a `public static final class Serde` that encodes and decodes it; the one you call
 yourself is [`Asdu.Serde`](../../architecture/two-layer-api.md#co-located-serde), which frames the whole
 data unit and delegates each object body to its record's own `Serde`. There is no separate `codec`

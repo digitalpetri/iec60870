@@ -237,6 +237,18 @@ CommandResult result = commands.send(timed, CommandMode.directExecute());
 // Because time() is present, the service uses C_SC_TA_1 instead of C_SC_NA_1.
 ```
 
+The client encodes the instant in the zone of the client's `TimePolicy` (default UTC; see
+[Time tags and time zones](./handle-events.md#time-tags-and-time-zones)). A station that checks the
+age of time-tagged commands needs the policy to match its clock, or it sees the commands as hours
+old or hours in the future.
+
+The station confirms a timed command by echoing it, time tag included. By default the client matches
+the echo's time down to the millisecond but ignores the day of week and the IV, SU, and RES1/GEN
+bits, which some stations change in the echo. `commandTimeTagMatch(TimeTagMatch)` on the client
+builder changes that: `EXACT` requires every bit to match, and `IGNORE` skips the time tag. With
+`IGNORE`, a late echo of an earlier command with the same value and qualifier can confirm a new one,
+as it can for untimed commands.
+
 The time-tagged variants exist for each command family (`C_SC_TA_1`, `C_DC_TA_1`, `C_RC_TA_1`,
 `C_SE_TA_1`, `C_SE_TB_1`, `C_SE_TC_1`, `C_BO_TA_1`); see the
 [Coverage matrix](../reference/coverage-matrix.md) for the full list and their records.

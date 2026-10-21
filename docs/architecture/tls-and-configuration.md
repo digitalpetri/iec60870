@@ -106,12 +106,15 @@ configs also hold the non-transport behavioral knobs:
 
 - **`ClientConfig`** — `originatorAddress`, an optional `pointCatalog`, `startDataTransferOnConnect`
   (default `true`), `commandTimeout` (10 s), `requestTimeout` (30 s, for interrogation/read/clock-sync),
-  `maxInterrogationResponseObjects` (1,000,000), `callbackExecutor`, and `eventBacklogLimit` (4096
+  `maxInterrogationResponseObjects` (1,000,000), `callbackExecutor`, `eventBacklogLimit` (4096
   events, the subscriber backlog at which the client pauses inbound data; also on the `Tcp*Client`
-  and `SerialIec101Client` builders).
+  and `SerialIec101Client` builders), the `TimePolicy` for received, command, and clock-sync time
+  tags (default `TimePolicy.utc()`), and the `TimeTagMatch` for command echoes (default `INSTANT`).
+  The builders also take `timePolicy` and `commandTimeTagMatch`.
 - **`ServerConfig`** — the hosted `stations`, the `ServerHandler`, an `OutboundQueuePolicy` for a full
-  outbound queue, the `TimeTagStyle` used when reporting monitor data (default `CP56`),
-  `maxConnections` (16), and `callbackExecutor`.
+  outbound queue, the `TimeTagStyle` used when reporting monitor data (default `CP56`), the
+  `TimePolicy` that encodes those tags (default `TimePolicy.utc()`), `maxConnections` (16), and
+  `callbackExecutor`.
 
 ### SessionSettings — the neutral session-settings handle
 

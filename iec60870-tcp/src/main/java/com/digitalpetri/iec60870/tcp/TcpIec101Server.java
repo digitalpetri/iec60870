@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.cs101.Cs101Binding;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;
@@ -80,9 +81,9 @@ public final class TcpIec101Server {
    *
    * <p>Transport knobs ({@code bindAddress}, {@code port}, {@code tls}, {@code eventLoopGroup})
    * configure the Netty transport; protocol knobs ({@code profile}, {@code linkSettings}, {@code
-   * addStation}, {@code handler}, {@code callbackExecutor}) configure the core server. {@code
-   * maxConnections} bounds both the accepted channels and the core connection set. The builder is
-   * not thread-safe.
+   * addStation}, {@code handler}, {@code timePolicy}, {@code callbackExecutor}) configure the core
+   * server. {@code maxConnections} bounds both the accepted channels and the core connection set.
+   * The builder is not thread-safe.
    */
   public static final class Builder {
 
@@ -96,6 +97,7 @@ public final class TcpIec101Server {
     private int maxConnections = 16;
     private @Nullable Executor callbackExecutor;
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
+    private TimePolicy timePolicy = TimePolicy.utc();
     private @Nullable EventLoopGroup bossEventLoopGroup;
     private @Nullable EventLoopGroup workerEventLoopGroup;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
@@ -221,6 +223,19 @@ public final class TcpIec101Server {
     }
 
     /**
+     * Sets the rules that encode the time tags of published updates, read answers, and return
+     * information. Defaults to {@link TimePolicy#utc()}.
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     * @see ServerConfig.Builder#timePolicy(TimePolicy)
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and runs handler callbacks. Defaults to the core
      * server's default executor.
      *
@@ -305,7 +320,8 @@ public final class TcpIec101Server {
               .protocolProfile(profile)
               .sessionSettings(linkSettings)
               .stations(stations)
-              .maxConnections(maxConnections);
+              .maxConnections(maxConnections)
+              .timePolicy(timePolicy);
       if (handler != null) {
         serverConfigBuilder.handler(handler);
       }

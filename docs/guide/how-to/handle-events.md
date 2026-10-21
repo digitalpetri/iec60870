@@ -167,7 +167,8 @@ A [spontaneous](../reference/glossary.md) update arrives with [cause of transmis
 if (event instanceof ClientEvent.PointUpdated u) {
   PointAddress at = u.address();                  // com.digitalpetri.iec60870.address.PointAddress
   PointValue<?> v = u.value();                    // v.value(), v.type(), v.quality()
-  // u.timestamp() is the object's time tag, if any (Optional<Instant>).
+  // u.timestamp() is the acquisition time from the object's time tag, if usable
+  // (Optional<Instant>); u.timeTag() has the raw tag and its flags.
   cache.put(at, v);
 }
 ```
@@ -177,6 +178,52 @@ if (event instanceof ClientEvent.PointUpdated u) {
 > the exact wire [`AsduType`](../reference/glossary.md) that carried it (for example untimed
 > `M_SP_NA_1` vs CP56-tagged `M_SP_TB_1`). Use `asduType()` when you need to distinguish the time-tag
 > variant that the point value otherwise collapses.
+
+### Time tags and time zones
+
+A time tag carries wall-clock fields with no time zone. **The client assumes the station's clock
+runs on UTC.** If the station runs on local time or a fixed offset, tell the client with a
+`TimePolicy`, or every timestamp will be off by the station's offset:
+
+```java
+import com.digitalpetri.iec60870.point.TimePolicy;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
+Iec60870Client client =
+    TcpIec104Client.builder()
+        .host("10.0.0.5")
+        .timePolicy(TimePolicy.of(ZoneId.of("Europe/Berlin"))) // or ZoneOffset.ofHours(1)
+        .build();
+```
+
+The same policy encodes the time tags of commands and clock synchronization, so the station receives
+its own local time. With a zone that observes summer time, the policy uses the tag's SU bit to tell
+the two 02:30s apart on the night summer time ends.
+
+`u.timeTag()` is an `Optional<TimeTag>`. A `TimeTag` keeps what the station sent:
+
+| Accessor | Meaning |
+|---|---|
+| `style()` | `CP56` (seven-octet, full date) or `CP24` (three-octet, minute and milliseconds only) |
+| `cp56()` / `cp24()` | the raw fields, exactly as received; the other one is `null` |
+| `instant()` | the instant the policy resolved, even if the tag is marked invalid |
+| `invalid()` | IV bit, for example a device whose clock is not synchronized |
+| `summerTime()` | SU bit (always `false` for CP24) |
+| `substituted()` | RES1/GEN bit, set when equipment other than the source added the time |
+| `inferred()` | `true` when a CP24 tag was completed from the receive time |
+
+`u.timestamp()` is `instant()` unless the tag is marked invalid, so code that ignores the flags falls
+back to its own receive time instead of storing a bogus device time. `u.value().timestamp()` mirrors
+it.
+
+CP24 tags (CS 101 only) carry no hour or date, so by default their `instant()` is empty. To have the
+client infer them from the receive time, use `TimePolicy.of(zone).withCompleteCp24(true)`. Inference
+is correct only when the event reaches the client within the hour.
+
+Other settings: `withBaseYear(1990)` maps two-digit years to 1990..2089 instead of 2000..2099,
+`withSendDayOfWeek(false)` writes day-of-week 0 ("not used"), and `withSetSummerTime(false)` /
+`withHonorSummerTime(false)` turn off the SU handling on send and receive.
 
 This is the *live* stream. For a one-shot snapshot of a station's points, run an interrogation
 instead — see [Connect & interrogate](./connect-and-interrogate.md), which returns an

@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.DoublePointState;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -22,7 +23,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record DoublePointWithCp56Time(
     InformationObjectAddress address, DoublePointState state, Qds quality, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** Serde for the {@link DoublePointWithCp56Time} information elements (after the IOA). */
   public static final class Serde {

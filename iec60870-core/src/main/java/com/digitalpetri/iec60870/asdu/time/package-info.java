@@ -27,9 +27,19 @@
  * {@link com.digitalpetri.iec60870.asdu.time.Cp56Time2a} offers {@link
  * com.digitalpetri.iec60870.asdu.time.Cp56Time2a#from(java.time.Instant, java.time.ZoneOffset)} and
  * {@link com.digitalpetri.iec60870.asdu.time.Cp56Time2a#toInstant(java.time.ZoneOffset)} to bridge
- * between the wire representation and {@link java.time.Instant}. Because CP56Time2a has only a
- * two-digit year and no century field, conversions to {@code Instant} interpret the year against
- * the 2000..2099 century. Only a well-formed time tag converts to an {@code Instant}.
+ * between the wire representation and {@link java.time.Instant} at a fixed offset. Because
+ * CP56Time2a has only a two-digit year and no century field, these conversions interpret the year
+ * against the 2000..2099 century. Only a well-formed time tag converts to an {@code Instant}. They
+ * ignore the IV, SU, and RES1/GEN flags. The application layer's {@code TimePolicy} adds zone
+ * rules, summer-time handling, a configurable century, and CP24Time2a completion on top of these
+ * raw fields.
+ *
+ * <h2>Reading a time tag generically</h2>
+ *
+ * Every standard information object record with a time tag implements {@link
+ * com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged} or {@link
+ * com.digitalpetri.iec60870.asdu.time.Cp24TimeTagged}, so monitor, command, and protection-event
+ * handling can read the tag without testing for each concrete record type.
  *
  * <h2>Ownership</h2>
  *

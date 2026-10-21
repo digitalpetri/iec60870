@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -22,7 +23,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record MeasuredValueNormalizedWithCp56Time(
     InformationObjectAddress address, NormalizedValue value, Qds quality, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Serde for the {@link MeasuredValueNormalizedWithCp56Time} information elements (after the IOA).

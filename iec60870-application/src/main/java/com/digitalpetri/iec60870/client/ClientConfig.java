@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.catalog.PointCatalog;
 import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.point.TimePolicy;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
@@ -21,8 +22,9 @@ import org.jspecify.annotations.Nullable;
  * data transfer automatically on connect, the request and command timeouts, the bound on the
  * objects a single interrogation will accumulate, the executor that delivers events and completes
  * blocking calls, the event backlog at which the client pauses inbound data, the policy that
- * reconnects after a loss, and the diagnostics listener and logging context. Transport concerns
- * (host, port, TLS) are configured on the transport, not here.
+ * reconnects after a loss, the diagnostics listener and logging context, the time policy for time
+ * tags, and how command echoes match on their time tag. Transport concerns (host, port, TLS) are
+ * configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -52,6 +54,8 @@ import org.jspecify.annotations.Nullable;
  * @param diagnostics the listener for closed connections, scheduled reconnects, inbound pauses, and
  *     discarded events.
  * @param loggingContext the MDC entries set around the client's log lines.
+ * @param timePolicy the rules that convert received, command, and clock-sync time tags.
+ * @param commandTimeTagMatch how a command echo's time tag is compared with the sent one.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -66,7 +70,9 @@ public record ClientConfig(
     int eventBacklogLimit,
     ReconnectPolicy reconnectPolicy,
     ConnectionDiagnostics diagnostics,
-    Map<String, String> loggingContext) {
+    Map<String, String> loggingContext,
+    TimePolicy timePolicy,
+    TimeTagMatch commandTimeTagMatch) {
 
   /**
    * Validates the components.
@@ -90,6 +96,8 @@ public record ClientConfig(
    * @param diagnostics the listener for closed connections, scheduled reconnects, inbound pauses,
    *     and discarded events.
    * @param loggingContext the MDC entries set around the client's log lines; copied.
+   * @param timePolicy the rules that convert received, command, and clock-sync time tags.
+   * @param commandTimeTagMatch how a command echo's time tag is compared with the sent one.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
    *     negative, {@code maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit}
@@ -100,6 +108,8 @@ public record ClientConfig(
     Objects.requireNonNull(originatorAddress, "originatorAddress");
     Objects.requireNonNull(commandTimeout, "commandTimeout");
     Objects.requireNonNull(requestTimeout, "requestTimeout");
+    Objects.requireNonNull(timePolicy, "timePolicy");
+    Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
     Objects.requireNonNull(diagnostics, "diagnostics");
@@ -163,6 +173,8 @@ public record ClientConfig(
     private Duration commandTimeout = Duration.ofSeconds(10);
     private Duration requestTimeout = Duration.ofSeconds(30);
     private int maxInterrogationResponseObjects = 1_000_000;
+    private TimePolicy timePolicy = TimePolicy.utc();
+    private TimeTagMatch commandTimeTagMatch = TimeTagMatch.INSTANT;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
     private int eventBacklogLimit = DEFAULT_EVENT_BACKLOG_LIMIT;
     private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
@@ -276,6 +288,36 @@ public record ClientConfig(
     }
 
     /**
+     * Sets the rules that convert time tags: received monitor objects, command time tags, and clock
+     * synchronization. Defaults to {@link TimePolicy#utc()}.
+     *
+     * <p>Set this to the zone of the controlled station's clock when it does not run on UTC:
+     *
+     * <pre>{@code
+     * ClientConfig.builder().timePolicy(TimePolicy.of(ZoneId.of("Europe/Berlin")));
+     * }</pre>
+     *
+     * @param timePolicy the time policy.
+     * @return this builder.
+     */
+    public Builder timePolicy(TimePolicy timePolicy) {
+      this.timePolicy = Objects.requireNonNull(timePolicy, "timePolicy");
+      return this;
+    }
+
+    /**
+     * Sets how the time tag of a command's echo is compared with the tag the client sent. Defaults
+     * to {@link TimeTagMatch#INSTANT}, which ignores day of week and the IV, SU, and RES1/GEN bits.
+     *
+     * @param commandTimeTagMatch the time-tag match mode.
+     * @return this builder.
+     */
+    public Builder commandTimeTagMatch(TimeTagMatch commandTimeTagMatch) {
+      this.commandTimeTagMatch = Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
+      return this;
+    }
+
+    /**
      * Sets the executor used to deliver events and complete blocking calls. Defaults to the common
      * {@link ForkJoinPool}.
      *
@@ -384,7 +426,9 @@ public record ClientConfig(
           eventBacklogLimit,
           reconnectPolicy,
           diagnostics,
-          loggingContext);
+          loggingContext,
+          timePolicy,
+          commandTimeTagMatch);
     }
   }
 }

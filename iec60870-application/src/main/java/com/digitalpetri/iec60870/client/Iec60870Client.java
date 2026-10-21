@@ -241,6 +241,9 @@ public interface Iec60870Client extends AutoCloseable {
   /**
    * Synchronizes the clock of a station with a clock synchronization command (C_CS_NA_1).
    *
+   * <p>The time is encoded with {@link ClientConfig#timePolicy()}, so the station receives
+   * wall-clock fields in the zone of its own clock.
+   *
    * @param station the common address whose clock to set.
    * @param time the time to set.
    * @throws com.digitalpetri.iec60870.NegativeConfirmationException if the station rejects the
@@ -248,16 +251,21 @@ public interface Iec60870Client extends AutoCloseable {
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if the confirmation does not arrive
    *     in time.
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection is closed.
+   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century.
    */
   void synchronizeClock(CommonAddress station, Instant time);
 
   /**
    * Synchronizes the clock of a station with a clock synchronization command (C_CS_NA_1).
    *
+   * <p>The time is encoded with {@link ClientConfig#timePolicy()}, so the station receives
+   * wall-clock fields in the zone of its own clock.
+   *
    * @param station the common address whose clock to set.
    * @param time the time to set.
    * @return a stage that completes when the command is confirmed, or completes exceptionally on
    *     failure.
+   * @throws IllegalArgumentException if {@code time} falls outside the time policy's century.
    */
   CompletionStage<Void> synchronizeClockAsync(CommonAddress station, Instant time);
 

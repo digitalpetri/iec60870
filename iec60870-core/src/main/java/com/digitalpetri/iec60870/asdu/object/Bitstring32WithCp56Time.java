@@ -4,6 +4,7 @@ import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.asdu.InformationObject;
 import com.digitalpetri.iec60870.asdu.element.Qds;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -20,7 +21,7 @@ import io.netty.buffer.ByteBuf;
  */
 public record Bitstring32WithCp56Time(
     InformationObjectAddress address, int bits, Qds quality, Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /** Serde for the {@link Bitstring32WithCp56Time} information elements (after the IOA). */
   public static final class Serde {

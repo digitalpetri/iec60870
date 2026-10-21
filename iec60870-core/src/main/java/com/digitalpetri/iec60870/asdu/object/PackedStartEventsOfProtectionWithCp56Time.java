@@ -6,6 +6,7 @@ import com.digitalpetri.iec60870.asdu.element.Qdp;
 import com.digitalpetri.iec60870.asdu.element.Spe;
 import com.digitalpetri.iec60870.asdu.time.Cp16Time2a;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.asdu.time.Cp56TimeTagged;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -27,7 +28,7 @@ public record PackedStartEventsOfProtectionWithCp56Time(
     Qdp quality,
     Cp16Time2a elapsedTime,
     Cp56Time2a time)
-    implements InformationObject {
+    implements InformationObject, Cp56TimeTagged {
 
   /**
    * Serde for the {@link PackedStartEventsOfProtectionWithCp56Time} information elements (after the

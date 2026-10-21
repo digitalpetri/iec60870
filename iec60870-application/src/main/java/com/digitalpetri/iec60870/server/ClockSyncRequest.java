@@ -11,6 +11,13 @@ import java.util.Objects;
  * answers with a {@link ClockSyncDecision}; the default decision accepts and the server replies
  * with a positive activation confirmation.
  *
+ * <p>{@code time} holds the raw wire fields. Resolve them with the server's time policy so they are
+ * read with the same zone and century rules the server uses to encode its own time tags:
+ *
+ * <pre>{@code
+ * Optional<Instant> newTime = context.timePolicy().toInstant(request.time());
+ * }</pre>
+ *
  * @param station the common address of the station whose clock is being set.
  * @param time the CP56Time2a clock value to synchronize to.
  */
