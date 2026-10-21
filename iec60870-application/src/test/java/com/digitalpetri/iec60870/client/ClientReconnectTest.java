@@ -186,6 +186,22 @@ class ClientReconnectTest {
   }
 
   @Test
+  void subMillisecondDelaysAreRoundedUpToOneMillisecond() {
+    Duration halfMillisecond = Duration.ofNanos(500_000);
+    DefaultIec60870Client client =
+        newClient(ReconnectPolicy.exponentialBackoff(halfMillisecond, halfMillisecond));
+    client.connect();
+
+    session().fireConnectionLost(null);
+
+    assertEquals(halfMillisecond, scheduledReconnects().get(0).delay());
+    scheduler.advance(0, TimeUnit.MILLISECONDS);
+    assertEquals(1, transport.connectCount(), "a zero-millisecond timer would fire at once");
+    scheduler.advance(1, TimeUnit.MILLISECONDS);
+    assertEquals(2, transport.connectCount());
+  }
+
+  @Test
   void disabledPolicyStaysDisconnectedUntilConnectIsCalled() {
     DefaultIec60870Client client = newClient(ReconnectPolicy.disabled());
     client.connect();

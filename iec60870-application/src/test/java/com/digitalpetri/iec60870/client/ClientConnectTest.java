@@ -169,6 +169,37 @@ class ClientConnectTest {
   }
 
   @Test
+  void connectionLostBeforeTheSessionIsArmedFailsTheAttempt() {
+    var noDataTransfer =
+        new DefaultIec60870Client(
+            transport,
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .startDataTransferOnConnect(false)
+                .reconnectPolicy(ReconnectPolicy.disabled())
+                .build(),
+            (events, scheduler) -> {
+              var session = new PendingSession(events);
+              sessionRef.set(session);
+              return session;
+            });
+    try {
+      CompletionStage<Void> attempt = noDataTransfer.connectAsync();
+      // The socket connects and is lost again before the facade can attribute the loss to it.
+      session().events.onConnectionLost(null);
+      transport.dropped = true;
+      transport.result.complete(null);
+
+      var error =
+          assertThrows(CompletionException.class, () -> attempt.toCompletableFuture().join());
+      assertInstanceOf(ConnectionClosedException.class, error.getCause());
+      assertEquals(ConnectionState.DISCONNECTED, noDataTransfer.connectionState());
+    } finally {
+      noDataTransfer.close();
+    }
+  }
+
+  @Test
   void lossReportedBeforeTheTransportConnectsIsIgnored() {
     CompletionStage<Void> attempt = client.connectAsync();
     // Only an older connection can report a loss while this attempt is still dialing.
@@ -476,6 +507,7 @@ class ClientConnectTest {
     private CompletableFuture<Void> result = new CompletableFuture<>();
     private CompletableFuture<Void> disconnectResult = CompletableFuture.completedFuture(null);
     private final List<String> calls = new CopyOnWriteArrayList<>();
+    private volatile boolean dropped;
     private int connectCount;
 
     @Override
@@ -496,7 +528,7 @@ class ClientConnectTest {
 
     @Override
     public boolean isConnected() {
-      return result.isDone() && !result.isCompletedExceptionally();
+      return !dropped && result.isDone() && !result.isCompletedExceptionally();
     }
 
     @Override

@@ -66,7 +66,8 @@ public interface ClientTransport extends AutoCloseable {
    * event loop.
    *
    * <p>The transport cannot be connected again afterwards. This method is idempotent. The default
-   * calls {@link #disconnect()}, which suits a transport that owns no shared resources.
+   * only calls {@link #disconnect()}; an implementation must override this method to reject later
+   * {@link #connect()} calls and to release resources it owns.
    */
   @Override
   default void close() {

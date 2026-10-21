@@ -314,6 +314,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
       session.close();
       return CompletableFuture.failedFuture(new ConnectionClosedException("connection lost"));
     }
+    if (!transport.isConnected()) {
+      // The connection was lost before the loss could be attributed to it; the attempt fails and
+      // follows the reconnect policy.
+      session.close();
+      return CompletableFuture.failedFuture(
+          new ConnectionClosedException("connection lost before the session was armed"));
+    }
     // The connection's teardown runs on the same operation queue, after this, so it sees the flag
     // and publishes the matching ConnectionClosed.
     started.opened = true;
@@ -468,7 +475,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
     LOGGER.debug("reconnect attempt {} in {}: {}", wait.attempt, wait.delay, cause.toString());
     publish(new ClientEvent.ReconnectScheduled(wait.attempt, wait.delay, cause));
-    wait.arm();
+    wait.arm(wait.delay);
   }
 
   /** Starts the scheduled attempt when its timer fires, if it is still wanted. */
@@ -480,11 +487,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
         return;
       }
       if (!publisher.hasRoomForData()) {
-        // A subscriber is too far behind to take a new connection's events. Wait again, without
-        // publishing, so the lifecycle reserve is not used up while it stays stalled.
+        // A subscriber is too far behind to take a new connection's events. Wait again for the
+        // maximum delay, without publishing, so the lifecycle reserve is not used up while it
+        // stays stalled.
         LOGGER.debug(
             "reconnect deferred: an event subscriber is {} events behind", publisher.maxBacklog());
-        wait.arm();
+        wait.arm(reconnectPolicy.maxDelay());
         return;
       }
       reconnectWait = null;
@@ -1935,10 +1943,16 @@ public final class DefaultIec60870Client implements Iec60870Client {
       this.delay = delay;
     }
 
-    /** Starts (or restarts) the timer that triggers the attempt. */
-    private void arm() {
+    /**
+     * Starts (or restarts) the timer that triggers the attempt.
+     *
+     * @param after the delay; rounded up to at least one millisecond so a deferred attempt that
+     *     re-arms itself cannot spin.
+     */
+    private void arm(Duration after) {
+      long millis = Math.max(1, after.toMillis());
       try {
-        timer = scheduler.schedule(() -> reconnect(this), delay.toMillis(), TimeUnit.MILLISECONDS);
+        timer = scheduler.schedule(() -> reconnect(this), millis, TimeUnit.MILLISECONDS);
       } catch (RejectedExecutionException e) {
         LOGGER.debug("scheduler rejected the reconnect; the client is closing", e);
         return;
