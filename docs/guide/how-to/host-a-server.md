@@ -62,6 +62,8 @@ The library is a `0.1.0-SNAPSHOT` pre-release and is not yet published; see
 | `addStation(Station)` | add a hosted station (distinct CA each) | none | every station you serve |
 | `handler(ServerHandler)` | request hook | no-op default | accept commands, customize interrogation/read |
 | `maxConnections(int)` | concurrent connection cap | `16` | allow many or few masters |
+| `maxOutboundQueue(int)` | bound on each connection's session queue and its separate deferred-event buffer; `0` = unbounded | `1000` each | queue a larger burst of raw replies or published values |
+| `eventQueuePolicy(OutboundQueuePolicy)` | overflow policy for published values | `DROP_OLDEST` | keep older queued values with `DROP_NEWEST`, or wait up to 15 seconds for capacity with `BLOCK`; the value can be discarded if the wait times out |
 | `tls(TlsOptions)` | secure the link; `null` = plaintext | `null` | secure deployments — see [secure with TLS](./secure-with-tls.md) |
 | `apci(ApciSettings)` | k/w window + t0–t3 timers | `ApciSettings.defaults()` | align with the peer — see [tune the APCI session](./tune-apci.md) |
 | `profile(ProtocolProfile)` | CA / IOA / COT field widths | `ProtocolProfile.iec104Default()` | match the peer's addressing sizes — see [tune the APCI session](./tune-apci.md) |
@@ -70,6 +72,13 @@ The library is a `0.1.0-SNAPSHOT` pre-release and is not yet published; see
 
 > The `TcpIec104Server.Builder` has **no** `config(...)` method. Configure the server with the
 > discrete builder methods above.
+
+For a custom handler that sends thousands of ASDUs through `ServerContext.send(...)`, raise
+`maxOutboundQueue` to accommodate the pending reply, for example `.maxOutboundQueue(6000)` for a
+5,000-ASDU burst plus its confirmation and termination. The bound counts queued ASDUs, not points;
+packing multiple points into an ASDU reduces the queue capacity needed. Raw sends are reliable:
+failure to queue or write one closes the connection. `eventQueuePolicy` controls published values
+and does not discard raw replies to make them fit.
 
 ## Define stations and points
 
