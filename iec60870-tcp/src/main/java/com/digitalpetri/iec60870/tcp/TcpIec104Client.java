@@ -78,6 +78,7 @@ public final class TcpIec104Client {
     private boolean startDataTransferOnConnect = true;
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable Executor callbackExecutor;
+    private int eventBacklogLimit = ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT;
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
@@ -212,6 +213,22 @@ public final class TcpIec104Client {
     }
 
     /**
+     * Sets the event backlog at which the client pauses inbound data. Defaults to {@value
+     * ClientConfig#DEFAULT_EVENT_BACKLOG_LIMIT}.
+     *
+     * <p>The event stream never drops events. Once the slowest subscriber falls this many events
+     * behind, the client stops reading from the connection until the subscriber catches up to half
+     * the limit. See {@link ClientConfig.Builder#eventBacklogLimit(int)}.
+     *
+     * @param eventBacklogLimit the backlog limit; must be in {@code 1..268435456}.
+     * @return this builder.
+     */
+    public Builder eventBacklogLimit(int eventBacklogLimit) {
+      this.eventBacklogLimit = eventBacklogLimit;
+      return this;
+    }
+
+    /**
      * Sets an externally-owned {@link EventLoopGroup} for the transport to use.
      *
      * <p>When supplied, the caller retains ownership; the transport does not shut it down.
@@ -265,6 +282,7 @@ public final class TcpIec104Client {
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
+      clientConfigBuilder.eventBacklogLimit(eventBacklogLimit);
 
       // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
       // delegates the full ApciSession + framing assembly to Cs104Binding (see its Javadoc).

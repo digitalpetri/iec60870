@@ -75,6 +75,13 @@ single uniform direction at each call:
 - **Outbound** — `ClientTransport.send(ByteBuf)` / `ServerTransportConnection.send(ByteBuf)`: the
   caller allocates the frame; the transport writes-and-flushes it and releases it. The caller must
   **not** release it after calling `send`.
+- **Outbound order** — frames reach the peer in the order `send` is called, whichever thread calls
+  it. `ApciSession` emits frames under its lock from the Netty event loop (acknowledgements, window
+  flushes after an S-frame) and from application and timer threads (new I-frames, `t2` S-frames).
+  Netty writes immediately on the event loop but queues a task from any other thread, so a direct
+  `writeAndFlush` would let an event-loop frame overtake an earlier queued one and break the N(S) or
+  N(R) sequence at the peer. `NettyClientTransport` and `NettyServerConnection` therefore submit every
+  write as an event-loop task through `OrderedFrameWriter`.
 
 Because the codecs do not release and the SPI transfers ownership cleanly in one direction per call,
 reference counting stays correct and there is no double-free or use-after-free across the boundary. A
@@ -139,8 +146,55 @@ The practical rule for application code:
 | Outbound frame `ByteBuf` (`send`) | Caller allocates, transport releases | Caller frames via `ApduFramer.encode`; transport writes-and-flushes then releases; caller never releases after `send` |
 | Codec `Serde` `ByteBuf` | Caller of the `Serde` | Codec only reads/writes; never allocates or releases |
 | One connection's protocol state | `ApciSession` | Single internal lock; callbacks run under it, must not block |
-| Application callback thread | `callbackExecutor` (client/server config) | Serial event delivery; safe to block here |
+| Application callback thread | `callbackExecutor` (client/server config) | Serial event delivery; safe to block here (a blocked client subscriber pauses inbound data, see below) |
 | Blocking-call completion | `callbackExecutor` | Blocking facade methods complete on this executor |
+
+## Client event delivery and inbound flow control
+
+`DefaultIec60870Client` publishes `ClientEvent`s through a package-private `EventStream`, a
+`SubmissionPublisher` wrapper that never drops an event. Each subscriber is wrapped so the stream
+knows exactly how many published events that subscriber's `onNext` has not yet returned from. The
+buffer behind each subscriber grows on demand, so an idle client pays nothing for its size.
+
+The bound is `ClientConfig.eventBacklogLimit()` (default 4096), enforced with protocol flow control
+rather than by dropping:
+
+1. The client publishes the events for one inbound ASDU (`AsduReceived`, any `PointUpdated`, any
+   `NegativeConfirmation`, or one `UndecodableAsdu`), then checks the slowest subscriber's backlog.
+2. At the limit, it calls `Session.setInboundPaused(true)`. `ApciSession` forwards that to
+   `ClientTransport.setReadPaused(true)`, and `NettyClientTransport` clears Netty's `autoRead` on the
+   current channel. Frames already read are still delivered and acknowledged within `w` and `t2`;
+   frames not read are not received, so no acknowledgement obligation starts for them. The
+   outstation stops after `k` unacknowledged I-frames, so the backlog exceeds the limit by at most
+   the events of `k` APDUs.
+3. When a subscriber's `onNext` returns, or a subscriber cancels or fails, and the slowest backlog is
+   at or below half the limit, the stream calls `setInboundPaused(false)` and reads resume.
+
+The pause and resume calls happen on the I/O thread (inside `Session.Events.onAsdu`) and on the
+callback executor, so `setInboundPaused` must not wait for the session lock. `ApciSession` guards its
+pause state with a separate innermost lock. A pause applies to the current connection; a new
+connection starts reading, and the next ASDU pauses it again if the backlog is still high.
+
+Reads also carry the peer's S- and U-frames. While paused, the client cannot see the outstation's
+acknowledgements or a close, so `ApciSession` closes the session with a `ProtocolTimeoutException`
+once a pause lasts `t1`, at about the time the outstation's own `t1` expires on the oldest unread
+I-frame. A stalled subscriber therefore ends in a visible `ConnectionClosed` with a cause, never in
+silent loss.
+
+Lifecycle events (`ConnectionOpened`, `DataTransferStarted`, `DataTransferStopped`,
+`ConnectionClosed`) are never subject to the limit. The hard per-subscriber capacity is the smallest
+power of two at or above `2 * limit + 8192`; data events stop 1024 slots short of it, so lifecycle
+events always fit. A session that cannot pause (the CS 101 link layers keep the `Session` default
+no-op for now) relies on that capacity. If the slowest backlog reaches it, the client discards
+further inbound data, closes the connection with an `EventBacklogExceededException`, and delivers
+`ConnectionClosed` with that cause after every event published before it. Until that subscriber
+catches up, `connect`, `startDataTransfer`, and `stopDataTransfer` fail with the same exception.
+Each operation admitted below the data capacity publishes at most a few lifecycle events, so
+repeated connect or start/stop cycles cannot exhaust the reserve.
+
+`DefaultIec60870Server` keeps a plain `SubmissionPublisher` with `Flow.defaultBufferSize()` slots per
+subscriber. Its events follow control-direction traffic, so the risk is lower; an event that finds
+a full buffer is dropped for that subscriber and logged at WARN.
 
 ## Outbound completion and bounded replies
 

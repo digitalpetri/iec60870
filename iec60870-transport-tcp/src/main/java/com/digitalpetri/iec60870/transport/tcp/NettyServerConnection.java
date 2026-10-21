@@ -8,7 +8,6 @@ import io.netty.handler.ssl.SslHandler;
 import java.net.SocketAddress;
 import java.security.cert.Certificate;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLPeerUnverifiedException;
@@ -58,23 +57,7 @@ class NettyServerConnection implements ServerTransportConnection {
 
   @Override
   public CompletionStage<Void> send(ByteBuf frame) {
-    CompletableFuture<Void> result = new CompletableFuture<>();
-
-    channel
-        .writeAndFlush(frame)
-        .addListener(
-            future -> {
-              if (future.isSuccess()) {
-                // CompletableFuture<Void> is completed with null by design; Netty's
-                // GenericFutureListener has no @Nullable metadata, so the IDE flags it.
-                //noinspection DataFlowIssue
-                result.complete(null);
-              } else {
-                result.completeExceptionally(future.cause());
-              }
-            });
-
-    return result;
+    return OrderedFrameWriter.writeAndFlush(channel, frame);
   }
 
   @Override

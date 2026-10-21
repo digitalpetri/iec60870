@@ -83,6 +83,7 @@ public final class SerialIec101Client {
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private boolean startDataTransferOnConnect = true;
     private @Nullable Executor callbackExecutor;
+    private int eventBacklogLimit = ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT;
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
@@ -232,6 +233,23 @@ public final class SerialIec101Client {
     }
 
     /**
+     * Sets the event backlog at which the client pauses inbound data. Defaults to {@value
+     * ClientConfig#DEFAULT_EVENT_BACKLOG_LIMIT}.
+     *
+     * <p>The event stream never drops events. The IEC 60870-5-101 link layer does not yet pause
+     * inbound data, so the limit only sizes the event buffer: a subscriber that falls far enough
+     * behind to fill it makes the client close the connection with a cause rather than drop events.
+     * See {@link ClientConfig.Builder#eventBacklogLimit(int)}.
+     *
+     * @param eventBacklogLimit the backlog limit; must be in {@code 1..268435456}.
+     * @return this builder.
+     */
+    public Builder eventBacklogLimit(int eventBacklogLimit) {
+      this.eventBacklogLimit = eventBacklogLimit;
+      return this;
+    }
+
+    /**
      * Sets the maximum inactivity tolerated before a blocking read returns. Defaults to {@code
      * 100ms}.
      *
@@ -304,6 +322,7 @@ public final class SerialIec101Client {
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
+      clientConfigBuilder.eventBacklogLimit(eventBacklogLimit);
 
       // The builder is the sole 101 assembly point but holds no Ft12Frame<->octet wiring itself: it
       // delegates the full Ft12LinkLayer + framing assembly to Cs101Binding (see its Javadoc).

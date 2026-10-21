@@ -181,7 +181,10 @@ asynchronously through `events()` (see the next section). If the connection is c
 
 Every inbound ASDU is published as `ClientEvent.AsduReceived(asdu)`, in addition to any
 `PointUpdated` events derived from its monitor objects. That means a TypeID the facade does not act on
-is still observable — it is never silently dropped. Match `AsduReceived` in your subscriber's `onNext`:
+is still observable — it is never silently dropped. The client event stream is lossless: a subscriber
+that falls behind slows the inbound data instead of losing events (see the
+[threading rules](handle-events.md#threading-rules-read-this)). Match `AsduReceived` in your
+subscriber's `onNext`:
 
 ```java
 import com.digitalpetri.iec60870.client.ClientEvent;

@@ -17,9 +17,9 @@ import org.jspecify.annotations.Nullable;
  * <p>This configuration covers the protocol-layer behavior of the client: the wire profile, the
  * APCI flow-control parameters, the originator address, an optional point catalog, whether to start
  * data transfer automatically on connect, the request and command timeouts, the bound on the
- * objects a single interrogation will accumulate, and the executor that delivers events and
- * completes blocking calls. Transport concerns (host, port, TLS) are configured on the transport,
- * not here.
+ * objects a single interrogation will accumulate, the executor that delivers events and completes
+ * blocking calls, and the event backlog at which the client pauses inbound data. Transport concerns
+ * (host, port, TLS) are configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -43,6 +43,8 @@ import org.jspecify.annotations.Nullable;
  * @param maxInterrogationResponseObjects the bound on the number of information objects a single
  *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
  * @param callbackExecutor the executor used to deliver events and complete blocking calls.
+ * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at which
+ *     the client pauses inbound data.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -53,7 +55,8 @@ public record ClientConfig(
     Duration commandTimeout,
     Duration requestTimeout,
     int maxInterrogationResponseObjects,
-    Executor callbackExecutor) {
+    Executor callbackExecutor,
+    int eventBacklogLimit) {
 
   /**
    * Validates the components.
@@ -71,9 +74,12 @@ public record ClientConfig(
    * @param maxInterrogationResponseObjects the bound on the number of information objects a single
    *     interrogation will accumulate before the request is failed, or {@code 0} for no bound.
    * @param callbackExecutor the executor used to deliver events and complete blocking calls.
+   * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at
+   *     which the client pauses inbound data.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
-   *     negative, or {@code maxInterrogationResponseObjects} is negative.
+   *     negative, {@code maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit}
+   *     is not in {@code 1..268435456}.
    */
   public ClientConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -87,7 +93,17 @@ public record ClientConfig(
       throw new IllegalArgumentException(
           "maxInterrogationResponseObjects must be >= 0: " + maxInterrogationResponseObjects);
     }
+    if (eventBacklogLimit < 1 || eventBacklogLimit > EventStream.MAX_BACKLOG_LIMIT) {
+      throw new IllegalArgumentException(
+          "eventBacklogLimit must be in 1.."
+              + EventStream.MAX_BACKLOG_LIMIT
+              + ": "
+              + eventBacklogLimit);
+    }
   }
+
+  /** The default {@linkplain Builder#eventBacklogLimit(int) event backlog limit}. */
+  public static final int DEFAULT_EVENT_BACKLOG_LIMIT = 4096;
 
   /**
    * Returns the configured point catalog, if any.
@@ -131,6 +147,7 @@ public record ClientConfig(
     private Duration requestTimeout = Duration.ofSeconds(30);
     private int maxInterrogationResponseObjects = 1_000_000;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
+    private int eventBacklogLimit = DEFAULT_EVENT_BACKLOG_LIMIT;
 
     private Builder() {}
 
@@ -250,11 +267,40 @@ public record ClientConfig(
     }
 
     /**
+     * Sets the event backlog at which the client pauses inbound data. Defaults to {@value
+     * #DEFAULT_EVENT_BACKLOG_LIMIT}.
+     *
+     * <p>The event stream never drops an event for a slow subscriber. Instead, once the slowest
+     * subscriber of {@link Iec60870Client#events()} has this many published events it has not yet
+     * consumed, the client asks its session to stop taking in user data, and the peer's own flow
+     * control holds it back. Input resumes when the backlog falls to half the limit. On IEC
+     * 60870-5-104 the client stops reading from the connection, so the backlog can exceed the limit
+     * by at most the events of the peer's {@code k} unacknowledged I-frames. A pause longer than
+     * the peer's {@code t1} ends in a connection close reported through {@link
+     * ClientEvent.ConnectionClosed} with a cause.
+     *
+     * <p>A session that cannot pause (the IEC 60870-5-101 link layers do not yet) relies on the
+     * buffer alone. If a subscriber's backlog reaches the hard capacity, the smallest power of two
+     * at or above {@code 2 * eventBacklogLimit + 8192} events less a reserve for lifecycle events,
+     * the client closes the connection with an {@link
+     * com.digitalpetri.iec60870.EventBacklogExceededException} cause instead of dropping events.
+     * Until that subscriber catches up, connecting and starting or stopping data transfer fail with
+     * the same exception, so the lifecycle events they publish always fit.
+     *
+     * @param eventBacklogLimit the backlog limit; must be in {@code 1..268435456}.
+     * @return this builder.
+     */
+    public Builder eventBacklogLimit(int eventBacklogLimit) {
+      this.eventBacklogLimit = eventBacklogLimit;
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link ClientConfig} from the current builder state.
      *
      * @return the configuration.
      * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is not
-     *     positive.
+     *     positive, or {@code eventBacklogLimit} is out of range.
      */
     public ClientConfig build() {
       return new ClientConfig(
@@ -266,7 +312,8 @@ public record ClientConfig(
           commandTimeout,
           requestTimeout,
           maxInterrogationResponseObjects,
-          callbackExecutor);
+          callbackExecutor,
+          eventBacklogLimit);
     }
   }
 }

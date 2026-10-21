@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -44,6 +45,7 @@ public final class FakeSession implements Session {
   private final List<Asdu> sent = new ArrayList<>();
   private final List<byte[]> sentRaw = new ArrayList<>();
   private boolean rawSendSupported = true;
+  private final List<Boolean> inboundPauses = new CopyOnWriteArrayList<>();
   private final OutboundAsduQueue queued;
 
   private boolean dataTransferStarted;
@@ -166,6 +168,11 @@ public final class FakeSession implements Session {
   }
 
   @Override
+  public void setInboundPaused(boolean paused) {
+    inboundPauses.add(paused);
+  }
+
+  @Override
   public void close() {
     closed = true;
     queued.failAll(new ConnectionClosedException("session closed or reset"));
@@ -191,6 +198,24 @@ public final class FakeSession implements Session {
    */
   public void deliverUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
     events.onUndecodableAsdu(asdu, cause);
+  }
+
+  /**
+   * Returns every {@link #setInboundPaused(boolean)} argument, in call order.
+   *
+   * @return the recorded pause ({@code true}) and resume ({@code false}) requests.
+   */
+  public List<Boolean> inboundPauses() {
+    return inboundPauses;
+  }
+
+  /**
+   * Reports whether the session has been closed.
+   *
+   * @return {@code true} once closed.
+   */
+  public boolean isClosed() {
+    return closed;
   }
 
   /**

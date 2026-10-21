@@ -50,14 +50,21 @@ import org.slf4j.LoggerFactory;
  * TransportListener} by the terminal {@link InboundFrameHandler}. The listener is held in an {@link
  * AtomicReference} and resolved lazily, so it may be set before or after {@link #connect()}.
  *
+ * <p>{@link #setReadPaused(boolean)} toggles Netty's {@code autoRead} on the current channel, so a
+ * paused connection stops reading from its socket and the peer's own flow control throttles it.
+ * Each new channel starts with reading enabled.
+ *
  * <p>This transport is thread-safe: lifecycle calls delegate to the internally-synchronized FSM and
- * the listener reference is atomic.
+ * the listener and current-channel references are atomic.
  */
 public class NettyClientTransport implements ClientTransport {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(NettyClientTransport.class);
 
   private final AtomicReference<@Nullable TransportListener> listener = new AtomicReference<>();
+
+  /** The most recently initialized channel, the target of {@link #setReadPaused(boolean)}. */
+  private volatile @Nullable Channel currentChannel;
 
   private final ChannelFsm channelFsm;
   private final NettyClientTransportConfig config;
@@ -142,17 +149,16 @@ public class NettyClientTransport implements ClientTransport {
         .whenComplete(
             (channel, ex) -> {
               if (channel != null) {
-                channel
-                    .writeAndFlush(frame)
-                    .addListener(
-                        future -> {
-                          if (future.isSuccess()) {
+                OrderedFrameWriter.writeAndFlush(channel, frame)
+                    .whenComplete(
+                        (ignored, error) -> {
+                          if (error == null) {
                             // CompletableFuture<Void> can only be completed with null; the
                             // @NotNull on complete() does not apply to a Void result.
                             //noinspection DataFlowIssue
                             result.complete(null);
                           } else {
-                            result.completeExceptionally(future.cause());
+                            result.completeExceptionally(error);
                           }
                         });
               } else {
@@ -164,6 +170,16 @@ public class NettyClientTransport implements ClientTransport {
             });
 
     return result;
+  }
+
+  @Override
+  public void setReadPaused(boolean paused) {
+    Channel channel = currentChannel;
+    if (channel != null) {
+      // Thread-safe in Netty: clearing autoRead stops the read loop after the current read, and
+      // setting it again schedules a read on the channel's event loop.
+      channel.config().setAutoRead(!paused);
+    }
   }
 
   @Override
@@ -199,6 +215,7 @@ public class NettyClientTransport implements ClientTransport {
                   new ChannelInitializer<>() {
                     @Override
                     protected void initChannel(Channel channel) {
+                      currentChannel = channel;
                       Iec104Pipeline.configure(
                           channel,
                           config.tlsOptionsOptional().orElse(null),

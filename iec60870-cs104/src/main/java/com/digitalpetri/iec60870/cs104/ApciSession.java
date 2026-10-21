@@ -15,6 +15,7 @@ import java.util.EnumMap;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -128,6 +129,17 @@ public final class ApciSession implements Session {
     default CompletionStage<Void> sendRawAsync(ControlField.TypeI control, byte[] asdu) {
       throw new UnsupportedOperationException("output does not support raw ASDU sends");
     }
+
+    /**
+     * Pauses or resumes reading inbound frames from the transport.
+     *
+     * <p>Invoked from {@link ApciSession#setInboundPaused(boolean)} without the session lock, and
+     * possibly from within a {@link Session.Events} callback; implementations must not block. The
+     * default does nothing.
+     *
+     * @param paused {@code true} to stop reading, {@code false} to resume.
+     */
+    default void setReadPaused(boolean paused) {}
   }
 
   private final ReentrantLock lock = new ReentrantLock();
@@ -178,6 +190,13 @@ public final class ApciSession implements Session {
   private int t2Generation;
   private int t3Generation;
   private boolean testFrameOutstanding;
+
+  // Inbound-pause deadline. Guarded by pauseLock rather than the session lock: setInboundPaused is
+  // called from Events callbacks and from threads holding locks those callbacks take, so it must
+  // not wait for the session lock. pauseLock is innermost; nothing is acquired while holding it.
+  private final Object pauseLock = new Object();
+  private @Nullable ScheduledFuture<?> pauseFuture;
+  private int pauseGeneration;
 
   // Outbound send-queue bound and overflow policy (0 == unbounded, the client default).
   private final int maxOutboundQueue;
@@ -562,6 +581,38 @@ public final class ApciSession implements Session {
   }
 
   /**
+   * Pauses or resumes inbound user data by pausing or resuming transport reads.
+   *
+   * <p>Frames that are not read are not received, so the {@code w} and {@code t2} acknowledgement
+   * obligations never start for them, and every frame that is read is acknowledged as usual. The
+   * peer stops after {@code k} unacknowledged I-frames. Its oldest unread I-frame then waits for an
+   * acknowledgement, so a pause that lasts {@code t1} closes the session with a {@link
+   * ProtocolTimeoutException}, reported through {@link Session.Events#onClosed(Throwable)}, at
+   * about the time the peer's own {@code t1} would close the connection.
+   *
+   * <p>Does not wait for the session lock, so it is safe to call from within a {@link
+   * Session.Events} callback.
+   *
+   * @param paused {@code true} to pause inbound user data, {@code false} to resume it.
+   */
+  @Override
+  public void setInboundPaused(boolean paused) {
+    synchronized (pauseLock) {
+      cancelPauseTimer();
+      if (paused) {
+        int generation = ++pauseGeneration;
+        try {
+          pauseFuture = schedule(() -> onPauseExpired(generation), t1Millis);
+        } catch (RejectedExecutionException e) {
+          // The scheduler is shutting down with its owner; the session is closing too.
+          LOGGER.debug("inbound pause deadline not armed: {}", e.toString());
+        }
+      }
+      output.setReadPaused(paused);
+    }
+  }
+
+  /**
    * Closes the session.
    *
    * <p>Cancels all timers, fails any pending STARTDT/STOPDT future with a {@link
@@ -932,6 +983,36 @@ public final class ApciSession implements Session {
     cancelT1();
     cancelT2();
     cancelT3();
+    synchronized (pauseLock) {
+      cancelPauseTimer();
+    }
+  }
+
+  // pauseLock held.
+  private void cancelPauseTimer() {
+    pauseGeneration++;
+    if (pauseFuture != null) {
+      pauseFuture.cancel(false);
+      pauseFuture = null;
+    }
+  }
+
+  private void onPauseExpired(int generation) {
+    lock.lock();
+    try {
+      synchronized (pauseLock) {
+        if (generation != pauseGeneration) {
+          return;
+        }
+        pauseFuture = null;
+      }
+      if (closed) {
+        return;
+      }
+      closeWithError(new ProtocolTimeoutException("t1 elapsed with inbound data paused"));
+    } finally {
+      lock.unlock();
+    }
   }
 
   private void onT2Expired(int generation) {

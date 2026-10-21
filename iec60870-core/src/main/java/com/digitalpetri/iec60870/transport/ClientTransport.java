@@ -65,6 +65,10 @@ public interface ClientTransport {
    * it and releases it. The caller must <b>not</b> release {@code frame} after invoking {@code
    * send}.
    *
+   * <p><b>Ordering.</b> Frames reach the peer in the order {@code send} is called, even when the
+   * calls come from different threads. Sessions emit frames under their lock from both transport
+   * and application threads and rely on this to keep the I-frame sequence intact.
+   *
    * <p>The returned stage reflects only the outcome of the send (the channel write); it does not
    * represent any application-level acknowledgement. Responses arrive asynchronously through the
    * registered {@link TransportListener}.
@@ -74,6 +78,21 @@ public interface ClientTransport {
    *     the send fails (for example because the transport is not connected).
    */
   CompletionStage<Void> send(ByteBuf frame);
+
+  /**
+   * Pauses or resumes reading inbound frames from the current connection.
+   *
+   * <p>While paused, the transport stops reading from the peer, so frames wait in the operating
+   * system's buffers and the peer's own flow control throttles it. Frames the transport has already
+   * read may still be delivered to the listener after the call. Writes are not affected. The pause
+   * applies to the current connection only; a new connection starts with reading enabled.
+   *
+   * <p>May be called from any thread, including from within a {@link TransportListener} callback.
+   * The default does nothing, which leaves reading enabled.
+   *
+   * @param paused {@code true} to stop reading, {@code false} to resume.
+   */
+  default void setReadPaused(boolean paused) {}
 
   /**
    * Registers the listener that receives inbound frames and connection-loss notifications.

@@ -44,7 +44,8 @@ Two universal facts hold for every modeled type, so they are not repeated per ro
   high-level facade relate.
 - Any inbound, decodable ASDU is **always** also published raw as `ClientEvent.AsduReceived(Asdu)`
   on the client, and offered to `ServerHandler.onRawAsdu(...)` on the server — so even a type that is
-  "raw only at the facade" is observable, never silently dropped. See
+  "raw only at the facade" is observable, never silently dropped. The client event stream does not
+  drop events for a slow subscriber; it pauses inbound data instead. See
   [How-To: Work with raw ASDUs](../how-to/work-with-raw-asdus.md).
 
 ## Process information, monitor direction

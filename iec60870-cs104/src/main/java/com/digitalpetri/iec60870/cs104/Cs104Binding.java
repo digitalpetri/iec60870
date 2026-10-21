@@ -119,9 +119,10 @@ public final class Cs104Binding {
    * Assembles a CLIENT-role {@link Session} bound to {@code transport}.
    *
    * <p>The session's outbound APDUs are framed and written to {@code transport}; inbound frames
-   * from the transport's {@link TransportListener} are deframed into the session. A failed send or
-   * a transport connection loss closes the session and notifies {@code events}; a framing error
-   * also closes the current transport connection without performing an intentional disconnect.
+   * from the transport's {@link TransportListener} are deframed into the session. {@link
+   * Session#setInboundPaused(boolean)} pauses and resumes the transport's reads. A failed send or a
+   * transport connection loss closes the session and notifies {@code events}; a framing error also
+   * closes the current transport connection without performing an intentional disconnect.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -142,6 +143,7 @@ public final class Cs104Binding {
         events,
         transport::send,
         transport::setListener,
+        transport::setReadPaused,
         null,
         transport::closeConnection);
   }
@@ -184,6 +186,7 @@ public final class Cs104Binding {
         events,
         connection::send,
         connection::setListener,
+        paused -> {},
         new ServerQueueConfig(maxOutboundQueue, queuePolicy),
         connection::close);
   }
@@ -194,6 +197,7 @@ public final class Cs104Binding {
       Session.Events events,
       FrameSink frameSink,
       Consumer<TransportListener> listenerSink,
+      Consumer<Boolean> readPause,
       @Nullable ServerQueueConfig queueConfig,
       Runnable closeConnection) {
 
@@ -216,6 +220,11 @@ public final class Cs104Binding {
           @Override
           public CompletionStage<Void> sendRawAsync(ControlField.TypeI control, byte[] asdu) {
             return write(ApduFramer.encode(control, asdu, allocator));
+          }
+
+          @Override
+          public void setReadPaused(boolean paused) {
+            readPause.accept(paused);
           }
 
           private CompletionStage<Void> write(ByteBuf buffer) {
