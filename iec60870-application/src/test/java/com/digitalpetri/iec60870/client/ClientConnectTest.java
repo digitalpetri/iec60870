@@ -23,9 +23,11 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Flow;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -146,10 +148,10 @@ class ClientConnectTest {
   }
 
   @Test
-  void connectionLossDiscardsALateCompletionOfTheOldConnectAttempt() {
+  void disconnectDiscardsALateCompletionOfTheOldConnectAttempt() {
     CompletionStage<Void> oldAttempt = client.connectAsync();
     CompletableFuture<Void> oldTransportResult = transport.result;
-    session().events.onConnectionLost(null);
+    client.disconnectAsync();
     transport.result = new CompletableFuture<>();
     CompletionStage<Void> replacement = client.connectAsync();
 
@@ -164,6 +166,19 @@ class ClientConnectTest {
     replacement.toCompletableFuture().join();
     assertEquals(1, session().initializations);
     assertEquals(1, session().starts);
+  }
+
+  @Test
+  void lossReportedBeforeTheTransportConnectsIsIgnored() {
+    CompletionStage<Void> attempt = client.connectAsync();
+    // Only an older connection can report a loss while this attempt is still dialing.
+    session().events.onConnectionLost(null);
+    assertEquals(ConnectionState.CONNECTING, client.connectionState());
+
+    transport.result.complete(null);
+    session().startResult.complete(null);
+    attempt.toCompletableFuture().join();
+    assertEquals(ConnectionState.CONNECTED, client.connectionState());
   }
 
   @Test
@@ -215,7 +230,7 @@ class ClientConnectTest {
   void connectionLossDetachesRequestsBeforeAdmittingReconnect() throws Exception {
     var lossLock = new PausingLossLock();
     // Pause precisely after the loss handler releases its first client-lock critical section.
-    // A transport/session hook cannot expose the gap between the two old registry mutations.
+    // A transport/session hook cannot expose the gap between detaching and failing the requests.
     Field clientLock = DefaultIec60870Client.class.getDeclaredField("lock");
     clientLock.setAccessible(true);
     clientLock.set(client, lossLock);
@@ -236,21 +251,199 @@ class ClientConnectTest {
                 session().events.onConnectionLost(null);
               });
       assertTrue(lossLock.detached.await(5, TimeUnit.SECONDS));
-      client.connectAsync().toCompletableFuture().get(5, TimeUnit.SECONDS);
-      assertEquals(2, session().initializations);
+      CompletionStage<Void> reconnect = client.connectAsync();
       assertEquals(
           0, client.pendingRequestCount(), "old requests must be detached before reconnect");
       CompletionStage<List<InformationObject>> newRead = client.readAsync(point);
       assertFalse(
           newRead.toCompletableFuture().isDone(), "the replacement can use the same target");
+      assertFalse(
+          reconnect.toCompletableFuture().isDone(),
+          "the replacement dials only after the old connection's teardown");
       lossLock.proceed.countDown();
       loss.get(5, TimeUnit.SECONDS);
+      reconnect.toCompletableFuture().get(5, TimeUnit.SECONDS);
+      assertEquals(2, session().initializations);
       CompletionException error =
           assertThrows(CompletionException.class, () -> oldRead.toCompletableFuture().join());
       assertInstanceOf(ConnectionClosedException.class, error.getCause());
       assertFalse(
           newRead.toCompletableFuture().isDone(), "old cleanup must not fail the new request");
       assertEquals(1, client.pendingRequestCount());
+    } finally {
+      lossLock.proceed.countDown();
+      worker.shutdownNow();
+      assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+    }
+  }
+
+  @Test
+  void connectAfterADisconnectWaitsForItsTeardown() {
+    // Nothing is connected, but the disconnect's transport close is still in progress.
+    var disconnecting = new CompletableFuture<Void>();
+    transport.disconnectResult = disconnecting;
+    CompletionStage<Void> disconnected = client.disconnectAsync();
+    transport.disconnectResult = CompletableFuture.completedFuture(null);
+
+    CompletionStage<Void> connecting = client.connectAsync();
+    assertEquals(0, transport.connectCount, "the new connection must not dial before the teardown");
+
+    disconnecting.complete(null);
+    assertTrue(disconnected.toCompletableFuture().isDone());
+    assertEquals(1, transport.connectCount);
+    transport.result.complete(null);
+    session().startResult.complete(null);
+    connecting.toCompletableFuture().join();
+    assertEquals(List.of("disconnect", "connect"), transport.calls);
+  }
+
+  @Test
+  void disconnectRacingAnAdmittedDialAbortsTheAttempt() throws Exception {
+    var lossLock = new PausingLossLock();
+    Field clientLock = DefaultIec60870Client.class.getDeclaredField("lock");
+    clientLock.setAccessible(true);
+    clientLock.set(client, lossLock);
+    CompletionStage<Void> connected = client.connectAsync();
+    transport.result.complete(null);
+    session().startResult.complete(null);
+    connected.toCompletableFuture().join();
+
+    // The lost connection's transport close completes later, on another thread, which then dials
+    // the replacement. Pause that thread right after the dial is admitted.
+    var closing = new CompletableFuture<Void>();
+    transport.disconnectResult = closing;
+    session().events.onConnectionLost(null);
+    transport.disconnectResult = CompletableFuture.completedFuture(null);
+    transport.result = new CompletableFuture<>();
+    CompletionStage<Void> replacement = client.connectAsync();
+
+    ExecutorService worker = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> dialing =
+          worker.submit(
+              () -> {
+                lossLock.lossThread = Thread.currentThread();
+                closing.complete(null);
+              });
+      assertTrue(lossLock.detached.await(5, TimeUnit.SECONDS));
+      CompletionStage<Void> disconnected = client.disconnectAsync();
+      lossLock.proceed.countDown();
+      dialing.get(5, TimeUnit.SECONDS);
+      disconnected.toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+      assertEquals(
+          "disconnect",
+          transport.calls.get(transport.calls.size() - 1),
+          "an admitted dial must be aborted by the disconnect, not follow it: " + transport.calls);
+      var error =
+          assertThrows(CompletionException.class, () -> replacement.toCompletableFuture().join());
+      assertInstanceOf(ConnectionClosedException.class, error.getCause());
+      assertEquals(ConnectionState.DISCONNECTED, client.connectionState());
+    } finally {
+      lossLock.proceed.countDown();
+      worker.shutdownNow();
+      assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+    }
+  }
+
+  @Test
+  void cancellingAConnectionDoesNotReleaseAnEarlierDisconnectBarrier() throws Exception {
+    var lossLock = new PausingLossLock();
+    Field clientLock = DefaultIec60870Client.class.getDeclaredField("lock");
+    clientLock.setAccessible(true);
+    clientLock.set(client, lossLock);
+
+    ExecutorService worker = Executors.newSingleThreadExecutor();
+    try {
+      // D1 installs its barrier, then pauses before queueing its teardown.
+      Future<CompletionStage<Void>> first =
+          worker.submit(
+              () -> {
+                lossLock.lossThread = Thread.currentThread();
+                return client.disconnectAsync();
+              });
+      assertTrue(lossLock.detached.await(5, TimeUnit.SECONDS));
+
+      // Connection A waits for D1; D2 cancels A; connection B must still wait for D1.
+      CompletionStage<Void> cancelled = client.connectAsync();
+      client.disconnectAsync();
+      CompletionStage<Void> later = client.connectAsync();
+      assertTrue(cancelled.toCompletableFuture().isCompletedExceptionally());
+      assertEquals(0, transport.connectCount, "B must not dial before D1's teardown");
+
+      lossLock.proceed.countDown();
+      first.get(5, TimeUnit.SECONDS).toCompletableFuture().get(5, TimeUnit.SECONDS);
+      assertEquals(1, transport.connectCount);
+      transport.result.complete(null);
+      session().startResult.complete(null);
+      later.toCompletableFuture().get(5, TimeUnit.SECONDS);
+      assertEquals(ConnectionState.CONNECTED, client.connectionState());
+      assertEquals("connect", transport.calls.get(transport.calls.size() - 1));
+    } finally {
+      lossLock.proceed.countDown();
+      worker.shutdownNow();
+      assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+    }
+  }
+
+  @Test
+  void closeCompletesTheEventStreamOnlyAfterAnEarlierDisconnectPublishes() throws Exception {
+    List<Object> events = new CopyOnWriteArrayList<>();
+    client
+        .events()
+        .subscribe(
+            new Flow.Subscriber<>() {
+              @Override
+              public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+              }
+
+              @Override
+              public void onNext(ClientEvent item) {
+                events.add(item);
+              }
+
+              @Override
+              public void onError(Throwable throwable) {}
+
+              @Override
+              public void onComplete() {
+                events.add("complete");
+              }
+            });
+    CompletionStage<Void> connected = client.connectAsync();
+    transport.result.complete(null);
+    session().startResult.complete(null);
+    connected.toCompletableFuture().join();
+    var lossLock = new PausingLossLock();
+    Field clientLock = DefaultIec60870Client.class.getDeclaredField("lock");
+    clientLock.setAccessible(true);
+    clientLock.set(client, lossLock);
+
+    ExecutorService worker = Executors.newSingleThreadExecutor();
+    try {
+      // The disconnect detaches the connection, then pauses before queueing its teardown.
+      Future<CompletionStage<Void>> disconnecting =
+          worker.submit(
+              () -> {
+                lossLock.lossThread = Thread.currentThread();
+                return client.disconnectAsync();
+              });
+      assertTrue(lossLock.detached.await(5, TimeUnit.SECONDS));
+
+      client.close();
+      assertFalse(events.contains("complete"), "the stream must wait for the disconnect");
+
+      lossLock.proceed.countDown();
+      disconnecting.get(5, TimeUnit.SECONDS).toCompletableFuture().get(5, TimeUnit.SECONDS);
+      int closedAt =
+          events.indexOf(
+              events.stream()
+                  .filter(e -> e instanceof ClientEvent.ConnectionClosed)
+                  .findFirst()
+                  .orElseThrow());
+      assertEquals(events.size() - 1, events.indexOf("complete"));
+      assertTrue(closedAt < events.size() - 1);
     } finally {
       lossLock.proceed.countDown();
       worker.shutdownNow();
@@ -281,17 +474,21 @@ class ClientConnectTest {
 
   private static final class PendingTransport implements ClientTransport {
     private CompletableFuture<Void> result = new CompletableFuture<>();
+    private CompletableFuture<Void> disconnectResult = CompletableFuture.completedFuture(null);
+    private final List<String> calls = new CopyOnWriteArrayList<>();
     private int connectCount;
 
     @Override
     public CompletionStage<Void> connect() {
       connectCount++;
+      calls.add("connect");
       return result;
     }
 
     @Override
     public CompletionStage<Void> disconnect() {
-      return CompletableFuture.completedFuture(null);
+      calls.add("disconnect");
+      return disconnectResult;
     }
 
     @Override

@@ -6,6 +6,7 @@ import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.point.PointValue;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -26,7 +27,7 @@ import org.jspecify.annotations.Nullable;
  * // inside Flow.Subscriber#onNext(ClientEvent event):
  * switch (event) {
  *   case ClientEvent.PointUpdated u -> handle(u.address(), u.value());
- *   case ClientEvent.ConnectionClosed c -> reconnect(c.cause());
+ *   case ClientEvent.ConnectionOpened o -> refreshImage();
  *   default -> {}
  * }
  * }</pre>
@@ -34,6 +35,7 @@ import org.jspecify.annotations.Nullable;
 public sealed interface ClientEvent
     permits ClientEvent.ConnectionOpened,
         ClientEvent.ConnectionClosed,
+        ClientEvent.ReconnectScheduled,
         ClientEvent.DataTransferStarted,
         ClientEvent.DataTransferStopped,
         ClientEvent.PointUpdated,
@@ -42,22 +44,34 @@ public sealed interface ClientEvent
         ClientEvent.NegativeConfirmation,
         ClientEvent.ProtocolWarning {
 
-  /** Published once the underlying transport connection has been established. */
+  /**
+   * Published for every connection the client establishes, whether through {@link
+   * Iec60870Client#connect()} or an automatic reconnect, once the session has been reset for it.
+   *
+   * <p>The session's sequence numbers start from zero, so the client holds no data from the new
+   * connection yet. {@link DataTransferStarted} follows once {@code STARTDT} completes, if the
+   * client starts data transfer on connect.
+   */
   record ConnectionOpened() implements ClientEvent {}
 
   /**
-   * Published once when the connection is closed or lost.
+   * Published once for each {@link ConnectionOpened} when that connection closes.
    *
-   * @param cause the failure that caused the connection to close, or {@code null} for an orderly
-   *     close.
+   * <p>A connection closed by {@link Iec60870Client#disconnect()} or {@link Iec60870Client#close()}
+   * has no cause. Every other close has one, including a peer that closed the connection normally,
+   * which is reported as a {@link com.digitalpetri.iec60870.ConnectionClosedException}. When data
+   * transfer was started, {@link DataTransferStopped} is published first.
+   *
+   * @param cause the failure that closed the connection, or {@code null} when the application
+   *     closed it.
    */
   record ConnectionClosed(@Nullable Throwable cause) implements ClientEvent {
 
     /**
      * Returns the cause of the close.
      *
-     * @return the failure that closed the connection, or an empty {@link Optional} for an orderly
-     *     close.
+     * @return the failure that closed the connection, or an empty {@link Optional} when the
+     *     application closed it.
      */
     public Optional<Throwable> causeOptional() {
       return Optional.ofNullable(cause);
@@ -67,7 +81,42 @@ public sealed interface ClientEvent
   /** Published when user-data transfer has started (a {@code STARTDT} handshake completed). */
   record DataTransferStarted() implements ClientEvent {}
 
-  /** Published when user-data transfer has stopped (a {@code STOPDT} handshake completed). */
+  /**
+   * Published when the client schedules an automatic connection attempt.
+   *
+   * <p>Follows a failed connection attempt, or the {@link ConnectionClosed} of a lost connection,
+   * when the client's {@link ReconnectPolicy} is enabled. The attempt itself publishes {@link
+   * ConnectionOpened} when it succeeds, or another {@code ReconnectScheduled} when it fails.
+   *
+   * @param attempt the number of the scheduled attempt, counted from 1 since the last established
+   *     connection.
+   * @param delay the delay before the attempt.
+   * @param cause why the previous connection or attempt ended.
+   */
+  record ReconnectScheduled(int attempt, Duration delay, Throwable cause) implements ClientEvent {
+
+    /**
+     * Validates the components.
+     *
+     * @param attempt the number of the scheduled attempt, counted from 1.
+     * @param delay the delay before the attempt.
+     * @param cause why the previous connection or attempt ended.
+     * @throws NullPointerException if {@code delay} or {@code cause} is null.
+     * @throws IllegalArgumentException if {@code attempt} is less than 1.
+     */
+    public ReconnectScheduled {
+      Objects.requireNonNull(delay, "delay");
+      Objects.requireNonNull(cause, "cause");
+      if (attempt < 1) {
+        throw new IllegalArgumentException("attempt must be >= 1: " + attempt);
+      }
+    }
+  }
+
+  /**
+   * Published when user-data transfer has stopped: a {@code STOPDT} handshake completed, or a
+   * connection on which data transfer was started closed.
+   */
   record DataTransferStopped() implements ClientEvent {}
 
   /**

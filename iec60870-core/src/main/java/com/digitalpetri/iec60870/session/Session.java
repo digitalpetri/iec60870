@@ -211,8 +211,8 @@ public interface Session {
     /**
      * Reports that the session has closed itself because of a protocol error or timeout.
      *
-     * <p>Invoked at most once. The transport should be torn down in response; the session has
-     * already cancelled its timers.
+     * <p>Invoked at most once per connection. The current transport connection should be closed in
+     * response; the session has already cancelled its timers.
      *
      * @param cause the reason for closure, or {@code null} for an orderly close.
      */
@@ -222,14 +222,13 @@ public interface Session {
      * Reports that the underlying transport connection was lost (peer drop, send failure, or I/O
      * error) rather than the session self-closing on a protocol error or timeout.
      *
-     * <p>Distinguished from {@link #onClosed(Throwable)} so a facade can react differently: a
-     * self-initiated {@code onClosed} means the protocol layer gave up and the transport should be
-     * torn down, whereas a transport-reported {@code onConnectionLost} should leave a
-     * persistent/reconnecting transport free to re-establish the connection rather than being
-     * explicitly disconnected. The default delegates to {@link #onClosed(Throwable)}, preserving
-     * the behavior of consumers that do not draw the distinction.
+     * <p>Distinguished from {@link #onClosed(Throwable)} so a facade can tell a lost connection
+     * from a protocol failure, for example in what it reports. Either way the current connection is
+     * gone, and the session's binding may already have closed it. The default delegates to {@link
+     * #onClosed(Throwable)}, preserving the behavior of consumers that do not draw the distinction.
      *
-     * @param cause the reason for the loss, or {@code null} for an orderly close.
+     * @param cause the reason for the loss, or {@code null} when the peer closed the connection
+     *     normally.
      */
     default void onConnectionLost(@Nullable Throwable cause) {
       onClosed(cause);

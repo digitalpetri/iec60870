@@ -71,7 +71,8 @@ Not every exception leaves the connection usable.
 - **Fatal to the connection.** A `SequenceNumberException`, and a `t1` `ProtocolTimeoutException`
   raised by the APCI session, close the session: the session reports the cause through
   [`ClientEvent.ConnectionClosed`](../how-to/handle-events.md) /
-  `ServerEvent.ConnectionClosed`, which carries that cause. After one of these you must reconnect.
+  `ServerEvent.ConnectionClosed`, which carries that cause. A client then reconnects on its own
+  according to its `ReconnectPolicy`; with `ReconnectPolicy.disabled()`, call `connect()` again.
 - **Recoverable.** A `NegativeConfirmationException`, or a `ProtocolTimeoutException` on a single
   request, leaves the connection open — the peer simply did not answer that one request in time, or
   answered it negatively. You can retry on the same client.

@@ -1,15 +1,8 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
-import com.digitalpetri.fsm.FsmContext;
 import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
-import com.digitalpetri.netty.fsm.ChannelActions;
-import com.digitalpetri.netty.fsm.ChannelFsm;
-import com.digitalpetri.netty.fsm.ChannelFsmConfig;
-import com.digitalpetri.netty.fsm.ChannelFsmFactory;
-import com.digitalpetri.netty.fsm.Event;
-import com.digitalpetri.netty.fsm.State;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -20,7 +13,6 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslHandler;
-import io.netty.util.concurrent.Future;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -30,32 +22,34 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A Netty-backed {@link ClientTransport} for a single outgoing IEC 60870-5-104 connection.
+ * A Netty-backed {@link ClientTransport} for a single outgoing IEC 60870-5 TCP connection.
  *
- * <p>The channel lifecycle is delegated to {@code com.digitalpetri.netty:netty-channel-fsm}. The
- * FSM was chosen over a bare {@link Bootstrap} because IEC 104 controlling stations are long-lived
- * and benefit from the FSM's connect, lazy-reconnect, and serialized state handling without this
- * class reimplementing that logic. The FSM is configured non-lazy and persistent so a dropped
- * connection is retried automatically; an intentional {@link #disconnect()} fires {@link
- * com.digitalpetri.netty.fsm.Event.Disconnect} and stops reconnection. {@link #closeConnection()}
- * closes only the current channel and leaves the persistent FSM free to reconnect.
+ * <p>Each {@link #connect()} makes one connection attempt, bounded by the configured connect
+ * timeout and, when TLS is configured, by the TLS handshake timeout. The transport never dials on
+ * its own: after a connection is lost, nothing happens until the next {@code connect()}. Retrying
+ * is the job of the client facade above it.
  *
- * <p>Each connect attempt builds the fixed pipeline {@code [SslHandler?] -> frameDecoder ->
- * inboundHandler} via {@link Iec104Pipeline}. When TLS is configured, the {@link
- * ChannelActions#connect} future — and therefore the {@link #connect()} stage — completes only
- * after the {@link SslHandler#handshakeFuture() TLS handshake} succeeds, satisfying the contract
- * that {@code connect()} resolves only on a fully-ready secure channel.
+ * <p>{@link #disconnect()} and {@link #closeConnection()} close the current connection, and abort
+ * an attempt still in progress, without ending the transport; a later {@code connect()} dials
+ * again. {@link #close()} is terminal: it closes the connection and shuts down the private event
+ * loop group if the transport created one. After {@code close()}, {@code connect()} fails with a
+ * {@link ConnectionClosedException}.
  *
- * <p>Inbound frames and connection-loss notifications are delivered to the registered {@link
- * TransportListener} by the terminal {@link InboundFrameHandler}. The listener is held in an {@link
- * AtomicReference} and resolved lazily, so it may be set before or after {@link #connect()}.
+ * <p>Each attempt builds the fixed pipeline {@code [SslHandler?] -> frameDecoder -> inboundHandler}
+ * via {@link Iec104Pipeline}. The registered {@link TransportListener} receives frames and the loss
+ * notification only for the established connection; a connection closed through {@code
+ * disconnect()}, {@code closeConnection()}, or {@code close()} is not reported as lost, and neither
+ * is an attempt that never completed.
+ *
+ * <p>{@link #send(ByteBuf)} submits every write as an event-loop task through {@link
+ * OrderedFrameWriter}, so frames leave in the order {@code send} was called, whichever thread calls
+ * it.
  *
  * <p>{@link #setReadPaused(boolean)} toggles Netty's {@code autoRead} on the current channel, so a
  * paused connection stops reading from its socket and the peer's own flow control throttles it.
  * Each new channel starts with reading enabled.
  *
- * <p>This transport is thread-safe: lifecycle calls delegate to the internally-synchronized FSM and
- * the listener and current-channel references are atomic.
+ * <p>This transport is thread-safe.
  */
 public class NettyClientTransport implements ClientTransport {
 
@@ -63,20 +57,27 @@ public class NettyClientTransport implements ClientTransport {
 
   private final AtomicReference<@Nullable TransportListener> listener = new AtomicReference<>();
 
-  /** The most recently initialized channel, the target of {@link #setReadPaused(boolean)}. */
-  private volatile @Nullable Channel currentChannel;
-
-  private final ChannelFsm channelFsm;
   private final NettyClientTransportConfig config;
   private final EventLoopGroup eventLoopGroup;
   private final boolean ownsEventLoopGroup;
+
+  private final Object lock = new Object();
+
+  /** The established connection, if any; written under {@link #lock}. */
+  private volatile @Nullable Channel channel;
+
+  /** The attempt in progress, if any; guarded by {@link #lock}. */
+  private @Nullable Attempt pending;
+
+  /** Whether {@link #close()} ended this transport; guarded by {@link #lock}. */
+  private boolean closed;
 
   /**
    * Creates a client transport from the given configuration.
    *
    * <p>If the configuration supplies a shared {@link EventLoopGroup} it is used as-is and the
    * caller retains ownership; otherwise a private single-threaded {@link NioEventLoopGroup} is
-   * created and shut down when this transport is {@link #disconnect() disconnected}.
+   * created and shut down by {@link #close()}.
    *
    * @param config the transport configuration.
    */
@@ -91,94 +92,128 @@ public class NettyClientTransport implements ClientTransport {
       this.eventLoopGroup = new NioEventLoopGroup(1);
       this.ownsEventLoopGroup = true;
     }
-
-    ChannelFsmConfig fsmConfig =
-        ChannelFsmConfig.newBuilder()
-            .setLazy(false)
-            .setPersistent(true)
-            .setMaxIdleSeconds(0) // APCI t3 keep-alive is handled by the core session, not the FSM.
-            .setChannelActions(new Iec104ChannelActions())
-            .setLoggerName(NettyClientTransport.class.getName() + "." + config.host())
-            .build();
-
-    this.channelFsm = new ChannelFsmFactory(fsmConfig).newChannelFsm();
   }
 
+  /**
+   * Makes one connection attempt, or joins the attempt already in progress.
+   *
+   * <p>Completes at once when a connection is already established. Fails with a {@link
+   * ConnectionClosedException} after {@link #close()}, or when the event loop group is shutting
+   * down.
+   *
+   * @return a stage that completes when the connection is established (and the TLS handshake has
+   *     succeeded, if configured), or completes exceptionally if the attempt fails or is aborted.
+   */
   @Override
   public CompletionStage<Void> connect() {
-    return channelFsm.connect().thenAccept(channel -> {});
+    Attempt started;
+    synchronized (lock) {
+      if (closed) {
+        return CompletableFuture.failedFuture(new ConnectionClosedException("transport closed"));
+      }
+      Channel current = channel;
+      if (current != null && current.isActive()) {
+        return CompletableFuture.completedFuture(null);
+      }
+      channel = null;
+      if (pending != null) {
+        return pending.future.copy();
+      }
+      if (eventLoopGroup.isShuttingDown()) {
+        return CompletableFuture.failedFuture(
+            new ConnectionClosedException("event loop group is shut down"));
+      }
+      started = new Attempt();
+      pending = started;
+    }
+
+    try {
+      dial(started);
+    } catch (RuntimeException e) {
+      // The bootstrap rejects a connect on an event loop that stopped after the check above.
+      finish(started, null, e);
+    }
+    return started.future.copy();
   }
 
   @Override
   public CompletionStage<Void> disconnect() {
-    return channelFsm
-        .disconnect()
-        .whenComplete(
-            (v, ex) -> {
-              if (ownsEventLoopGroup) {
-                eventLoopGroup.shutdownGracefully();
-              }
-            });
+    Channel current;
+    Attempt aborted;
+    synchronized (lock) {
+      current = channel;
+      channel = null;
+      aborted = pending;
+      pending = null;
+    }
+    if (aborted != null) {
+      aborted.abort();
+    }
+    if (current == null) {
+      return CompletableFuture.completedFuture(null);
+    }
+    CompletableFuture<Void> done = new CompletableFuture<>();
+    // CompletableFuture<Void> can only be completed with null; the @NotNull on complete() does not
+    // apply to a Void result.
+    //noinspection DataFlowIssue
+    current.close().addListener(f -> done.complete(null));
+    return done;
   }
 
   @Override
   public void closeConnection() {
-    channelFsm
-        .getChannel(false)
-        .whenComplete(
-            (channel, ex) -> {
-              if (channel != null) {
-                channel.close();
-              } else if (ex != null) {
-                LOGGER.debug("no active channel to close", ex);
-              }
-            });
+    disconnect();
+  }
+
+  /**
+   * Closes the connection and releases the transport's resources.
+   *
+   * <p>Shuts down the event loop group if this transport created it; a caller-supplied group is
+   * left running. After this call, {@link #connect()} fails with a {@link
+   * ConnectionClosedException}. This method is idempotent.
+   */
+  @Override
+  public void close() {
+    synchronized (lock) {
+      if (closed) {
+        return;
+      }
+      closed = true;
+    }
+    disconnect();
+    if (ownsEventLoopGroup) {
+      eventLoopGroup.shutdownGracefully();
+    }
   }
 
   @Override
   public boolean isConnected() {
-    return channelFsm.getState() == State.Connected;
+    Channel current = channel;
+    return current != null && current.isActive();
   }
 
   @Override
   public CompletionStage<Void> send(ByteBuf frame) {
-    CompletableFuture<Void> result = new CompletableFuture<>();
+    Channel current = channel;
+    if (current == null) {
+      // No channel to write to: release the caller-owned frame here to honor the send() ownership
+      // contract and avoid a leak.
+      frame.release();
+      return CompletableFuture.failedFuture(new ConnectionClosedException("not connected"));
+    }
 
-    channelFsm
-        .getChannel()
-        .whenComplete(
-            (channel, ex) -> {
-              if (channel != null) {
-                OrderedFrameWriter.writeAndFlush(channel, frame)
-                    .whenComplete(
-                        (ignored, error) -> {
-                          if (error == null) {
-                            // CompletableFuture<Void> can only be completed with null; the
-                            // @NotNull on complete() does not apply to a Void result.
-                            //noinspection DataFlowIssue
-                            result.complete(null);
-                          } else {
-                            result.completeExceptionally(error);
-                          }
-                        });
-              } else {
-                // No channel to write to: writeAndFlush never runs, so release the caller-owned
-                // frame here to honor the send() ownership contract and avoid a leak.
-                frame.release();
-                result.completeExceptionally(new ConnectionClosedException("not connected", ex));
-              }
-            });
-
-    return result;
+    // Every write goes through the event loop's task queue, so frames leave in submission order
+    // even when an event-loop write follows one still queued from another thread.
+    return OrderedFrameWriter.writeAndFlush(current, frame);
   }
 
   @Override
   public void setReadPaused(boolean paused) {
-    Channel channel = currentChannel;
-    if (channel != null) {
+    Channel current = channel;
+    if (current != null) {
       // Thread-safe in Netty: clearing autoRead stops the read loop after the current read, and
       // setting it again schedules a read on the channel's event loop.
-      channel.config().setAutoRead(!paused);
+      current.config().setAutoRead(!paused);
     }
   }
 
@@ -188,112 +223,144 @@ public class NettyClientTransport implements ClientTransport {
   }
 
   /**
-   * The {@link ChannelActions} the FSM uses to bootstrap and tear down the underlying channel.
+   * Starts the TCP connect for {@code attempt} and completes it once the channel is connected and,
+   * when TLS is configured, the handshake has succeeded.
    *
-   * <p>{@link #connect(FsmContext)} bootstraps a channel, installs the IEC 104 pipeline, and only
-   * completes once the channel is connected and — when TLS is enabled — the handshake has
-   * succeeded. {@link #disconnect(FsmContext, Channel)} closes the channel.
+   * @param attempt the attempt to complete.
    */
-  private final class Iec104ChannelActions implements ChannelActions {
+  private void dial(Attempt attempt) {
+    // Apply IEC 104 t0 as the TCP connection-establishment timeout. Clamp to int millis because
+    // CONNECT_TIMEOUT_MILLIS is an int; the config guarantees a positive Duration.
+    int connectTimeoutMillis =
+        (int) Math.min(config.connectTimeout().toMillis(), Integer.MAX_VALUE);
 
-    @Override
-    public CompletableFuture<Channel> connect(FsmContext<State, Event> ctx) {
-      CompletableFuture<Channel> future = new CompletableFuture<>();
+    Bootstrap bootstrap =
+        new Bootstrap()
+            .group(eventLoopGroup)
+            .channel(NioSocketChannel.class)
+            .option(ChannelOption.TCP_NODELAY, true)
+            .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis)
+            .handler(
+                new ChannelInitializer<>() {
+                  @Override
+                  protected void initChannel(Channel ch) {
+                    Iec104Pipeline.configure(
+                        ch,
+                        config.tlsOptionsOptional().orElse(null),
+                        true,
+                        // Only the established channel reaches the listener, so a channel that
+                        // was closed locally or never finished connecting reports nothing.
+                        () -> channel == ch ? listener.get() : null,
+                        config.host(),
+                        config.port(),
+                        config.frameDecoderFactoryOptional().orElse(null));
+                  }
+                });
 
-      // Apply IEC 104 t0 as the TCP connection-establishment timeout. Clamp to int millis because
-      // CONNECT_TIMEOUT_MILLIS is an int; the config guarantees a positive Duration.
-      int connectTimeoutMillis =
-          (int) Math.min(config.connectTimeout().toMillis(), Integer.MAX_VALUE);
+    config.bootstrapCustomizerOptional().ifPresent(customizer -> customizer.accept(bootstrap));
 
-      Bootstrap bootstrap =
-          new Bootstrap()
-              .group(eventLoopGroup)
-              .channel(NioSocketChannel.class)
-              .option(ChannelOption.TCP_NODELAY, true)
-              .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis)
-              .handler(
-                  new ChannelInitializer<>() {
-                    @Override
-                    protected void initChannel(Channel channel) {
-                      currentChannel = channel;
-                      Iec104Pipeline.configure(
-                          channel,
-                          config.tlsOptionsOptional().orElse(null),
-                          true,
-                          listener::get,
-                          config.host(),
-                          config.port(),
-                          config.frameDecoderFactoryOptional().orElse(null));
-                    }
-                  });
+    InetSocketAddress remote = InetSocketAddress.createUnresolved(config.host(), config.port());
 
-      config.bootstrapCustomizerOptional().ifPresent(customizer -> customizer.accept(bootstrap));
+    ChannelFuture connectFuture =
+        config.localBindOptional().isPresent()
+            ? bootstrap.connect(remote, config.localBindOptional().get())
+            : bootstrap.connect(remote);
+    Channel attemptChannel = connectFuture.channel();
+    attempt.channel = attemptChannel;
 
-      InetSocketAddress remote = InetSocketAddress.createUnresolved(config.host(), config.port());
+    connectFuture.addListener(
+        f -> {
+          if (!f.isSuccess()) {
+            finish(attempt, null, f.cause());
+            return;
+          }
 
-      ChannelFuture connectFuture =
-          config.localBindOptional().isPresent()
-              ? bootstrap.connect(remote, config.localBindOptional().get())
-              : bootstrap.connect(remote);
+          Channel ch = connectFuture.channel();
+          SslHandler sslHandler = ch.pipeline().get(SslHandler.class);
 
-      connectFuture.addListener(
-          f -> {
-            if (!f.isSuccess()) {
-              future.completeExceptionally(f.cause());
-              return;
-            }
+          // ChannelPipeline.get(Class) returns null when no such handler is installed; the
+          // SslHandler is only present when TLS is configured. The IDE infers non-null from the
+          // unannotated generic return, so suppress the false "always false" report.
+          //noinspection ConstantValue
+          if (sslHandler == null) {
+            finish(attempt, ch, null);
+          } else {
+            sslHandler
+                .handshakeFuture()
+                .addListener(
+                    h -> {
+                      if (h.isSuccess()) {
+                        LOGGER.debug("TLS handshake complete on {}", ch);
+                        finish(attempt, ch, null);
+                      } else {
+                        LOGGER.debug("TLS handshake failed on {}: {}", ch, h.cause().toString());
+                        finish(attempt, null, h.cause());
+                      }
+                    });
+          }
+        });
 
-            Channel channel = connectFuture.channel();
-            SslHandler sslHandler = channel.pipeline().get(SslHandler.class);
+    if (attempt.aborted) {
+      // disconnect() ran before the channel existed; close it now rather than wait for t0.
+      attemptChannel.close();
+    }
+  }
 
-            // ChannelPipeline.get(Class) returns null when no such handler is installed; the
-            // SslHandler is only present when TLS is configured. The IDE infers non-null from the
-            // unannotated generic return, so suppress the false "always false" report.
-            //noinspection ConstantValue
-            if (sslHandler == null) {
-              future.complete(channel);
-            } else {
-              awaitHandshake(channel, sslHandler, future);
-            }
-          });
-
-      return future;
+  /**
+   * Completes an attempt, installing its channel as the established connection unless the attempt
+   * was aborted or failed.
+   *
+   * @param attempt the attempt to complete.
+   * @param ch the connected channel, or {@code null} if the attempt failed.
+   * @param cause the failure, or {@code null} if the attempt succeeded.
+   */
+  private void finish(Attempt attempt, @Nullable Channel ch, @Nullable Throwable cause) {
+    boolean accepted;
+    synchronized (lock) {
+      boolean current = pending == attempt;
+      if (current) {
+        pending = null;
+      }
+      accepted = current && ch != null && cause == null;
+      if (accepted) {
+        channel = ch;
+      }
     }
 
-    @Override
-    public CompletableFuture<Void> disconnect(FsmContext<State, Event> ctx, Channel channel) {
-      CompletableFuture<Void> future = new CompletableFuture<>();
-
-      // CompletableFuture<Void> can only be completed with null; the @NotNull on complete()
-      // does not apply to a Void result.
+    if (accepted) {
+      // CompletableFuture<Void> can only be completed with null; the @NotNull on complete() does
+      // not apply to a Void result.
       //noinspection DataFlowIssue
-      channel.close().addListener(f -> future.complete(null));
-
-      return future;
+      attempt.future.complete(null);
+      return;
     }
+    Channel attemptChannel = ch != null ? ch : attempt.channel;
+    if (attemptChannel != null) {
+      attemptChannel.close();
+    }
+    attempt.future.completeExceptionally(
+        cause != null ? cause : new ConnectionClosedException("connect aborted"));
+  }
 
-    /**
-     * Completes {@code future} only after the TLS handshake on {@code channel} succeeds.
-     *
-     * @param channel the connected channel.
-     * @param sslHandler the channel's SSL handler.
-     * @param future the future to complete with the ready channel or the handshake failure.
-     */
-    private void awaitHandshake(
-        Channel channel, SslHandler sslHandler, CompletableFuture<Channel> future) {
+  /** One connection attempt and the stage its callers wait on. */
+  private static final class Attempt {
 
-      Future<Channel> handshakeFuture = sslHandler.handshakeFuture();
-      handshakeFuture.addListener(
-          f -> {
-            if (f.isSuccess()) {
-              LOGGER.debug("TLS handshake complete on {}", channel);
-              future.complete(channel);
-            } else {
-              LOGGER.debug("TLS handshake failed on {}: {}", channel, f.cause().toString());
-              channel.close();
-              future.completeExceptionally(f.cause());
-            }
-          });
+    private final CompletableFuture<Void> future = new CompletableFuture<>();
+
+    /** The attempt's channel, set once the bootstrap has created it. */
+    private volatile @Nullable Channel channel;
+
+    /** Set when {@link #disconnect()} aborted this attempt. */
+    private volatile boolean aborted;
+
+    /** Fails the attempt and closes its channel, if it has one yet. */
+    private void abort() {
+      aborted = true;
+      future.completeExceptionally(new ConnectionClosedException("connect aborted"));
+      Channel ch = channel;
+      if (ch != null) {
+        ch.close();
+      }
     }
   }
 }

@@ -261,9 +261,9 @@ public final class Cs104Binding {
             // framing error (bad START/length/control field, or a body that does not fit the frame
             // format) leaves the byte stream or the APCI untrustworthy: route it to the SAME sink a
             // real transport loss uses (Session.Events.onConnectionLost) and tear the underlying
-            // connection down. On the client side closeConnection() leaves persistent transports
-            // free to reconnect; on the server side close() tears down only the accepted
-            // connection.
+            // connection down. On the client side closeConnection() drops only the current
+            // connection, and the facade reconnects per its policy; on the server side close()
+            // tears down only the accepted connection.
             //
             // Once the control field is known, an I-frame whose ASDU cannot be decoded still has a
             // valid N(S)/N(R). Under REPORT_AND_CONTINUE the session runs its sequence checks,

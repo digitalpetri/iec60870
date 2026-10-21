@@ -3,13 +3,16 @@ package com.digitalpetri.iec60870.test.integration;
 import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.ConnectionState;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
@@ -35,43 +38,35 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Real-Netty integration test that proves a {@link TcpIec104Client} automatically re-establishes
- * its session after an <em>unsolicited</em> mid-session transport drop, exercising the persistent
- * {@code ChannelFsm} reconnect path end-to-end over a loopback {@link TcpIec104Server}.
+ * Real-Netty integration test that proves a {@link TcpIec104Client} re-establishes its connection
+ * and its session on its own after an <em>unsolicited</em> mid-session transport drop, over a
+ * loopback {@link TcpIec104Server}.
  *
- * <p>This guards the regression where {@code DefaultIec60870Client.SessionEvents.onConnectionLost}
- * must publish {@link ClientEvent.ConnectionClosed} without calling {@code transport.disconnect()}:
- * disconnecting would fire {@code Event.Disconnect} on the persistent FSM and permanently stop
- * reconnection. Only a protocol self-close ({@code close()}/{@code onSessionClose}) is allowed to
- * disconnect the transport. So if the regression returns, the client never reconnects and this test
- * fails at the "second ConnectionOpened" await.
+ * <p>The client owns reconnect: after the drop it publishes {@link ClientEvent.DataTransferStopped}
+ * and {@link ClientEvent.ConnectionClosed} with a cause, schedules an attempt per its {@link
+ * ReconnectPolicy}, and on the new connection resets V(S) and V(R), runs STARTDT, and publishes
+ * {@link ClientEvent.ConnectionOpened} and {@link ClientEvent.DataTransferStarted}, all without
+ * another {@code connect()} call.
  *
  * <p>The drop is induced without any production-only API: the server builder's {@code
  * serverBootstrapCustomizer} installs an acceptor-level (parent-channel) handler that captures
- * every freshly accepted child {@link Channel} into a test-held {@link ChannelGroup}. The IEC
- * pipeline is configured by the transport via {@code childHandler}, which the customizer leaves
- * untouched (it only sets {@code handler(...)} and {@code childOption(...)}), so capturing channels
- * does not break the server. Mid-session the test closes the captured child channel(s) with {@code
- * SO_LINGER=0} (hard RST), simulating a peer drop while the listening socket stays bound so the FSM
- * can reconnect to the same port.
+ * every freshly accepted child {@link Channel} into a test-held {@link ChannelGroup}. Mid-session
+ * the test closes the captured child channel(s) with {@code SO_LINGER=0} (hard RST), simulating a
+ * peer drop while the listening socket stays bound so the client can reconnect to the same port.
  *
- * <p>NON-FLAKY discipline: the test asserts outcomes and event <em>ordering/counts</em>, never
- * durations. The netty-channel-fsm reconnect backoff is not tunable through any public API; it
- * starts at roughly one second, so the wait is simply bounded generously. A later phase that
- * introduces a virtual clock can make the timing deterministic; until then a real ~1s first retry
- * plus a generous settle deadline is the accepted approach.
+ * <p>The test asserts outcomes and event ordering, never durations. A short reconnect delay keeps
+ * the wait brief.
  */
 class ReconnectIntegrationTest {
 
   private static final CommonAddress STATION = CommonAddress.of(1);
   private static final PointAddress SINGLE_POINT = PointAddress.of(1, 100);
 
-  /**
-   * Generous deadline for the FSM to notice the drop and complete a reconnect + STARTDT round trip.
-   * The first reconnect attempt fires after ~1s (exponential backoff start) and is not shortenable
-   * via any public knob, so this is deliberately well above {@link Await#DEFAULT_TIMEOUT}.
-   */
+  /** Generous deadline for the client to notice the drop and complete a reconnect. */
   private static final Duration RECONNECT_TIMEOUT = Duration.ofSeconds(20);
+
+  private static final ReconnectPolicy FAST_RECONNECT =
+      ReconnectPolicy.exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(1));
 
   private final ChannelGroup acceptedChildChannels =
       new DefaultChannelGroup("accepted-children", GlobalEventExecutor.INSTANCE);
@@ -118,52 +113,36 @@ class ReconnectIntegrationTest {
     // 2. Abruptly drop the established connection from the server side, with NO graceful STOPDT.
     // Closing the captured child channel (SO_LINGER=0 was set on the child, so this is a hard RST)
     // simulates a peer/transport drop. The listening (acceptor) channel is left bound, so the
-    // server keeps accepting and the client's persistent FSM can reconnect to the same port.
+    // server keeps accepting and the client can reconnect to the same port.
     acceptedChildChannels.close().awaitUninterruptibly();
 
-    // 3a. The client must observe ConnectionClosed for the unsolicited drop. There is no distinct
-    // ConnectionLost event: a transport-level loss maps to ConnectionClosed (with a cause present).
-    // This is routed through Session.Events.onConnectionLost, which the regression fix kept free of
-    // transport.disconnect().
+    // 3. The client observes the drop: DataTransferStopped, then ConnectionClosed with a cause,
+    // then a scheduled reconnect.
     awaitCount(
         "ConnectionClosed after unsolicited drop",
         () -> count(events, ClientEvent.ConnectionClosed.class) >= 1,
         RECONNECT_TIMEOUT);
-
-    // 3b. THE load-bearing reconnect proof. The persistent, non-lazy ChannelFsm must transition
-    // ChannelInactive -> ReconnectWait -> Reconnecting -> Connected on its own, WITHOUT the test
-    // calling connect() again. isConnected() reflects FSM State.Connected (NettyClientTransport),
-    // so its flipping back to true is direct evidence the FSM was left free to reconnect the TCP
-    // socket. If the regression returns (onConnectionLost calls transport.disconnect()), the FSM
-    // fires Event.Disconnect, parks in Idle/NotConnected, and isConnected() stays false forever ->
-    // this await times out and the test fails. We first confirm it actually went down, then that it
-    // came back up by itself, so a never-dropped connection cannot trivially satisfy the assertion.
+    assertTrue(
+        events.hasMatch(ClientEvent.ConnectionClosed.class, c -> c.cause() != null),
+        "an unplanned close carries a cause");
     awaitCount(
-        "transport observed the drop (FSM left Connected)",
-        () -> !client.isConnected(),
+        "ReconnectScheduled after the drop",
+        () -> events.hasMatch(ClientEvent.ReconnectScheduled.class, r -> r.attempt() == 1),
+        RECONNECT_TIMEOUT);
+    assertStoppedBeforeClosed(events);
+
+    // 4. THE load-bearing reconnect proof: with no further connect() call, the client dials a new
+    // connection, re-arms the session, and runs STARTDT.
+    awaitCount(
+        "a second ConnectionOpened without an application call",
+        () -> count(events, ClientEvent.ConnectionOpened.class) >= 2,
         RECONNECT_TIMEOUT);
     awaitCount(
-        "ChannelFsm auto-reconnected the socket (back to State.Connected) without an explicit "
-            + "connect() — proves onConnectionLost did NOT disconnect the persistent transport",
-        client::isConnected,
+        "a second DataTransferStarted without an application call (STARTDT re-ran)",
+        () -> count(events, ClientEvent.DataTransferStarted.class) >= 2,
         RECONNECT_TIMEOUT);
-
-    // 4. Prove RESUME end-to-end on the FSM-reconnected socket. The application layer re-arms the
-    // IEC session (onConnected + STARTDT + a fresh ConnectionOpened) on the next connect(); because
-    // the FSM is already Connected, this connect() reuses the auto-reconnected channel rather than
-    // dialing a new one, so the round trip below runs over the reconnected socket. A successful
-    // interrogation proves V(S)/V(R) were reset and data transfer resumed on the fresh session.
-    int opensBefore = count(events, ClientEvent.ConnectionOpened.class);
-    int startsBefore = count(events, ClientEvent.DataTransferStarted.class);
-    client.connect();
-    awaitCount(
-        "a second ConnectionOpened after the reconnect (fresh IEC session armed)",
-        () -> count(events, ClientEvent.ConnectionOpened.class) > opensBefore,
-        Await.DEFAULT_TIMEOUT);
-    awaitCount(
-        "a second DataTransferStarted after the reconnect (STARTDT re-ran)",
-        () -> count(events, ClientEvent.DataTransferStarted.class) > startsBefore,
-        Await.DEFAULT_TIMEOUT);
+    awaitCount("client reports CONNECTED again", client::isConnected, RECONNECT_TIMEOUT);
+    assertEquals(ConnectionState.CONNECTED, client.connectionState());
 
     // Event ordering: the post-reconnect ConnectionOpened must follow the ConnectionClosed from
     // the drop, proving the reopen is a genuine reconnect rather than a stale duplicate of the
@@ -188,6 +167,20 @@ class ReconnectIntegrationTest {
         "a fresh PointUpdated should have arrived after the reconnect");
 
     assertTrue(client.isConnected(), "client should be connected again after the auto-reconnect");
+  }
+
+  /** Asserts that DataTransferStopped is published before the first ConnectionClosed. */
+  private static void assertStoppedBeforeClosed(EventCollector events) {
+    boolean stopped = false;
+    for (ClientEvent event : events.events()) {
+      if (event instanceof ClientEvent.DataTransferStopped) {
+        stopped = true;
+      } else if (event instanceof ClientEvent.ConnectionClosed) {
+        assertTrue(stopped, "DataTransferStopped must precede ConnectionClosed");
+        return;
+      }
+    }
+    fail("expected a ConnectionClosed in the recorded events");
   }
 
   /**
@@ -304,6 +297,7 @@ class ReconnectIntegrationTest {
             .host("127.0.0.1")
             .port(port)
             .startDataTransferOnConnect(true)
+            .reconnectPolicy(FAST_RECONNECT)
             .build();
 
     EventCollector events = new EventCollector();

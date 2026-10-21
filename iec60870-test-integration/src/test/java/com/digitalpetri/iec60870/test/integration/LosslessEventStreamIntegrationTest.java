@@ -25,6 +25,7 @@ import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import com.digitalpetri.iec60870.session.Session;
@@ -190,7 +191,13 @@ class LosslessEventStreamIntegrationTest {
             Duration.ofSeconds(1),
             Duration.ofSeconds(20));
     startOutstation(fastTimers);
-    Iec60870Client client = build(TcpIec104Client.builder().apci(fastTimers).eventBacklogLimit(64));
+    // Reconnect is off so the close is the last event: no later connection's events follow it.
+    Iec60870Client client =
+        build(
+            TcpIec104Client.builder()
+                .apci(fastTimers)
+                .eventBacklogLimit(64)
+                .reconnectPolicy(ReconnectPolicy.disabled()));
     var stalled = new CountDownLatch(1);
     // Teardown runs in reverse order, so a failed test releases the subscriber before closing.
     closeables.add(stalled::countDown);

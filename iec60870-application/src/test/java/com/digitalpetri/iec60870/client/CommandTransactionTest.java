@@ -457,7 +457,10 @@ class CommandTransactionTest {
             })) {
       LockingSession session = requireNonNull(sessionRef.get());
       session.failNextConnect = true;
-      assertFailure(client.connectAsync().toCompletableFuture(), IllegalStateException.class);
+      Throwable failure =
+          assertFailure(
+              client.connectAsync().toCompletableFuture(), ConnectionClosedException.class);
+      assertInstanceOf(IllegalStateException.class, failure.getCause());
       client.connect();
       CompletableFuture<CommandResult> result =
           client
@@ -620,10 +623,10 @@ class CommandTransactionTest {
         request.objects());
   }
 
-  private static void assertFailure(CompletableFuture<?> future, Class<? extends Throwable> type) {
+  private static <T extends Throwable> T assertFailure(CompletableFuture<?> future, Class<T> type) {
     assertTrue(future.isDone(), "operation must have completed");
     CompletionException error = assertThrows(CompletionException.class, future::join);
-    assertInstanceOf(type, error.getCause());
+    return assertInstanceOf(type, error.getCause());
   }
 
   private static final class QueuedExecutor implements Executor {

@@ -14,6 +14,7 @@ import com.digitalpetri.iec60870.asdu.element.QualifierOfInterrogation;
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import eu.rekawek.toxiproxy.Proxy;
@@ -65,8 +66,8 @@ import org.testcontainers.utility.DockerImageName;
  * peer. The client always targets a single, <em>stable</em> proxy port; the peer is reachable from
  * the proxy through the fixed network alias {@code peer}. This indirection is what makes a
  * peer-restart test robust: a restarted container gets a brand-new Docker-mapped port, but the
- * proxy's listen port never changes, so the client's persistent transport FSM can transparently
- * reconnect to the same endpoint after the peer comes back.
+ * proxy's listen port never changes, so the client can reconnect to the same endpoint on its own
+ * after the peer comes back.
  *
  * <h2>Non-flaky discipline</h2>
  *
@@ -111,6 +112,10 @@ class AbnormalClientVsLib60870ServerInteropTest {
 
   /** Generous outcome-wait deadline; nothing here asserts on exact timing. */
   private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
+
+  /** Short backoff so recovery is observed well inside {@link #WAIT_TIMEOUT}. */
+  private static final ReconnectPolicy FAST_RECONNECT =
+      ReconnectPolicy.exponentialBackoff(Duration.ofMillis(200), Duration.ofSeconds(2));
 
   /** Built once; the Dockerfile/clone/build is cached after the first scenario. */
   private static final ImageFromDockerfile PEER_IMAGE =
@@ -270,14 +275,12 @@ class AbnormalClientVsLib60870ServerInteropTest {
     this.peer = null;
 
     // Bring a fresh peer up on the SAME network alias; the proxy's stable listen port now reaches
-    // it. The persistent transport FSM auto-reconnects TCP, but STARTDT is only re-driven by an
-    // explicit connect(), so we re-connect and assert a fresh interrogation round-trips.
+    // it. The client keeps retrying on its own and runs STARTDT on the new connection, with no
+    // further connect() call.
     GenericContainer<?> secondPeer = startPeer();
     log.info("second peer started on alias {}", PEER_ALIAS);
 
-    // Re-run connect() (re-establishing data transfer) against the same proxy endpoint. Retry to
-    // absorb the brief window where the proxy upstream is still re-resolving to the new container.
-    awaitReconnected(client, WAIT_TIMEOUT);
+    awaitReconnected(client, events, WAIT_TIMEOUT);
 
     InterrogationResult after = client.interrogate(STATION, QualifierOfInterrogation.STATION);
     assertTrue(after.terminated(), "post-restart interrogation must terminate (ACT_TERM)");
@@ -291,7 +294,7 @@ class AbnormalClientVsLib60870ServerInteropTest {
   // --- #4: half-open stall via Toxiproxy timeout toxic ------------------------------------------
 
   @Test
-  @DisplayName("#4 Half-open stall: a frozen link trips t1 and the client closes the connection")
+  @DisplayName("#4 Half-open stall: a frozen link trips t1, then the client recovers on its own")
   void halfOpenStallTripsT1() throws Exception {
     startPeer();
     Proxy proxy = createProxy("half-open-stall");
@@ -334,6 +337,15 @@ class AbnormalClientVsLib60870ServerInteropTest {
     } catch (TimeoutException e) {
       fail("stalled request neither completed nor failed within " + WAIT_TIMEOUT);
     }
+
+    // Thaw the link: the client, which has kept retrying, reconnects and resumes on its own.
+    proxy.toxics().get("freeze-up").remove();
+    proxy.toxics().get("freeze-down").remove();
+    log.info("toxiproxy timeout toxics removed");
+
+    awaitReconnected(client, events, WAIT_TIMEOUT);
+    InterrogationResult after = client.interrogate(STATION, QualifierOfInterrogation.STATION);
+    assertTrue(after.terminated(), "post-recovery interrogation must terminate (ACT_TERM)");
   }
 
   // --- helpers ----------------------------------------------------------------------------------
@@ -377,6 +389,7 @@ class AbnormalClientVsLib60870ServerInteropTest {
             .apci(apci)
             .originatorAddress(OriginatorAddress.of(3))
             .startDataTransferOnConnect(true)
+            .reconnectPolicy(FAST_RECONNECT)
             .build();
     c.events().subscribe(events);
     c.connect();
@@ -386,30 +399,26 @@ class AbnormalClientVsLib60870ServerInteropTest {
   }
 
   /**
-   * Re-drives {@link Iec60870Client#connect()} until it succeeds (the persistent transport may need
-   * a few attempts while the proxy upstream re-resolves to the restarted peer), bounded by {@code
-   * timeout}.
+   * Waits, without calling {@link Iec60870Client#connect()}, until the client has reconnected on
+   * its own and started data transfer on the new connection, bounded by {@code timeout}.
    */
-  private static void awaitReconnected(Iec60870Client client, Duration timeout) {
+  private static void awaitReconnected(
+      Iec60870Client client, EventRecorder events, Duration timeout) {
+    ClientEvent.DataTransferStarted started =
+        events.await(ClientEvent.DataTransferStarted.class, e -> true, timeout);
+    assertNotNull(started, "client did not reconnect within " + timeout);
     long deadline = System.nanoTime() + timeout.toNanos();
-    RuntimeException last = null;
-    while (System.nanoTime() < deadline) {
-      try {
-        client.connect();
-        if (client.isConnected()) {
-          return;
-        }
-      } catch (RuntimeException e) {
-        last = e;
+    while (!client.isConnected()) {
+      if (System.nanoTime() > deadline) {
+        fail("client did not report connected within " + timeout);
       }
       try {
-        TimeUnit.MILLISECONDS.sleep(500);
+        TimeUnit.MILLISECONDS.sleep(50);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
-        break;
+        throw new AssertionError(e);
       }
     }
-    throw new AssertionError("client did not reconnect within " + timeout, last);
   }
 
   private Network requireNetwork() {

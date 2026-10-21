@@ -7,6 +7,7 @@ import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.cs101.Cs101Binding;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.transport.tcp.Ft12FrameDecoder;
@@ -93,6 +94,7 @@ public final class TcpIec101Client {
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable Executor callbackExecutor;
     private int eventBacklogLimit = ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT;
+    private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
@@ -192,8 +194,9 @@ public final class TcpIec101Client {
     }
 
     /**
-     * Sets whether {@link Iec60870Client#connect()} also starts data transfer by driving the FT1.2
-     * link-reset bring-up. Defaults to {@code true}.
+     * Sets whether every connection the client establishes, through {@link
+     * Iec60870Client#connect()} or an automatic reconnect, also starts data transfer by driving the
+     * FT1.2 link-reset bring-up. Defaults to {@code true}.
      *
      * @param startDataTransferOnConnect whether to start data transfer on connect.
      * @return this builder.
@@ -262,6 +265,21 @@ public final class TcpIec101Client {
     }
 
     /**
+     * Sets when the client reconnects after a lost connection or a failed attempt. Defaults to
+     * {@link ReconnectPolicy#defaults()}: exponential backoff from one second up to 32 seconds.
+     *
+     * <p>Every automatic attempt runs the same initialization as {@link Iec60870Client#connect()}.
+     * Use {@link ReconnectPolicy#disabled()} to leave reconnecting to the application.
+     *
+     * @param reconnectPolicy the reconnect policy.
+     * @return this builder.
+     */
+    public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+      this.reconnectPolicy = Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
+      return this;
+    }
+
+    /**
      * Sets an externally-owned {@link EventLoopGroup} for the transport to use.
      *
      * <p>When supplied, the caller retains ownership; the transport does not shut it down.
@@ -321,6 +339,7 @@ public final class TcpIec101Client {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }
       clientConfigBuilder.eventBacklogLimit(eventBacklogLimit);
+      clientConfigBuilder.reconnectPolicy(reconnectPolicy);
 
       // The builder is the sole 101-over-TCP assembly point but holds no Ft12Frame<->octet wiring
       // itself: it delegates the full Ft12LinkLayer + framing assembly to Cs101Binding.

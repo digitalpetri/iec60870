@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.test.integration;
 
 import static java.util.Objects.requireNonNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,7 +9,9 @@ import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.ConnectionState;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
 import com.digitalpetri.iec60870.point.PointValue;
@@ -27,39 +30,29 @@ import io.netty.util.concurrent.GlobalEventExecutor;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
  * Real-Netty integration test for the protocol self-close path of {@link TcpIec104Client}: a
- * protocol error detected by the client's {@code ApciSession} must close the connection AND
- * suppress reconnection, in direct contrast to an unsolicited transport drop (which {@link
- * ReconnectIntegrationTest} proves DOES reconnect).
+ * protocol error detected by the client's {@code ApciSession} closes the connection, and the client
+ * then recovers according to its {@link ReconnectPolicy}, like after any other unplanned loss.
  *
- * <p>This is the inverse of the reconnect regression guard. A protocol self-close routes through
- * {@code Session.Events.onClosed}, which DOES call {@code transport.disconnect()}; that fires
- * {@code Event.Disconnect} on the persistent {@code ChannelFsm}, taking it permanently out of the
- * reconnect loop. So after the self-close NO second {@code ConnectionOpened} ever follows. An
- * unsolicited drop, by contrast, routes through {@code onConnectionLost}, which does not
- * disconnect, and the FSM reconnects.
+ * <p>The protocol error is induced deterministically: after data transfer has started, the test
+ * injects a raw, well-formed S-format frame carrying an impossible acknowledgement N(R) directly
+ * onto the wire from the captured server-side child channel. The client has sent no I-frames, so a
+ * non-zero N(R) is an invalid acknowledgement and {@code ApciSession} self-closes with a {@link
+ * SequenceNumberException}.
  *
- * <p>The protocol error is induced deterministically (event-driven, NOT clock-driven): after data
- * transfer has started, the test injects a raw, well-formed S-format frame carrying an impossible
- * acknowledgement N(R) directly onto the wire from the captured server-side child channel. Because
- * the transport's outbound path is a raw {@code ByteBuf} write with no encoder (see {@code
- * Iec104Pipeline}), writing the bytes to the child channel puts them straight on the socket. The
- * client has sent no I-frames (it only performed STARTDT), so it has zero outstanding frames; a
- * non-zero N(R) is therefore an invalid acknowledgement and {@code ApciSession} self-closes with a
- * {@link SequenceNumberException}.
- *
- * <p>NON-FLAKY discipline: the close is triggered by a frame the test injects, not by any timer, so
- * the failure is deterministic. The only timing element is the inverse assertion — that NO
- * reconnect occurs — which is bounded by a GENEROUS settle window well beyond the ~1s first
- * reconnect backoff that the positive reconnect test relies on. Assertions are on event
- * presence/counts and connection state, never on durations.
+ * <p>With the default policy the client reconnects on its own. With {@link
+ * ReconnectPolicy#disabled()} it stays disconnected, opens no TCP connection by itself, and a later
+ * {@code connect()} succeeds on a new connection, also with the transport's private event loop
+ * group.
  */
-class SelfCloseNoReconnectIntegrationTest {
+class ProtocolSelfCloseIntegrationTest {
 
   private static final CommonAddress STATION = CommonAddress.of(1);
   private static final PointAddress SINGLE_POINT = PointAddress.of(1, 100);
@@ -67,15 +60,13 @@ class SelfCloseNoReconnectIntegrationTest {
   /** An acknowledgement N(R) the client cannot possibly expect (it has 0 outstanding I-frames). */
   private static final int IMPOSSIBLE_NR = 5000;
 
-  /**
-   * A generous window over which to confirm NO reconnect happens. It is well beyond the ~1s first
-   * reconnect backoff that {@link ReconnectIntegrationTest} relies on, so a reconnect (if the
-   * suppression regressed) would have occurred within it.
-   */
-  private static final Duration NO_RECONNECT_SETTLE = Duration.ofSeconds(5);
+  /** A window over which to confirm that no connection is opened without connect(). */
+  private static final Duration NO_RECONNECT_SETTLE = Duration.ofSeconds(3);
 
   private final ChannelGroup acceptedChildChannels =
       new DefaultChannelGroup("accepted-children", GlobalEventExecutor.INSTANCE);
+
+  private final AtomicInteger acceptedConnections = new AtomicInteger();
 
   private @Nullable Iec60870Server server;
   private @Nullable Iec60870Client client;
@@ -91,90 +82,84 @@ class SelfCloseNoReconnectIntegrationTest {
   }
 
   @Test
-  void protocolSelfCloseClosesWithCauseAndDoesNotReconnect() throws Exception {
-    int port = reserveEphemeralPort();
-    EventCollector events = startServerAndClient(port);
+  void protocolSelfCloseReconnectsPerPolicy() throws Exception {
+    EventCollector events =
+        startServerAndClient(
+            ReconnectPolicy.exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(1)));
     Iec60870Client client = requireNonNull(this.client);
 
-    // 1. Establish the session and confirm data transfer started.
     client.connect();
-    assertTrue(client.isConnected(), "client should be connected after connect()");
-    awaitWithin(
-        "DataTransferStarted",
-        () -> count(events, ClientEvent.DataTransferStarted.class) >= 1,
-        Await.DEFAULT_TIMEOUT);
-    int opensAfterConnect = count(events, ClientEvent.ConnectionOpened.class);
+    injectImpossibleAck();
 
-    Channel child =
-        acceptedChildChannels.stream()
-            .filter(Channel::isActive)
-            .findFirst()
-            .orElseThrow(() -> new AssertionError("no active captured server-side child channel"));
-
-    // 2. Inject a well-formed S-frame with an impossible acknowledgement N(R) straight onto the
-    // wire.
-    // The client has 0 outstanding I-frames, so this is an invalid acknowledgement and the session
-    // self-closes with a SequenceNumberException. This is deterministic: it fires on receipt of the
-    // frame, not on any clock.
-    child.writeAndFlush(sFrameWithBadAck(child, IMPOSSIBLE_NR)).awaitUninterruptibly();
-
-    // 3a. The client must observe ConnectionClosed whose cause is the protocol
-    // SequenceNumberException.
     awaitWithin(
         "ConnectionClosed carrying the protocol SequenceNumberException cause",
         () ->
             events.hasMatch(
                 ClientEvent.ConnectionClosed.class,
-                c -> c.causeOptional().orElse(null) instanceof SequenceNumberException),
+                c -> c.cause() instanceof SequenceNumberException),
         Await.DEFAULT_TIMEOUT);
-
-    // 3b. THE load-bearing inverse assertion. The protocol self-close called
-    // transport.disconnect(), so the persistent FSM is OUT of the reconnect loop: over a generous
-    // settle window NO second ConnectionOpened appears and the client stays disconnected. Contrast
-    // ReconnectIntegrationTest, which asserts the OPPOSITE for an unsolicited drop.
     awaitWithin(
-        "transport observed the self-close (FSM left Connected)",
-        () -> !client.isConnected(),
+        "ReconnectScheduled carrying the protocol cause",
+        () ->
+            events.hasMatch(
+                ClientEvent.ReconnectScheduled.class,
+                r -> r.cause() instanceof SequenceNumberException),
         Await.DEFAULT_TIMEOUT);
-    assertNoSecondOpenWithin(events, opensAfterConnect, NO_RECONNECT_SETTLE);
-    assertFalse(
-        client.isConnected(), "after a protocol self-close the FSM must stay down (no reconnect)");
-    assertExactlyOneClose(events);
+    awaitWithin(
+        "a second ConnectionOpened and DataTransferStarted without connect()",
+        () ->
+            count(events, ClientEvent.ConnectionOpened.class) == 2
+                && count(events, ClientEvent.DataTransferStarted.class) == 2,
+        Await.DEFAULT_TIMEOUT);
+    awaitWithin("client reconnected", client::isConnected, Await.DEFAULT_TIMEOUT);
+    assertEquals(2, acceptedConnections.get(), "the reconnect used a new TCP connection");
+    assertTrue(client.interrogate(STATION).terminated());
   }
 
-  /**
-   * Asserts that no further {@link ClientEvent.ConnectionOpened} is published beyond {@code
-   * opensBefore} for the full settle window — proving reconnection was suppressed.
-   */
-  private static void assertNoSecondOpenWithin(
-      EventCollector events, int opensBefore, Duration settle) {
-    long deadline = System.nanoTime() + settle.toNanos();
-    while (System.nanoTime() < deadline) {
-      int opens = count(events, ClientEvent.ConnectionOpened.class);
-      if (opens > opensBefore) {
-        throw new AssertionError(
-            "a second ConnectionOpened appeared after a protocol self-close (reconnect was not "
-                + "suppressed): opens="
-                + opens
-                + ", expected to stay at "
-                + opensBefore);
-      }
-      try {
-        //noinspection BusyWait
-        Thread.sleep(20);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new AssertionError("interrupted while settling for no-reconnect", e);
-      }
-    }
+  @Test
+  void withReconnectDisabledConnectAfterASelfCloseOpensANewConnection() throws Exception {
+    EventCollector events = startServerAndClient(ReconnectPolicy.disabled());
+    Iec60870Client client = requireNonNull(this.client);
+
+    client.connect();
+    injectImpossibleAck();
+
+    awaitWithin(
+        "ConnectionClosed carrying the protocol SequenceNumberException cause",
+        () ->
+            events.hasMatch(
+                ClientEvent.ConnectionClosed.class,
+                c -> c.cause() instanceof SequenceNumberException),
+        Await.DEFAULT_TIMEOUT);
+    assertEquals(ConnectionState.DISCONNECTED, client.connectionState());
+    assertFalse(client.isConnected());
+
+    // Long enough for the old private event loop group to have finished shutting down, and for a
+    // transport that redials on its own to have done so.
+    Thread.sleep(NO_RECONNECT_SETTLE.toMillis());
+    assertEquals(1, acceptedConnections.get(), "no TCP connection appears without connect()");
+    assertEquals(1, count(events, ClientEvent.ConnectionOpened.class));
+    assertFalse(events.hasAny(ClientEvent.ReconnectScheduled.class));
+
+    client.connect();
+
+    assertTrue(client.isConnected());
+    assertEquals(2, acceptedConnections.get(), "connect() dialed a new TCP connection");
+    awaitWithin(
+        "DataTransferStarted on the new connection",
+        () -> count(events, ClientEvent.DataTransferStarted.class) == 2,
+        Await.DEFAULT_TIMEOUT);
+    assertTrue(client.interrogate(STATION).terminated());
   }
 
-  /** Asserts exactly one ConnectionClosed was published for the single self-close. */
-  private static void assertExactlyOneClose(EventCollector events) {
-    int closes = count(events, ClientEvent.ConnectionClosed.class);
-    if (closes != 1) {
-      throw new AssertionError("expected exactly one ConnectionClosed, saw " + closes);
-    }
+  /** Writes an S-frame with an impossible N(R) from the server side of the active connection. */
+  private void injectImpossibleAck() {
+    Channel child =
+        acceptedChildChannels.stream()
+            .filter(Channel::isActive)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("no active captured server-side child channel"));
+    child.writeAndFlush(sFrameWithBadAck(child, IMPOSSIBLE_NR)).awaitUninterruptibly();
   }
 
   /**
@@ -196,7 +181,8 @@ class SelfCloseNoReconnectIntegrationTest {
     return frame;
   }
 
-  private EventCollector startServerAndClient(int port) {
+  private EventCollector startServerAndClient(ReconnectPolicy policy) throws IOException {
+    int port = reserveEphemeralPort();
     Station station =
         Station.builder(STATION)
             .point(
@@ -224,6 +210,7 @@ class SelfCloseNoReconnectIntegrationTest {
                               throws Exception {
                             if (msg instanceof Channel child) {
                               acceptedChildChannels.add(child);
+                              acceptedConnections.incrementAndGet();
                             }
                             super.channelRead(ctx, msg);
                           }
@@ -236,6 +223,7 @@ class SelfCloseNoReconnectIntegrationTest {
             .host("127.0.0.1")
             .port(port)
             .startDataTransferOnConnect(true)
+            .reconnectPolicy(policy)
             .build();
 
     EventCollector events = new EventCollector();
@@ -247,8 +235,7 @@ class SelfCloseNoReconnectIntegrationTest {
     return (int) events.events().stream().filter(type::isInstance).count();
   }
 
-  private static void awaitWithin(
-      String description, java.util.function.BooleanSupplier condition, Duration timeout) {
+  private static void awaitWithin(String description, BooleanSupplier condition, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
       if (condition.getAsBoolean()) {
