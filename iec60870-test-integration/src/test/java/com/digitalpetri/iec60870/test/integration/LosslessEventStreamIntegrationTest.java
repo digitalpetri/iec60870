@@ -36,6 +36,8 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.stream.Collectors;
 import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -145,6 +148,7 @@ class LosslessEventStreamIntegrationTest {
   void subscriberInterrogatingFromOnNextDoesNotDeadlockThePause() throws Exception {
     Iec60870Client client = client(builder -> {});
     var result = new AtomicReference<@Nullable InterrogationResult>();
+    var interrogationFailure = new AtomicReference<@Nullable RuntimeException>();
     OrderCheckingSubscriber slow =
         new OrderCheckingSubscriber(Duration.ZERO) {
           @Override
@@ -152,7 +156,12 @@ class LosslessEventStreamIntegrationTest {
             super.onNext(item);
             if (item instanceof ClientEvent.DataTransferStarted) {
               // The response is larger than the backlog limit and is read while this blocks.
-              result.set(client.interrogate(CA));
+              try {
+                result.set(client.interrogate(CA));
+              } catch (RuntimeException e) {
+                interrogationFailure.set(e);
+                throw e;
+              }
             }
           }
         };
@@ -160,6 +169,10 @@ class LosslessEventStreamIntegrationTest {
     client.connect();
 
     slow.awaitAll();
+    RuntimeException failure = interrogationFailure.get();
+    if (failure != null) {
+      fail("interrogate() from onNext failed", failure);
+    }
     assertEquals(GI_POINTS, requireNonNull(result.get()).objects().size());
     slow.assertComplete();
     assertNoClose(slow);
@@ -181,7 +194,7 @@ class LosslessEventStreamIntegrationTest {
     var stalled = new CountDownLatch(1);
     // Teardown runs in reverse order, so a failed test releases the subscriber before closing.
     closeables.add(stalled::countDown);
-    var events = new ArrayList<ClientEvent>();
+    List<ClientEvent> events = new CopyOnWriteArrayList<>();
     var closed = new CountDownLatch(1);
     client
         .events()
@@ -215,7 +228,9 @@ class LosslessEventStreamIntegrationTest {
     Thread.sleep(t1.multipliedBy(2).toMillis());
     stalled.countDown();
 
-    assertTrue(closed.await(30, TimeUnit.SECONDS), "ConnectionClosed delivered");
+    assertTrue(
+        closed.await(30, TimeUnit.SECONDS),
+        () -> "ConnectionClosed delivered; saw " + countByType(events));
     ClientEvent last = events.get(events.size() - 1);
     Throwable cause = assertInstanceOf(ClientEvent.ConnectionClosed.class, last).cause();
     assertInstanceOf(ProtocolTimeoutException.class, cause);
@@ -233,7 +248,16 @@ class LosslessEventStreamIntegrationTest {
     assertNoClose(slow);
   }
 
+  private static Map<String, Long> countByType(List<ClientEvent> events) {
+    return events.stream()
+        .collect(Collectors.groupingBy(e -> e.getClass().getSimpleName(), Collectors.counting()));
+  }
+
   private void assertNoClose(OrderCheckingSubscriber subscriber) {
+    Throwable closeCause = subscriber.closeCause;
+    if (closeCause != null) {
+      fail("client connection closed", closeCause);
+    }
     assertEquals(0, subscriber.closes.get(), "client connection stayed open");
     assertEquals(0, outstationCloses.get(), "outstation saw no t1 or other close");
     assertNull(outstationClose.get());
@@ -412,6 +436,8 @@ class LosslessEventStreamIntegrationTest {
     private int nextPointValue;
     private int maxObservedBacklog;
     private @Nullable String failure;
+    private @Nullable Throwable error;
+    private volatile @Nullable Throwable closeCause;
 
     private OrderCheckingSubscriber(Duration work) {
       this.workNanos = work.toNanos();
@@ -453,7 +479,8 @@ class LosslessEventStreamIntegrationTest {
         if (nextPointValue == GI_POINTS + BURST_POINTS) {
           done.countDown();
         }
-      } else if (item instanceof ClientEvent.ConnectionClosed) {
+      } else if (item instanceof ClientEvent.ConnectionClosed closed) {
+        closeCause = closed.cause();
         closes.incrementAndGet();
         done.countDown();
       }
@@ -484,6 +511,10 @@ class LosslessEventStreamIntegrationTest {
     }
 
     private void assertComplete() {
+      Throwable subscriberError = error;
+      if (subscriberError != null) {
+        fail("subscriber failed", subscriberError);
+      }
       assertNull(failure);
       assertEquals(GI_POINTS + BURST_POINTS, nextPointValue, "every PointUpdated arrived");
       assertEquals(GI_POINTS + BURST_POINTS, nextAsduValue, "every AsduReceived object arrived");
@@ -492,6 +523,7 @@ class LosslessEventStreamIntegrationTest {
 
     @Override
     public void onError(Throwable throwable) {
+      error = throwable;
       failure = "onError: " + throwable;
       done.countDown();
     }
