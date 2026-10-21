@@ -71,15 +71,15 @@ import org.junit.jupiter.api.Test;
  *       decoded and handed to the session, which self-closes with a {@link SequenceNumberException}
  *       routed through the facade as a {@link ClientEvent.ConnectionClosed} cause (and fails any
  *       pending request);
- *   <li>a <em>structurally invalid / undecodable</em> inbound frame fails inside {@link
- *       com.digitalpetri.iec60870.cs104.ApduFramer#decode} BEFORE the session is reached. The
- *       hardened {@code Cs104Binding} listener now guards the deframe: the decode failure does not
- *       escape back out the sender's stack — instead the session is closed and the decode cause is
- *       routed through {@code Session.Events.onConnectionLost} (client: surfaced as exactly one
- *       {@link ClientEvent.ConnectionClosed}; server: surfaced as a {@link
- *       ServerEvent.ConnectionClosed} plus a {@code connection.close()} teardown), reproducing on
- *       every transport the clean drop the Netty pipeline's {@code exceptionCaught} net already
- *       performed for TCP.
+ *   <li>a <em>structurally invalid</em> inbound frame (a framing error) fails inside {@link
+ *       com.digitalpetri.iec60870.cs104.ApduFramer#decodeHeader} BEFORE the session is reached. The
+ *       {@code Cs104Binding} listener closes the session and routes the decode cause through {@code
+ *       Session.Events.onConnectionLost} (client: surfaced as exactly one {@link
+ *       ClientEvent.ConnectionClosed}; server: surfaced as a {@link ServerEvent.ConnectionClosed}
+ *       plus a {@code connection.close()} teardown);
+ *   <li>a correctly framed I-frame whose <em>ASDU</em> cannot be decoded is acknowledged and
+ *       reported as an undecodable ASDU, and the connection stays open. The server answers an
+ *       undefined TypeID or cause with a negative mirror.
  * </ul>
  *
  * <p>All teardown calls {@link FaultInjectingOctetTransport#drainAndRelease()} and closes both
@@ -336,70 +336,113 @@ class ProtocolErrorFrameIntegrationTest {
 
   /**
    * CASE B — an inbound ASDU whose TypeID byte is UNDEFINED (no {@link AsduType} constant). The
-   * server's inbound decode fails in {@code Asdu.Serde.decode} via {@code AsduType.fromId},
-   * throwing an {@link UnsupportedAsduTypeException}. The hardened {@code Cs104Binding} listener
-   * now guards the deframe: instead of letting that exception unwind synchronously back out the
-   * CLIENT's send stack, the SERVER binding closes its session, routes the decode cause through
-   * {@code Session.Events.onConnectionLost} (surfaced as a server-side {@link
-   * ServerEvent.ConnectionClosed} carrying the {@code UnsupportedAsduTypeException}), and tears the
-   * accepted connection down via {@code connection.close()}.
-   *
-   * <p>The net new behavior: the client's triggering send no longer throws (the server swallows the
-   * decode failure), so the interrogation simply stays pending and the SERVER cleanly closes the
-   * connection with the decode cause. No negative mirror is emitted (decode fails before dispatch).
-   * On this in-JVM fault transport the connection close notifies only the server leg, so the client
-   * does not observe the loss here — the wire-level loss propagation is covered by the real-Netty
-   * close-path tests; this test pins the server-side clean teardown the binding now performs.
+   * frame is correctly framed, so the server session acknowledges it and reports the raw octets as
+   * a {@link ServerEvent.UndecodableAsdu} carrying the {@link UnsupportedAsduTypeException}. The
+   * server answers with the octets mirrored back NEGATIVE with cause {@code UNKNOWN_TYPE_ID} (IEC
+   * 60870-5-101 7.2.3), and neither side closes the connection. The client cannot decode the mirror
+   * either (its TypeID is still 41), so it reports it as a {@link ClientEvent.UndecodableAsdu}.
    */
   @Test
-  void serverUndecodableTypeIdClosesServerConnectionCleanlyAndIsNotMirrored() {
+  void serverMirrorsUndecodableTypeIdNegativeAndStaysConnected() {
     EventCollector events = startDefaultServerAndConnectedClient();
     DefaultIec60870Client client = requireNonNull(this.client);
 
-    // Rewrite the TypeID byte (frame byte 6) of the next client->server I-frame to 41, which is an
-    // undefined type identification, so AsduType.fromId throws UnsupportedAsduTypeException during
-    // the server's inbound decode.
+    // Rewrite the TypeID byte (frame byte 6) of the next client->server I-frame to 41, an undefined
+    // type identification. Hold and release it for the same reason as CASE A: the server's mirror
+    // is sent synchronously and must not overtake the client's V(S) increment.
+    fault.holdNext(CLIENT_TO_SERVER);
     fault.corruptNext(CLIENT_TO_SERVER, set(6, 41));
-
-    // The server binding now swallows the decode failure inside onFrame; the client's triggering
-    // send no longer throws, so the interrogation just stays pending.
     CompletableFuture<InterrogationResult> request =
         client.interrogateAsync(STATION).toCompletableFuture();
-    assertFalse(
-        request.isDone(),
-        "the interrogation stays pending: the decode failure no longer unwinds into the send");
+    fault.release(CLIENT_TO_SERVER);
 
-    // The SERVER tore the connection down cleanly: exactly one server-side ConnectionClosed carries
-    // the UnsupportedAsduTypeException that names the undefined type id.
-    List<ServerEvent.ConnectionClosed> serverCloses =
+    List<ServerEvent.UndecodableAsdu> undecodable =
         serverEvents.stream()
-            .filter(ServerEvent.ConnectionClosed.class::isInstance)
-            .map(ServerEvent.ConnectionClosed.class::cast)
+            .filter(ServerEvent.UndecodableAsdu.class::isInstance)
+            .map(ServerEvent.UndecodableAsdu.class::cast)
             .toList();
-    assertEquals(
-        1,
-        serverCloses.size(),
-        "the server must close the connection exactly once on the bad type");
+    assertEquals(1, undecodable.size(), "the server must report the undecodable ASDU once");
+    assertEquals(41, undecodable.get(0).asdu()[0]);
     UnsupportedAsduTypeException cause =
-        assertInstanceOf(
-            UnsupportedAsduTypeException.class,
-            serverCloses.get(0).cause(),
-            "the server close cause must be the UnsupportedAsduTypeException");
-    assertNotNull(cause);
+        assertInstanceOf(UnsupportedAsduTypeException.class, undecodable.get(0).cause());
     assertTrue(
         cause.getMessage().contains("41"),
         "the failure must name the undefined type id: " + cause.getMessage());
-
-    // No negative mirror is emitted: decode fails before dispatch, so the client sees neither an
-    // AsduReceived nor a client-side ConnectionClosed on this in-JVM transport.
     assertFalse(
-        events.events().stream().anyMatch(ClientEvent.AsduReceived.class::isInstance),
-        "no negative mirror is emitted for an undecodable type id (decode fails before dispatch)");
+        serverEvents.stream().anyMatch(ServerEvent.AsduReceived.class::isInstance),
+        "an undecodable ASDU must not be published as AsduReceived");
+
+    // The mirror reached the client: same octets, COT 44 with P/N set.
+    List<ClientEvent.UndecodableAsdu> mirrors =
+        events.events().stream()
+            .filter(ClientEvent.UndecodableAsdu.class::isInstance)
+            .map(ClientEvent.UndecodableAsdu.class::cast)
+            .toList();
+    assertEquals(1, mirrors.size(), "the client must receive exactly one negative mirror");
+    byte[] mirror = mirrors.get(0).asdu();
+    byte[] received = undecodable.get(0).asdu();
+    assertEquals(41, mirror[0]);
+    assertEquals(0x40 | Cause.UNKNOWN_TYPE_ID.value(), mirror[2] & 0xFF);
+    assertEquals(received.length, mirror.length);
+    for (int i = 0; i < received.length; i++) {
+      if (i != 2) {
+        assertEquals(received[i], mirror[i], "mirror octet " + i + " must match the request");
+      }
+    }
+
+    assertFalse(
+        serverEvents.stream().anyMatch(ServerEvent.ConnectionClosed.class::isInstance),
+        "an undecodable ASDU must not close the server connection");
     assertFalse(
         events.events().stream().anyMatch(ClientEvent.ConnectionClosed.class::isInstance),
-        "the in-JVM connection close notifies only the server leg, not the client");
+        "an undecodable mirror must not close the client connection");
+    assertTrue(client.isConnected(), "client must remain connected");
 
-    // The interrogation is never confirmed (the connection was torn down); release it explicitly.
+    // The interrogation is never confirmed; release it explicitly.
+    request.cancel(false);
+  }
+
+  /**
+   * CASE C — an inbound ASDU with a known TypeID but an UNDEFINED cause of transmission. The server
+   * acknowledges and reports it, then mirrors it NEGATIVE with cause {@code UNKNOWN_CAUSE}. That
+   * mirror is decodable, so the client sees it as an ordinary negative {@link
+   * ClientEvent.AsduReceived}.
+   */
+  @Test
+  void serverMirrorsUndefinedCauseNegativeAndStaysConnected() {
+    EventCollector events = startDefaultServerAndConnectedClient();
+    DefaultIec60870Client client = requireNonNull(this.client);
+
+    // Rewrite the cause of transmission (frame byte 8) to 48, the first private-range cause.
+    fault.holdNext(CLIENT_TO_SERVER);
+    fault.corruptNext(CLIENT_TO_SERVER, set(8, 48));
+    CompletableFuture<InterrogationResult> request =
+        client.interrogateAsync(STATION).toCompletableFuture();
+    fault.release(CLIENT_TO_SERVER);
+
+    ServerEvent.UndecodableAsdu undecodable =
+        serverEvents.stream()
+            .filter(ServerEvent.UndecodableAsdu.class::isInstance)
+            .map(ServerEvent.UndecodableAsdu.class::cast)
+            .findFirst()
+            .orElseThrow();
+    assertInstanceOf(AsduDecodeException.class, undecodable.cause());
+
+    assertTrue(
+        events.events().stream()
+            .filter(ClientEvent.AsduReceived.class::isInstance)
+            .map(ClientEvent.AsduReceived.class::cast)
+            .anyMatch(
+                e ->
+                    e.asdu().type() == AsduType.C_IC_NA_1
+                        && e.asdu().negative()
+                        && e.asdu().cause() == Cause.UNKNOWN_CAUSE),
+        "client must receive a NEGATIVE UNKNOWN_CAUSE mirror");
+    assertFalse(
+        serverEvents.stream().anyMatch(ServerEvent.ConnectionClosed.class::isInstance),
+        "an undefined cause must not close the server connection");
+    assertTrue(client.isConnected(), "client must remain connected");
+
     request.cancel(false);
   }
 

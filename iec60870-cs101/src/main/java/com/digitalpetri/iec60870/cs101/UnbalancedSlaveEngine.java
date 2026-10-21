@@ -388,7 +388,10 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       if (frame instanceof Ft12Frame.FixedLength fixed) {
         dispatchByAddress(fixed.linkAddress(), fixed.control(), null);
       } else if (frame instanceof Ft12Frame.Variable variable) {
-        dispatchByAddress(variable.linkAddress(), variable.control(), variable.asdu());
+        dispatchByAddress(variable.linkAddress(), variable.control(), InboundUserData.of(variable));
+      } else if (frame instanceof Ft12Frame.UndecodableVariable undecodable) {
+        dispatchByAddress(
+            undecodable.linkAddress(), undecodable.control(), InboundUserData.of(undecodable));
       } else {
         LOGGER.debug("ignoring unexpected single-character frame on an unbalanced slave link");
       }
@@ -407,13 +410,14 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    *
    * @param frameAddress the inbound frame's link address.
    * @param control the inbound primary control field.
-   * @param asdu the carried ASDU, or {@code null} if absent.
+   * @param userData the carried user data, or {@code null} if absent.
    */
-  private void dispatchByAddress(int frameAddress, LinkControlField control, @Nullable Asdu asdu) {
+  private void dispatchByAddress(
+      int frameAddress, LinkControlField control, @Nullable InboundUserData userData) {
     if (frameAddress == linkAddress) {
-      handlePrimary(control, asdu);
+      handlePrimary(control, userData);
     } else if (frameAddress == broadcastAddress) {
-      handleBroadcast(control, asdu);
+      handleBroadcast(control, userData);
     } else {
       LOGGER.debug(
           "ignoring frame addressed to link address {} on unbalanced slave {}",
@@ -430,9 +434,9 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * meaningless and is ignored.
    *
    * @param control the inbound primary control field.
-   * @param asdu the carried ASDU, or {@code null} if absent.
+   * @param userData the carried user data, or {@code null} if absent.
    */
-  private void handleBroadcast(LinkControlField control, @Nullable Asdu asdu) {
+  private void handleBroadcast(LinkControlField control, @Nullable InboundUserData userData) {
     if (!control.prm()) {
       LOGGER.debug(
           "ignoring unexpected secondary frame addressed to the broadcast address: FC{}",
@@ -441,7 +445,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     }
     int fc = control.functionCode();
     if (fc == FC_SEND_NO_REPLY_USER_DATA) {
-      handleSendNoReply(asdu, true);
+      handleSendNoReply(userData, true);
     } else {
       LOGGER.debug(
           "ignoring non-broadcast-service function code on an unbalanced slave broadcast: FC{}",
@@ -449,7 +453,7 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     }
   }
 
-  private void handlePrimary(LinkControlField control, @Nullable Asdu asdu) {
+  private void handlePrimary(LinkControlField control, @Nullable InboundUserData userData) {
     if (!control.prm()) {
       // The master is always the primary station; a secondary frame on the bus is unexpected.
       LOGGER.debug(
@@ -469,8 +473,8 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
       case FC_RESET_REMOTE_LINK -> handleReset();
       case FC_REQUEST_USER_DATA_CLASS_2 -> handleRequestClass2(control);
       case FC_REQUEST_USER_DATA_CLASS_1 -> handleRequestClass1(control);
-      case FC_SEND_CONFIRM_USER_DATA -> handleSendConfirm(control, asdu);
-      case FC_SEND_NO_REPLY_USER_DATA -> handleSendNoReply(asdu, false);
+      case FC_SEND_CONFIRM_USER_DATA -> handleSendConfirm(control, userData);
+      case FC_SEND_NO_REPLY_USER_DATA -> handleSendNoReply(userData, false);
       default ->
           LOGGER.debug("ignoring unsupported primary function code on unbalanced slave: FC{}", fc);
     }
@@ -593,9 +597,9 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * re-delivering.
    *
    * @param control the inbound primary control field, supplying the FCB.
-   * @param asdu the carried command ASDU, or {@code null} if absent.
+   * @param userData the carried command user data, or {@code null} if absent.
    */
-  private void handleSendConfirm(LinkControlField control, @Nullable Asdu asdu) {
+  private void handleSendConfirm(LinkControlField control, @Nullable InboundUserData userData) {
     if (!linkReset) {
       // User data before a link reset bypasses the handshake that gates data transfer.
       // The expected FCB sequence is not yet established, so the frame cannot be told
@@ -614,8 +618,8 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
     boolean acd = !class1Queue.isEmpty();
     Ft12Frame ack = e5OrFixed(FC_ACK, acd);
     lastResponse = ack;
-    if (asdu != null) {
-      events.onAsdu(asdu);
+    if (userData != null) {
+      userData.deliverTo(events);
     }
     // Delivery may have synchronously closed the session (an application send failure); if so, do
     // not acknowledge on a closed session.
@@ -636,18 +640,18 @@ final class UnbalancedSlaveEngine implements Ft12Engine {
    * delivered regardless of link-reset state. Either way, FC4 expects no reply, so nothing is sent
    * in return.
    *
-   * @param asdu the carried ASDU, or {@code null} if absent.
+   * @param userData the carried user data, or {@code null} if absent.
    * @param broadcast whether the frame was addressed to the all-secondaries broadcast address.
    */
-  private void handleSendNoReply(@Nullable Asdu asdu, boolean broadcast) {
+  private void handleSendNoReply(@Nullable InboundUserData userData, boolean broadcast) {
     if (!broadcast && !linkReset) {
       LOGGER.debug(
           "received addressed send/no-reply user data before a link reset on an unbalanced slave;"
               + " dropping");
       return;
     }
-    if (asdu != null) {
-      events.onAsdu(asdu);
+    if (userData != null) {
+      userData.deliverTo(events);
     }
   }
 

@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.tcp;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
@@ -91,6 +92,7 @@ public final class TcpIec101Client {
     private boolean startDataTransferOnConnect = true;
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable Executor callbackExecutor;
+    private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
 
@@ -213,6 +215,23 @@ public final class TcpIec101Client {
     }
 
     /**
+     * Sets what the link layer does with a received ASDU it cannot decode. Defaults to {@link
+     * UndecodableAsduPolicy#REPORT_AND_CONTINUE}.
+     *
+     * <p>Under the default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE}, an intact variable
+     * frame whose ASDU cannot be decoded is acknowledged and reported as an undecodable ASDU.
+     * {@link UndecodableAsduPolicy#STRICT} discards it without an acknowledgement instead.
+     *
+     * @param undecodableAsduPolicy the undecodable-ASDU policy.
+     * @return this builder.
+     */
+    public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
+      this.undecodableAsduPolicy =
+          Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and completes blocking calls. Defaults to the core
      * client's default executor.
      *
@@ -286,7 +305,7 @@ public final class TcpIec101Client {
 
       // The builder is the sole 101-over-TCP assembly point but holds no Ft12Frame<->octet wiring
       // itself: it delegates the full Ft12LinkLayer + framing assembly to Cs101Binding.
-      Cs101Binding binding = new Cs101Binding(linkSettings, profile);
+      Cs101Binding binding = new Cs101Binding(linkSettings, profile, null, undecodableAsduPolicy);
 
       return new DefaultIec60870Client(
           transport,

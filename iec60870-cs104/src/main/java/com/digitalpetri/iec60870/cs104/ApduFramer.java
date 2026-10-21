@@ -65,4 +65,71 @@ public final class ApduFramer {
   public static Apdu decode(ProtocolProfile profile, ByteBuf wholeFrame) {
     return Apdu.Serde.decode(profile, wholeFrame);
   }
+
+  /**
+   * Decodes the APCI of one complete APDU frame without decoding its ASDU.
+   *
+   * <p>This validates everything that keeps the byte stream and the APCI state trustworthy: the
+   * START octet, the length octet, the control field, and the body length for the frame format.
+   * After it returns, the reader index is at the first ASDU octet, and {@link Header#asduLength()}
+   * octets of ASDU follow (none for S- and U-format frames). A caller can then decode the ASDU
+   * separately and still process the control field when the ASDU is undecodable:
+   *
+   * <pre>{@code
+   * ApduFramer.Header header = ApduFramer.decodeHeader(frame);
+   * if (header.control() instanceof ControlField.TypeI) {
+   *   ByteBuf asduOctets = frame.readSlice(header.asduLength());
+   *   Asdu asdu = Asdu.Serde.decode(profile, asduOctets);
+   * }
+   * }</pre>
+   *
+   * @param wholeFrame the caller-owned buffer holding one complete APDU frame, positioned at the
+   *     START octet; the buffer is not released.
+   * @return the control field and the ASDU length.
+   * @throws AsduDecodeException if the START octet is not {@code 0x68}, the length octet is out of
+   *     range, the buffer is too short for the declared length, the control field is malformed, an
+   *     I-format frame has an empty body, or an S- or U-format frame has a body.
+   */
+  public static Header decodeHeader(ByteBuf wholeFrame) {
+    return Apdu.Serde.decodeHeader(wholeFrame);
+  }
+
+  /**
+   * Encodes an I-format APDU frame around ASDU octets that bypass the typed encoder.
+   *
+   * <p>The octets are written as given, after the START octet, the length octet, and {@code
+   * control}. Ownership of the returned buffer transfers to the caller, which must release it.
+   *
+   * @param control the I-format control field.
+   * @param asdu the complete ASDU octets, starting at the type identification.
+   * @param alloc the allocator used to obtain the destination buffer.
+   * @return a newly allocated buffer holding the complete length-delimited APDU frame.
+   * @throws IllegalArgumentException if {@code asdu} is empty or the resulting APDU length exceeds
+   *     {@link Apdu#MAX_APDU_LENGTH}.
+   */
+  public static ByteBuf encode(ControlField.TypeI control, byte[] asdu, ByteBufAllocator alloc) {
+    int length = Apdu.CONTROL_FIELD_LENGTH + asdu.length;
+    if (asdu.length == 0) {
+      throw new IllegalArgumentException("I-format APDU requires a non-empty ASDU");
+    }
+    if (length > Apdu.MAX_APDU_LENGTH) {
+      throw new IllegalArgumentException(
+          "APDU length " + length + " exceeds maximum " + Apdu.MAX_APDU_LENGTH);
+    }
+    ByteBuf frame = alloc.buffer(2 + length);
+    frame.writeByte(Apdu.START_OCTET);
+    frame.writeByte(length);
+    ControlField.Serde.encode(control, frame);
+    frame.writeBytes(asdu);
+    return frame;
+  }
+
+  /**
+   * The APCI of one APDU frame, as decoded by {@link #decodeHeader(ByteBuf)}.
+   *
+   * @param control the APCI control field.
+   * @param asduLength the number of ASDU octets that follow the control field; positive for an
+   *     I-format frame and zero otherwise.
+   */
+  public record Header(ControlField control, int asduLength) {}
 }

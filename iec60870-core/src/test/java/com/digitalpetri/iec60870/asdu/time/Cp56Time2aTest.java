@@ -2,18 +2,21 @@ package com.digitalpetri.iec60870.asdu.time;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Golden-byte framing tests for {@link Cp56Time2a.Serde} and range validation for the {@link
- * Cp56Time2a} compact constructor.
+ * Golden-byte framing tests for {@link Cp56Time2a.Serde}, wire-field validation for the {@link
+ * Cp56Time2a} compact constructor, and lenient handling of out-of-range fields.
  */
 class Cp56Time2aTest {
 
@@ -76,50 +79,105 @@ class Cp56Time2aTest {
   }
 
   @Test
-  void rejectsMillisecondsOutOfRange() {
+  void constructorRejectsValuesThatDoNotFitTheWireFields() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> new Cp56Time2a(60000, 0, 0, 1, 0, 1, 0, false, false, true));
+        () -> new Cp56Time2a(65536, 0, 0, 1, 0, 1, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 64, 0, 1, 0, 1, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 32, 1, 0, 1, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 0, 32, 0, 1, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 0, 1, 8, 1, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 0, 1, 0, 16, 0, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(0, 0, 0, 1, 0, 1, 128, false, false, true));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new Cp56Time2a(-1, 0, 0, 1, 0, 1, 0, false, false, true));
   }
 
   @Test
-  void rejectsHourOutOfRange() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new Cp56Time2a(0, 0, 24, 1, 0, 1, 0, false, false, true));
+  void outOfRangeFieldsAreKeptButNotWellFormed() {
+    List<Cp56Time2a> malformed =
+        List.of(
+            new Cp56Time2a(60000, 0, 0, 1, 0, 1, 0, false, false, true), // milliseconds 60000
+            new Cp56Time2a(0, 60, 0, 1, 0, 1, 0, false, false, true), // minute 60
+            new Cp56Time2a(0, 0, 24, 1, 0, 1, 0, false, false, true), // hour 24
+            new Cp56Time2a(0, 0, 0, 0, 0, 1, 0, false, false, true), // day 0
+            new Cp56Time2a(0, 0, 0, 1, 0, 0, 0, false, false, true), // month 0
+            new Cp56Time2a(0, 0, 0, 1, 0, 13, 0, false, false, true), // month 13
+            new Cp56Time2a(0, 0, 0, 1, 0, 1, 100, false, false, true), // year 100
+            new Cp56Time2a(0, 0, 0, 30, 0, 2, 26, false, false, true), // February 30
+            new Cp56Time2a(0, 0, 0, 29, 0, 2, 25, false, false, true)); // February 29, 2025
+
+    for (Cp56Time2a time : malformed) {
+      assertFalse(time.isWellFormed(), time.toString());
+      assertThrows(DateTimeException.class, () -> time.toInstant(ZoneOffset.UTC));
+    }
   }
 
   @Test
-  void rejectsMonthOutOfRange() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new Cp56Time2a(0, 0, 0, 1, 0, 13, 0, false, false, true));
+  void leapDayIsWellFormed() {
+    Cp56Time2a time = new Cp56Time2a(0, 0, 0, 29, 0, 2, 24, false, false, true);
+    assertTrue(time.isWellFormed());
+    assertEquals(Instant.parse("2024-02-29T00:00:00Z"), time.toInstant(ZoneOffset.UTC));
   }
 
   @Test
-  void decodeRejectsCalendarImpossibleDate() {
-    // Day 31, month 2 (February 31): each field is independently in range but the combination is
-    // not a valid calendar date. Decode must surface this as AsduDecodeException.
-    //   milliseconds = 0 -> LE: 00 00
-    //   octet3 = minute(0) -> 0x00
-    //   octet4 = hour(0) -> 0x00
-    //   octet5 = dayOfMonth(31 = 0x1F) | (dayOfWeek(0) << 5) = 0x1F
-    //   octet6 = month(2) = 0x02
-    //   octet7 = year(0) = 0x00
+  void decodeKeepsAllZeroInvalidTimeTag() {
+    // An unsynchronized device clock: all calendar fields zero, IV=1.
     ByteBuf buffer = Unpooled.buffer();
     try {
-      buffer.writeBytes(new byte[] {0x00, 0x00, 0x00, 0x00, 0x1F, 0x02, 0x00});
-      assertThrows(AsduDecodeException.class, () -> Cp56Time2a.Serde.decode(buffer));
+      buffer.writeBytes(new byte[] {0x00, 0x00, (byte) 0x80, 0x00, 0x00, 0x00, 0x00});
+      Cp56Time2a decoded = Cp56Time2a.Serde.decode(buffer);
+
+      assertEquals(new Cp56Time2a(0, 0, 0, 0, 0, 0, 0, true, false, true), decoded);
+      assertFalse(decoded.isWellFormed());
     } finally {
       buffer.release();
     }
   }
 
   @Test
-  void constructorRejectsCalendarImpossibleDate() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> new Cp56Time2a(0, 0, 0, 31, 0, 2, 0, false, false, true));
+  void decodeKeepsEveryOutOfRangeFieldAndReencodesTheSameOctets() {
+    // milliseconds 65535, minute 63, hour 31, day 31, month 15, year 127: every field at its wire
+    // maximum and out of its specified range.
+    byte[] wire = {(byte) 0xFF, (byte) 0xFF, 0x3F, 0x1F, 0x1F, 0x0F, 0x7F};
+    ByteBuf buffer = Unpooled.buffer();
+    try {
+      buffer.writeBytes(wire);
+      Cp56Time2a decoded = Cp56Time2a.Serde.decode(buffer);
+
+      assertEquals(new Cp56Time2a(65535, 63, 31, 31, 0, 15, 127, false, false, true), decoded);
+      assertFalse(decoded.isWellFormed());
+
+      ByteBuf encoded = Unpooled.buffer();
+      try {
+        Cp56Time2a.Serde.encode(decoded, encoded);
+        assertArrayEquals(wire, bytes(encoded));
+      } finally {
+        encoded.release();
+      }
+    } finally {
+      buffer.release();
+    }
+  }
+
+  @Test
+  void wellFormednessIgnoresTheInvalidFlag() {
+    Cp56Time2a time = new Cp56Time2a(45500, 30, 14, 20, 6, 6, 26, true, false, true);
+    assertTrue(time.isWellFormed());
+    assertEquals(Instant.parse("2026-06-20T14:30:45.500Z"), time.toInstant(ZoneOffset.UTC));
   }
 
   @Test

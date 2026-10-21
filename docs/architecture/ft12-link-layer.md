@@ -43,6 +43,15 @@ octet. Like `ApduFramer`, the framer performs no stream reassembly: `decode` req
 positioned at the start octet that already holds exactly one whole frame, so length-based framing of
 a partial byte stream stays the transport's responsibility.
 
+A bad start octet, length, checksum, or end octet makes `decode` throw, and `Cs101Binding` drops the
+frame as line noise so the primary's retransmission can recover it. A variable frame that passes those
+checks but whose ASDU cannot be decoded is returned as an `Ft12Frame.UndecodableVariable` carrying the
+raw ASDU octets and the decode failure. Retransmitting such a frame cannot help, so the engines treat it
+like any other user-data frame: the frame count bit advances, the frame is acknowledged (or, for a
+master, the poll transaction completes), and the octets are reported through
+`Session.Events.onUndecodableAsdu`. `UndecodableAsduPolicy.STRICT` on the binding drops it instead. See
+[errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus).
+
 ## The link control field
 
 Every fixed- and variable-length frame begins its user data with the one-octet `LinkControlField`.
@@ -326,6 +335,8 @@ frames each outbound `Ft12Frame` to a whole-frame `ByteBuf`, deframes inbound fr
 failed send or a transport connection loss to `Session.Events.onConnectionLost`, distinct from the
 engine's own protocol-error self-close on `onClosed`.
 
-File transfer (the `F_*` TypeIDs) is **out of scope** for the high-level layer on the serial path; it
-is reachable only through the raw-ASDU send/receive hooks, and a modeled file-transfer service is to
-be inherited later from the shared CS104 file path.
+File transfer (the `F_*` TypeIDs) is **out of scope** on the serial path as on 104. A received `F_*`
+ASDU is acknowledged and reported as an undecodable ASDU with its raw octets; a modeled file-transfer
+service is to be inherited later from the shared CS104 file path. The FT1.2 engines do not support
+`Session.sendRawAsduAsync`, so a CS 101 server reports an undecodable ASDU without sending the
+negative mirror a CS 104 server sends.

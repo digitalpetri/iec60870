@@ -323,16 +323,9 @@ final class UnbalancedMasterEngine implements Ft12Engine {
               null);
         }
       } else if (frame instanceof Ft12Frame.Variable variable) {
-        LinkControlField control = variable.control();
-        if (acceptSecondary(control)) {
-          handleSecondaryResponse(
-              control.functionCode(),
-              control.acd(),
-              control.dfc(),
-              variable.linkAddress(),
-              false,
-              variable.asdu());
-        }
+        handleVariableResponse(variable.control(), variable.linkAddress(), variable);
+      } else if (frame instanceof Ft12Frame.UndecodableVariable undecodable) {
+        handleVariableResponse(undecodable.control(), undecodable.linkAddress(), undecodable);
       }
     } finally {
       lock.unlock();
@@ -750,6 +743,18 @@ final class UnbalancedMasterEngine implements Ft12Engine {
     return true;
   }
 
+  private void handleVariableResponse(LinkControlField control, int address, Ft12Frame frame) {
+    if (acceptSecondary(control)) {
+      handleSecondaryResponse(
+          control.functionCode(),
+          control.acd(),
+          control.dfc(),
+          address,
+          false,
+          InboundUserData.of(frame));
+    }
+  }
+
   /**
    * Matches a secondary response (or a single-character acknowledgement) against the outstanding
    * transaction and advances the bus.
@@ -760,10 +765,15 @@ final class UnbalancedMasterEngine implements Ft12Engine {
    * @param address the responding station's link address, or {@code -1} for a single-character
    *     frame.
    * @param singleChar whether the frame was the {@code 0xE5} single-character acknowledgement.
-   * @param asdu the carried ASDU for a user-data response, otherwise {@code null}.
+   * @param userData the carried user data for a user-data response, otherwise {@code null}.
    */
   private void handleSecondaryResponse(
-      int fc, boolean acd, boolean dfc, int address, boolean singleChar, @Nullable Asdu asdu) {
+      int fc,
+      boolean acd,
+      boolean dfc,
+      int address,
+      boolean singleChar,
+      @Nullable InboundUserData userData) {
     Pending p = pending;
     if (p == null) {
       LOGGER.debug("ignoring secondary frame (FC{}) with no outstanding transaction", fc);
@@ -818,7 +828,8 @@ final class UnbalancedMasterEngine implements Ft12Engine {
               p.slaveAddress());
         }
       }
-      case POLL_CLASS2, POLL_CLASS1 -> handlePollResponse(p, slave, fc, acd, dfc, singleChar, asdu);
+      case POLL_CLASS2, POLL_CLASS1 ->
+          handlePollResponse(p, slave, fc, acd, dfc, singleChar, userData);
       case USER_DATA -> {
         if (fc == FC_ACK) {
           cancelConfirmTimer();
@@ -850,7 +861,7 @@ final class UnbalancedMasterEngine implements Ft12Engine {
       boolean acd,
       boolean dfc,
       boolean singleChar,
-      @Nullable Asdu asdu) {
+      @Nullable InboundUserData userData) {
     if (fc == FC_RESPOND_USER_DATA) {
       cancelConfirmTimer();
       if (slave != null) {
@@ -858,8 +869,8 @@ final class UnbalancedMasterEngine implements Ft12Engine {
         slave.dfc = dfc;
       }
       pending = null;
-      if (asdu != null) {
-        events.onAsdu(asdu);
+      if (userData != null) {
+        userData.deliverTo(events);
         if (closed) {
           return;
         }

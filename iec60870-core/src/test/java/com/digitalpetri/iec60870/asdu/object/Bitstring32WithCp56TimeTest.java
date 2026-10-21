@@ -67,6 +67,6 @@ class Bitstring32WithCp56TimeTest {
   void timeComponentOutOfRangeIsRejected() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> new Cp56Time2a(60000, 30, 10, 9, 2, 6, 20, false, false, true));
+        () -> new Cp56Time2a(65536, 30, 10, 9, 2, 6, 20, false, false, true));
   }
 }

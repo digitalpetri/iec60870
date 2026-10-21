@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.client;
 
 import static java.util.Objects.requireNonNull;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -14,6 +15,7 @@ import com.digitalpetri.iec60870.NegativeConfirmationException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.RequestInProgressException;
 import com.digitalpetri.iec60870.SequenceNumberException;
+import com.digitalpetri.iec60870.UnsupportedAsduTypeException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.InformationObjectAddress;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
@@ -488,6 +490,31 @@ class DefaultIec60870ClientTest {
     // No bit-string activation reached the wire and no command was left pending.
     assertTrue(session().sentAsdus().isEmpty(), "no bit-string activation may be sent under SBO");
     assertEquals(0, client.pendingRequestCount());
+  }
+
+  @Test
+  void undecodableAsduIsPublishedWithItsOctetsAndNoAsduReceived() {
+    client.connect();
+
+    List<ClientEvent> events = new CopyOnWriteArrayList<>();
+    subscribe(events);
+
+    byte[] octets = {(byte) 0x88, 0x01, 0x03, 0x00, 0x01, 0x00, 0x64, 0x00, 0x00, 0x01};
+    var cause = new UnsupportedAsduTypeException("undefined type identification: 136");
+    session().deliverUndecodableAsdu(octets, cause);
+
+    List<ClientEvent.UndecodableAsdu> undecodable =
+        events.stream()
+            .filter(ClientEvent.UndecodableAsdu.class::isInstance)
+            .map(ClientEvent.UndecodableAsdu.class::cast)
+            .toList();
+    assertEquals(1, undecodable.size());
+    assertArrayEquals(octets, undecodable.get(0).asdu());
+    assertSame(cause, undecodable.get(0).cause());
+    assertEquals(new ClientEvent.UndecodableAsdu(octets, cause), undecodable.get(0));
+    assertFalse(events.stream().anyMatch(ClientEvent.AsduReceived.class::isInstance));
+    assertFalse(events.stream().anyMatch(ClientEvent.ConnectionClosed.class::isInstance));
+    assertTrue(client.isConnected());
   }
 
   @Test

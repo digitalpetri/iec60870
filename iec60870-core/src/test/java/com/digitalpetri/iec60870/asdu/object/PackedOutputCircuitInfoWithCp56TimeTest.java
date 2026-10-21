@@ -70,6 +70,6 @@ class PackedOutputCircuitInfoWithCp56TimeTest {
 
   @Test
   void cp16ElapsedTimeOutOfRangeIsRejected() {
-    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(60000));
+    assertThrows(IllegalArgumentException.class, () -> new Cp16Time2a(65536));
   }
 }

@@ -8,13 +8,14 @@ reports whether the library provides a typed information object record (a record
 
 - `supported() == true` — a typed record exists; the standard codec encodes/decodes it, and the
   high-level facade can work with it directly.
-- `supported() == false` — no typed record exists, but the type is **not** dropped. It still has an
-  `AsduType` constant and remains representable as a raw `Asdu`, reachable through the raw
-  send/receive surface (see [errors-and-extensibility.md](errors-and-extensibility.md)).
+- `supported() == false` — no typed record or codec exists. The type has an `AsduType` constant, but
+  `Asdu.Serde` cannot decode or encode it. A received ASDU of such a type is acknowledged and
+  reported with its raw octets rather than dropped or treated as a link error (see
+  [errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus)).
 
 `AsduType.fromId(int)` resolves an inbound type identification and throws
 `UnsupportedAsduTypeException` for any value with no defined constant (including the unused value
-`0`).
+`0`). Such a type identification is reported the same way.
 
 This matrix is link-layer-agnostic. The same `Asdu` application layer is carried unchanged whether
 the link layer beneath it is the 104 APCI session (`ApciSession`, over TCP) or the 101 FT1.2 link
@@ -114,10 +115,11 @@ control direction (controlling → controlled station), **Sys** = system informa
 | 112 | P_ME_NC_1 | Parameter of measured value, short float | Ctrl | `ParameterShortFloat` |
 | 113 | P_AC_NA_1 | Parameter activation | Ctrl | `ParameterActivation` |
 
-## Out of scope — file transfer (Table 13), raw-layer only
+## Out of scope — file transfer (Table 13)
 
 The file-transfer `F_*` types have `AsduType` constants with `supported() == false`. They have **no
-typed `.asdu.object` record and no standard codec-dispatch entry**.
+typed `.asdu.object` record and no standard codec-dispatch entry**, so `Asdu.Serde` can neither decode
+nor encode them.
 
 | TypeID | Mnemonic | Description |
 |---|---|---|
@@ -137,10 +139,12 @@ file-transfer state machine, not just a set of records — a substantially diffe
 stateless encode/decode the rest of the type table needs. Rather than ship a partial or incorrect
 implementation, the library leaves these types present-but-unsupported.
 
-They remain fully reachable through the raw layer. A caller who needs file transfer can send and
-receive them as raw `Asdu`s with `Iec60870Client.send(Asdu)` / `events()` (or `ServerContext.send(Asdu)`
-/ `ServerHandler.onRawAsdu(...)`), parsing the `F_*` object bodies directly from the raw `Asdu` and
-driving the multi-ASDU procedure from application code.
+A received `F_*` ASDU does not disturb the connection. The link layer acknowledges the frame and
+reports its raw octets as an undecodable ASDU: `ClientEvent.UndecodableAsdu` on the client, and
+`ServerEvent.UndecodableAsdu` plus a negative `UNKNOWN_TYPE_ID` (44) mirror on the server (see
+[errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus)). The octets are
+available for inspection, but the facades offer no way to send an `F_*` ASDU, so the library cannot
+take part in a file transfer.
 
 This deferral is shared by both profiles. Because file transfer rides the same `F_*` ASDUs over
 either link layer, a future file-transfer state machine would live in the shared application layer
@@ -151,7 +155,8 @@ code — exactly as the rest of this coverage table is shared today.
 
 Type identifications in the private ranges (the standard reserves `128..255`, with `136..255`
 designated for private use) have no `AsduType` constant, so they fall outside the library's modeled
-type table. `AsduType.fromId(int)` rejects an inbound private TypeID with
-`UnsupportedAsduTypeException`, and there is no `AsduType` constant to construct one for sending —
-exchanging private TypeIDs is not supported through the `Asdu` model; see
-[errors-and-extensibility.md](errors-and-extensibility.md).
+type table. `AsduType.fromId(int)` rejects them with `UnsupportedAsduTypeException`, and there is no
+`AsduType` constant to construct one for sending. An inbound private TypeID is handled like an `F_*`
+type: the frame is acknowledged and its octets are reported as an undecodable ASDU, and a server
+answers with a negative `UNKNOWN_TYPE_ID` mirror. Sending private TypeIDs is not supported; see
+[errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus).

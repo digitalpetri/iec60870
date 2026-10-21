@@ -2,6 +2,7 @@ package com.digitalpetri.iec60870.tcp;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
@@ -77,6 +78,7 @@ public final class TcpIec104Client {
     private boolean startDataTransferOnConnect = true;
     private OriginatorAddress originatorAddress = OriginatorAddress.none();
     private @Nullable Executor callbackExecutor;
+    private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
 
@@ -180,6 +182,24 @@ public final class TcpIec104Client {
     }
 
     /**
+     * Sets what the link layer does with a received ASDU it cannot decode. Defaults to {@link
+     * UndecodableAsduPolicy#REPORT_AND_CONTINUE}.
+     *
+     * <p>Under the default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE}, a correctly framed
+     * I-frame whose ASDU cannot be decoded is acknowledged and reported as an undecodable ASDU, and
+     * the connection stays open. {@link UndecodableAsduPolicy#STRICT} closes the connection instead
+     * without acknowledging the frame.
+     *
+     * @param undecodableAsduPolicy the undecodable-ASDU policy.
+     * @return this builder.
+     */
+    public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
+      this.undecodableAsduPolicy =
+          Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and completes blocking calls. Defaults to the core
      * client's default executor.
      *
@@ -248,7 +268,7 @@ public final class TcpIec104Client {
 
       // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
       // delegates the full ApciSession + framing assembly to Cs104Binding (see its Javadoc).
-      Cs104Binding binding = new Cs104Binding(apci, profile);
+      Cs104Binding binding = new Cs104Binding(apci, profile, null, undecodableAsduPolicy);
 
       return new DefaultIec60870Client(
           transport,

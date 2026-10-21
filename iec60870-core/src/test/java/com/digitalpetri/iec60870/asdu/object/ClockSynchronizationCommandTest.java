@@ -56,12 +56,12 @@ class ClockSynchronizationCommandTest {
 
   @Test
   void rejectsOutOfRangeTime() {
-    // CP56Time2a validation propagates through the record construction: hour 24 is invalid.
+    // CP56Time2a validation propagates through the record construction: hour 32 does not fit.
     assertThrows(
         IllegalArgumentException.class,
         () ->
             new ClockSynchronizationCommand(
                 InformationObjectAddress.of(0),
-                new Cp56Time2a(0, 0, 24, 1, 0, 1, 0, false, false, true)));
+                new Cp56Time2a(0, 0, 32, 1, 0, 1, 0, false, false, true)));
   }
 }

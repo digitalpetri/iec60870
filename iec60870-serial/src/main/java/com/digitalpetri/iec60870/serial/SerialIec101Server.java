@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.serial;
 
 import com.digitalpetri.iec60870.ProtocolProfile;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.cs101.Cs101Binding;
 import com.digitalpetri.iec60870.cs101.LinkSettings;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
@@ -83,6 +84,7 @@ public final class SerialIec101Server {
     private final List<Station> stations = new ArrayList<>();
     private @Nullable ServerHandler handler;
     private @Nullable Executor callbackExecutor;
+    private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private Duration readTimeout = Duration.ofMillis(100);
     private Duration writeTimeout = Duration.ofMillis(1000);
     private @Nullable Rs485Options rs485;
@@ -202,6 +204,23 @@ public final class SerialIec101Server {
     }
 
     /**
+     * Sets what the link layer does with a received ASDU it cannot decode. Defaults to {@link
+     * UndecodableAsduPolicy#REPORT_AND_CONTINUE}.
+     *
+     * <p>Under the default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE}, an intact variable
+     * frame whose ASDU cannot be decoded is acknowledged and reported as an undecodable ASDU.
+     * {@link UndecodableAsduPolicy#STRICT} discards it without an acknowledgement instead.
+     *
+     * @param undecodableAsduPolicy the undecodable-ASDU policy.
+     * @return this builder.
+     */
+    public Builder undecodableAsduPolicy(UndecodableAsduPolicy undecodableAsduPolicy) {
+      this.undecodableAsduPolicy =
+          Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and runs handler callbacks. Defaults to the core
      * server's default executor.
      *
@@ -292,7 +311,7 @@ public final class SerialIec101Server {
 
       // The builder is the sole 101 assembly point but holds no Ft12Frame<->octet wiring itself: it
       // delegates the full per-connection Ft12LinkLayer + framing assembly to Cs101Binding.
-      Cs101Binding binding = new Cs101Binding(linkSettings, profile);
+      Cs101Binding binding = new Cs101Binding(linkSettings, profile, null, undecodableAsduPolicy);
 
       // The outbound-queue bound and policy are passed as scalars rather than the ServerConfig
       // object so Cs101Binding stays free of an iec60870-application import.

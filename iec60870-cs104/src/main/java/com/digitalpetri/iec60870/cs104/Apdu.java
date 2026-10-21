@@ -128,8 +128,29 @@ public record Apdu(ControlField control, @Nullable Asdu asdu) {
      * @throws AsduDecodeException if the START octet is not {@code 0x68}, the length octet is less
      *     than {@link #CONTROL_FIELD_LENGTH} or greater than {@link #MAX_APDU_LENGTH}, the buffer
      *     is too short for the declared length, or the embedded control field or ASDU is malformed.
+     * @throws com.digitalpetri.iec60870.UnsupportedAsduTypeException if the ASDU's type
+     *     identification is undefined or has no registered codec.
      */
     public static Apdu decode(ProtocolProfile profile, ByteBuf buffer) {
+      ApduFramer.Header header = decodeHeader(buffer);
+      ControlField control = header.control();
+      Asdu asdu = null;
+      if (control instanceof ControlField.TypeI) {
+        asdu = Asdu.Serde.decode(profile, buffer.readSlice(header.asduLength()));
+      }
+      return new Apdu(control, asdu);
+    }
+
+    /**
+     * Decodes the START octet, the length octet, and the control field, leaving the reader index at
+     * the first ASDU octet.
+     *
+     * @param buffer the source buffer, positioned at the START octet.
+     * @return the control field and the ASDU length declared by the length octet.
+     * @throws AsduDecodeException if the START octet, the length octet, the control field, or the
+     *     body length for the frame format is invalid, or the buffer is too short.
+     */
+    static ApduFramer.Header decodeHeader(ByteBuf buffer) {
       if (buffer.readableBytes() < 2) {
         throw new AsduDecodeException(
             "APDU requires at least a START and length octet but only "
@@ -167,18 +188,16 @@ public record Apdu(ControlField control, @Nullable Asdu asdu) {
       ControlField control = ControlField.Serde.decode(buffer);
 
       int asduLength = length - CONTROL_FIELD_LENGTH;
-      Asdu asdu = null;
       if (control instanceof ControlField.TypeI) {
         if (asduLength == 0) {
           throw new AsduDecodeException("I-format APDU declares an empty ASDU body");
         }
-        asdu = Asdu.Serde.decode(profile, buffer);
       } else if (asduLength != 0) {
         throw new AsduDecodeException(
             "non-I-format APDU declares a non-empty body of " + asduLength + " octets");
       }
 
-      return new Apdu(control, asdu);
+      return new ApduFramer.Header(control, asduLength);
     }
   }
 }

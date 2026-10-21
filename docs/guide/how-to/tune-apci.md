@@ -176,7 +176,8 @@ There are two distinct failure modes, and they surface at different times.
   range checks the library can make on its own.
 - **Runtime decode failures.** The library validates ranges, but it cannot know the field widths the
   *peer* chose. A mismatch (your 3-octet IOA against the peer's 2-octet IOA, say) is not caught at
-  build time; it surfaces as a decode failure (`AsduDecodeException`) once frames start flowing.
+  build time; it surfaces as a stream of `UndecodableAsdu` events (each carrying an
+  `AsduDecodeException`) once frames start flowing.
   Matching your `ProtocolProfile` to the peer's is the integrator's responsibility, not something the
   build can verify.
 

@@ -3,6 +3,7 @@ package com.digitalpetri.iec60870.cs101;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
+import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
@@ -38,10 +39,15 @@ import org.slf4j.LoggerFactory;
  *   <li>a failed outbound send or a transport connection loss closes the session and routes the
  *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
  *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close);
- *   <li>an inbound frame that fails to decode (a bad checksum or end octet, a stray reserved {@code
- *       0xA2} single character, or a malformed embedded ASDU) is a recoverable, per-frame error:
- *       the garbled frame is logged and dropped so the FT1.2 stop-and-wait retransmission can
- *       recover it, leaving the session and the underlying connection intact.
+ *   <li>an inbound frame that fails to decode (a bad checksum or end octet, or a stray reserved
+ *       {@code 0xA2} single character) is a recoverable, per-frame error: the garbled frame is
+ *       logged and dropped so the FT1.2 stop-and-wait retransmission can recover it, leaving the
+ *       session and the underlying connection intact;
+ *   <li>a variable frame that arrives intact but carries an undecodable ASDU is handed to the link
+ *       layer as an {@link Ft12Frame.UndecodableVariable} under the default {@link
+ *       UndecodableAsduPolicy#REPORT_AND_CONTINUE} policy, so it is acknowledged and its octets are
+ *       reported; under {@link UndecodableAsduPolicy#STRICT} it is logged and dropped like a
+ *       garbled frame.
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Ft12Frame}&lt;-&gt;octet wiring that the
@@ -62,6 +68,7 @@ public final class Cs101Binding {
   private final ProtocolProfile profile;
   private final ByteBufAllocator allocator;
   private final int linkAddressLength;
+  private final UndecodableAsduPolicy undecodableAsduPolicy;
 
   /**
    * Creates a binding with the {@link UnpooledByteBufAllocator#DEFAULT default unpooled allocator}.
@@ -86,11 +93,33 @@ public final class Cs101Binding {
    */
   public Cs101Binding(
       SessionSettings settings, ProtocolProfile profile, @Nullable ByteBufAllocator allocator) {
+    this(settings, profile, allocator, UndecodableAsduPolicy.DEFAULT);
+  }
+
+  /**
+   * Creates a binding with an explicit outbound-framing allocator and undecodable-ASDU policy.
+   *
+   * @param settings the FT1.2 link parameters for the assembled sessions; if a neutral {@link
+   *     SessionSettings} is supplied it must be a {@link LinkSettings}.
+   * @param profile the wire profile that governs ASDU field widths during framing.
+   * @param allocator the allocator used to obtain outbound frame buffers, or {@code null} for the
+   *     default unpooled allocator.
+   * @param undecodableAsduPolicy what the assembled sessions do with an intact variable frame whose
+   *     ASDU cannot be decoded.
+   * @throws IllegalArgumentException if {@code settings} is not a {@link LinkSettings}.
+   */
+  public Cs101Binding(
+      SessionSettings settings,
+      ProtocolProfile profile,
+      @Nullable ByteBufAllocator allocator,
+      UndecodableAsduPolicy undecodableAsduPolicy) {
     Objects.requireNonNull(settings, "settings");
     this.settings = downcast(settings);
     this.profile = Objects.requireNonNull(profile, "profile");
     this.allocator = allocator != null ? allocator : UnpooledByteBufAllocator.DEFAULT;
     this.linkAddressLength = this.settings.linkAddressLength();
+    this.undecodableAsduPolicy =
+        Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
   }
 
   /**
@@ -210,27 +239,35 @@ public final class Cs101Binding {
         new TransportListener() {
           @Override
           public void onFrame(ByteBuf frame) {
-            // Deframe and dispatch inbound bytes. A malformed or undecodable frame makes
-            // Ft12Framer.decode throw a decode-time RuntimeException, such as AsduDecodeException
-            // for a bad checksum or end octet, a stray reserved 0xA2 single character, or a
-            // malformed embedded ASDU, or IndexOutOfBoundsException for a short/truncated read.
+            // Deframe and dispatch inbound bytes. A garbled frame makes Ft12Framer.decode throw a
+            // decode-time RuntimeException, such as AsduDecodeException for a bad checksum or end
+            // octet or a stray reserved 0xA2 single character, or IndexOutOfBoundsException for a
+            // short/truncated read.
             //
             // Unlike a genuine transport loss, a frame-level decode failure is recoverable on the
             // FT1.2 link: the primary's stop-and-wait method simply retransmits a garbled response.
             // Log and DROP the bad frame and keep the session and the underlying connection open,
-            // so
-            // a single line error (a corrupted checksum or a stray octet on a noisy RS-485/serial
-            // line) cannot force a full link re-bring-up. Only a real transport loss — the
-            // connection
-            // itself closing, delivered through onConnectionLost below — closes the session. The
-            // buffer is owned and released by the transport after onFrame returns (the SPI's
-            // inbound
-            // ownership contract), so it is neither retained nor released here.
+            // so a single line error (a corrupted checksum or a stray octet on a noisy
+            // RS-485/serial line) cannot force a full link re-bring-up. Only a real transport loss
+            // — the connection itself closing, delivered through onConnectionLost below — closes
+            // the session.
+            //
+            // A frame that arrives intact but carries an undecodable ASDU is not line noise:
+            // retransmitting it cannot help. Ft12Framer returns it as an UndecodableVariable, which
+            // the link layer acknowledges and reports, unless the STRICT policy asks for the
+            // legacy drop. The buffer is owned and released by the transport after onFrame returns
+            // (the SPI's inbound ownership contract), so it is neither retained nor released here.
             Ft12Frame ft12Frame;
             try {
               ft12Frame = Ft12Framer.decode(profile, linkAddressLength, frame);
             } catch (RuntimeException decodeFailure) {
               LOGGER.debug("dropping undecodable inbound FT1.2 frame", decodeFailure);
+              return;
+            }
+            if (ft12Frame instanceof Ft12Frame.UndecodableVariable undecodable
+                && undecodableAsduPolicy == UndecodableAsduPolicy.STRICT) {
+              LOGGER.debug(
+                  "dropping inbound FT1.2 frame with an undecodable ASDU", undecodable.cause());
               return;
             }
             session.onFrame(ft12Frame);

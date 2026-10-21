@@ -145,7 +145,7 @@ connect ──► onConnected()         V(S)=V(R)=0, arm t3
    CLIENT:  startDataTransfer() ─► STARTDT act, arm t1 ─► STARTDT con ─► (data transfer started)
             │
    data:    sendAsdu(...) ─► I-frame if window open, else queued
-            onApdu(...)   ─► I: check N(S)=V(R), deliver, ++V(R), process N(R), ack via w/t2
+            onApdu(...)   ─► I: check N(S)=V(R), process N(R), ++V(R), deliver, ack via w/t2
                               S: process N(R)
                               U: STARTDT/STOPDT/TESTFR per role
             │
@@ -155,6 +155,14 @@ connect ──► onConnected()         V(S)=V(R)=0, arm t3
             │
    teardown: close()  (idempotent; fails any pending STARTDT/STOPDT future)
 ```
+
+`Cs104Binding` decodes each inbound frame's APCI before its ASDU. When an I-frame's ASDU cannot be
+decoded, the binding calls `onUndecodableIFrame(control, octets, cause)` instead of `onApdu`. That path
+runs the same I-frame steps (the data-transfer gate, the N(S) check, N(R) processing, the V(R)
+increment, and the `w`/`t2` acknowledgement) and reports the octets through
+`Events.onUndecodableAsdu`. The peer sees an ordinary acknowledged I-frame, so an outstation that
+retransmits unconfirmed I-frames after reconnecting has nothing to retransmit. See
+[errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus).
 
 All mutable session state is guarded by one internal `ReentrantLock`, and the timer callbacks acquire
 that same lock, so any method may be called from any thread. The `Output` (outbound APDU sink) and

@@ -1,6 +1,5 @@
 package com.digitalpetri.iec60870.asdu.time;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 
 /**
@@ -16,8 +15,14 @@ import io.netty.buffer.ByteBuf;
  * time). It maps to the RES1/GEN bit such that {@code genuine == true} corresponds to a RES1 bit of
  * {@code 0} (GEN&lt;0&gt; = genuine time).
  *
- * @param milliseconds the milliseconds within the minute, in the range {@code 0..59999}.
- * @param minute the minute of the hour, in the range {@code 0..59}.
+ * <p>Each component accepts any value its wire bit field can hold, so a received time tag keeps its
+ * fields exactly as sent. {@link #isWellFormed()} reports whether they are within their specified
+ * ranges.
+ *
+ * @param milliseconds the milliseconds within the minute, specified as {@code 0..59999}; any value
+ *     in {@code 0..65535} is accepted.
+ * @param minute the minute of the hour, specified as {@code 0..59}; any value in {@code 0..63} is
+ *     accepted.
  * @param invalid {@code true} if the time tag is marked invalid (IV bit set).
  * @param genuine {@code true} if the time tag is genuine (RES1/GEN bit clear), {@code false} if
  *     substituted.
@@ -25,23 +30,36 @@ import io.netty.buffer.ByteBuf;
 public record Cp24Time2a(int milliseconds, int minute, boolean invalid, boolean genuine) {
 
   /**
-   * Validates the component ranges of a {@code Cp24Time2a}.
+   * Validates that each component fits its wire bit field.
    *
-   * @param milliseconds the milliseconds within the minute, in the range {@code 0..59999}.
-   * @param minute the minute of the hour, in the range {@code 0..59}.
+   * @param milliseconds the milliseconds within the minute, in the range {@code 0..65535}.
+   * @param minute the minute of the hour, in the range {@code 0..63}.
    * @param invalid {@code true} if the time tag is marked invalid (IV bit set).
    * @param genuine {@code true} if the time tag is genuine (RES1/GEN bit clear), {@code false} if
    *     substituted.
-   * @throws IllegalArgumentException if {@code milliseconds} is outside {@code 0..59999} or {@code
-   *     minute} is outside {@code 0..59}.
+   * @throws IllegalArgumentException if {@code milliseconds} is outside {@code 0..65535} or {@code
+   *     minute} is outside {@code 0..63}.
    */
   public Cp24Time2a {
-    if (milliseconds < 0 || milliseconds > 59999) {
-      throw new IllegalArgumentException("milliseconds out of range [0, 59999]: " + milliseconds);
+    if (milliseconds < 0 || milliseconds > 0xFFFF) {
+      throw new IllegalArgumentException("milliseconds out of range [0, 65535]: " + milliseconds);
     }
-    if (minute < 0 || minute > 59) {
-      throw new IllegalArgumentException("minute out of range [0, 59]: " + minute);
+    if (minute < 0 || minute > 0x3F) {
+      throw new IllegalArgumentException("minute out of range [0, 63]: " + minute);
     }
+  }
+
+  /**
+   * Reports whether the fields are within their specified ranges: {@code milliseconds} {@code
+   * 0..59999} and {@code minute} {@code 0..59}.
+   *
+   * <p>This is independent of the {@link #invalid() IV} flag, which is the sender's own statement
+   * about the time tag.
+   *
+   * @return {@code true} if both fields are within their specified ranges.
+   */
+  public boolean isWellFormed() {
+    return milliseconds <= 59999 && minute <= 59;
   }
 
   /**
@@ -84,29 +102,21 @@ public record Cp24Time2a(int milliseconds, int minute, boolean invalid, boolean 
     /**
      * Decodes a {@code Cp24Time2a} from the next three octets of {@code buffer}.
      *
-     * <p>The buffer is owned by the caller; this method reads from it and never releases it.
+     * <p>The buffer is owned by the caller; this method reads from it and never releases it. Fields
+     * are kept as received, even when they are out of range; see {@link Cp24Time2a#isWellFormed()}.
      *
      * @param buffer the source buffer positioned at the first octet of the time element.
      * @return the decoded time element.
-     * @throws AsduDecodeException if the decoded milliseconds value is outside {@code 0..59999} or
-     *     the decoded minute value is outside {@code 0..59}.
      */
     public static Cp24Time2a decode(ByteBuf buffer) {
       int milliseconds = buffer.readUnsignedShortLE();
-      if (milliseconds > 59999) {
-        throw new AsduDecodeException("CP24Time2a milliseconds out of range: " + milliseconds);
-      }
 
       int octet3 = buffer.readUnsignedByte();
       int minute = octet3 & 0x3F;
       boolean genuine = (octet3 & 0x40) == 0;
       boolean invalid = (octet3 & 0x80) != 0;
 
-      try {
-        return new Cp24Time2a(milliseconds, minute, invalid, genuine);
-      } catch (IllegalArgumentException e) {
-        throw new AsduDecodeException("malformed CP24Time2a: " + e.getMessage());
-      }
+      return new Cp24Time2a(milliseconds, minute, invalid, genuine);
     }
   }
 }

@@ -138,8 +138,9 @@ public final class MonitorMapping {
    *
    * <p>The returned {@link PointValueExtraction#value()} carries the same timestamp as {@link
    * PointValueExtraction#timestamp()} so that either accessor may be used. The timestamp is present
-   * only for CP56Time2a-tagged objects; CP24Time2a-tagged and untimed objects yield an empty
-   * timestamp.
+   * only for CP56Time2a-tagged objects whose time tag is {@linkplain Cp56Time2a#isWellFormed()
+   * well-formed}; other CP56Time2a-tagged objects, CP24Time2a-tagged objects, and untimed objects
+   * yield an empty timestamp but keep their value and quality.
    *
    * @param monitorObject the monitor information object to extract from.
    * @return the extracted value and timestamp, or {@link Optional#empty()} if {@code monitorObject}
@@ -416,10 +417,10 @@ public final class MonitorMapping {
    * Resolves a CP56Time2a time tag to an {@link Instant} at {@link ZoneOffset#UTC}.
    *
    * @param time the time tag.
-   * @return the resolved instant.
+   * @return the resolved instant, or {@code null} if the fields do not form a valid date and time.
    */
-  private static Instant instant(Cp56Time2a time) {
-    return time.toInstant(TIME_ZONE);
+  private static @Nullable Instant instant(Cp56Time2a time) {
+    return time.isWellFormed() ? time.toInstant(TIME_ZONE) : null;
   }
 
   /**

@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.session;
 
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -103,6 +104,26 @@ public interface Session {
   }
 
   /**
+   * Sends ASDU octets exactly as given, without encoding them through the typed ASDU model.
+   *
+   * <p>This is the path for an ASDU the typed model cannot represent, such as a negative mirror of
+   * a received ASDU whose type identification or cause of transmission is undefined. The octets
+   * start at the type identification and must match the session's protocol profile; the session
+   * does not validate them. Ordering, flow control, and completion follow {@link
+   * #sendAsduAsync(Asdu)}, and the entry is protected from overflow eviction in the same way.
+   *
+   * <p>The default fails without sending. Sessions that cannot carry raw octets keep that default.
+   *
+   * @param asdu the complete ASDU octets; the session takes a copy.
+   * @return the transport-write completion, or a stage failed with {@link
+   *     UnsupportedOperationException} if this session does not support raw sends.
+   */
+  default CompletionStage<Void> sendRawAsduAsync(byte[] asdu) {
+    return CompletableFuture.failedFuture(
+        new UnsupportedOperationException("session does not support raw ASDU sends"));
+  }
+
+  /**
    * Awaits free capacity in the outbound send queue, off the session's hot path, for a blocking
    * overflow policy.
    *
@@ -141,6 +162,24 @@ public interface Session {
      * @param asdu the received ASDU.
      */
     void onAsdu(Asdu asdu);
+
+    /**
+     * Reports a received ASDU that the session accepted at the link layer but could not decode.
+     *
+     * <p>The frame carrying it was correctly framed and passed the link layer's sequence checks, so
+     * the session acknowledged it like any other and stays open. {@link #onAsdu(Asdu)} is not
+     * invoked for it. Causes include an undefined or private type identification, a type with no
+     * registered codec, an undefined cause of transmission, and malformed information objects.
+     *
+     * <p>May be invoked while internal locks are held; implementations must not block or re-enter
+     * the session. The default ignores the ASDU.
+     *
+     * @param asdu the raw ASDU octets, starting at the type identification; the array belongs to
+     *     the receiver.
+     * @param cause the decode failure, an {@link com.digitalpetri.iec60870.AsduDecodeException} or
+     *     an {@link com.digitalpetri.iec60870.UnsupportedAsduTypeException}.
+     */
+    default void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {}
 
     /**
      * Reports a change in the data-transfer state.

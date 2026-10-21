@@ -1,10 +1,10 @@
 package com.digitalpetri.iec60870.asdu.time;
 
-import com.digitalpetri.iec60870.AsduDecodeException;
 import io.netty.buffer.ByteBuf;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.time.ZoneOffset;
 
 /**
@@ -25,17 +25,29 @@ import java.time.ZoneOffset;
  * used". It is not required to reconstruct an instant and is ignored by {@link
  * #toInstant(ZoneOffset)}.
  *
+ * <p>Each component accepts any value its wire bit field can hold, so a received time tag keeps its
+ * fields exactly as sent even when they are out of range or do not form a calendar date. A device
+ * whose clock has never been set may send such a tag, often all zero with the IV bit set. {@link
+ * #isWellFormed()} reports whether the fields are within their specified ranges and name a real
+ * date and time; only a well-formed tag converts to an {@link Instant}.
+ *
  * <p>Because the year is a two-digit field with no century, conversions to and from {@link Instant}
  * interpret the year against the 2000..2099 century.
  *
- * @param milliseconds the milliseconds within the minute, in the range {@code 0..59999}.
- * @param minute the minute of the hour, in the range {@code 0..59}.
- * @param hour the hour of the day, in the range {@code 0..23}.
- * @param dayOfMonth the day of the month, in the range {@code 1..31}.
+ * @param milliseconds the milliseconds within the minute, specified as {@code 0..59999}; any value
+ *     in {@code 0..65535} is accepted.
+ * @param minute the minute of the hour, specified as {@code 0..59}; any value in {@code 0..63} is
+ *     accepted.
+ * @param hour the hour of the day, specified as {@code 0..23}; any value in {@code 0..31} is
+ *     accepted.
+ * @param dayOfMonth the day of the month, specified as {@code 1..31}; any value in {@code 0..31} is
+ *     accepted.
  * @param dayOfWeek the day of the week ({@code 1}=Monday .. {@code 7}=Sunday), or {@code 0} if not
  *     used, in the range {@code 0..7}.
- * @param month the month of the year, in the range {@code 1..12}.
- * @param year the two-digit year, in the range {@code 0..99}.
+ * @param month the month of the year, specified as {@code 1..12}; any value in {@code 0..15} is
+ *     accepted.
+ * @param year the two-digit year, specified as {@code 0..99}; any value in {@code 0..127} is
+ *     accepted.
  * @param invalid {@code true} if the time tag is marked invalid (IV bit set).
  * @param summerTime {@code true} if the time tag indicates summer time / daylight saving time (SU
  *     bit set).
@@ -55,60 +67,49 @@ public record Cp56Time2a(
     boolean genuine) {
 
   /**
-   * Validates the component ranges of a {@code Cp56Time2a}.
+   * Validates that each component fits its wire bit field.
    *
-   * @param milliseconds the milliseconds within the minute, in the range {@code 0..59999}.
-   * @param minute the minute of the hour, in the range {@code 0..59}.
-   * @param hour the hour of the day, in the range {@code 0..23}.
-   * @param dayOfMonth the day of the month, in the range {@code 1..31}.
-   * @param dayOfWeek the day of the week ({@code 1}=Monday .. {@code 7}=Sunday), or {@code 0} if
-   *     not used, in the range {@code 0..7}.
-   * @param month the month of the year, in the range {@code 1..12}.
-   * @param year the two-digit year, in the range {@code 0..99}.
+   * @param milliseconds the milliseconds within the minute, in the range {@code 0..65535}.
+   * @param minute the minute of the hour, in the range {@code 0..63}.
+   * @param hour the hour of the day, in the range {@code 0..31}.
+   * @param dayOfMonth the day of the month, in the range {@code 0..31}.
+   * @param dayOfWeek the day of the week, in the range {@code 0..7}.
+   * @param month the month of the year, in the range {@code 0..15}.
+   * @param year the two-digit year, in the range {@code 0..127}.
    * @param invalid {@code true} if the time tag is marked invalid (IV bit set).
    * @param summerTime {@code true} if the time tag indicates summer time / daylight saving time (SU
    *     bit set).
    * @param genuine {@code true} if the time tag is genuine (RES1/GEN bit clear), {@code false} if
    *     substituted.
-   * @throws IllegalArgumentException if any calendar component is outside its specified range:
-   *     {@code milliseconds} {@code 0..59999}, {@code minute} {@code 0..59}, {@code hour} {@code
-   *     0..23}, {@code dayOfMonth} {@code 1..31}, {@code dayOfWeek} {@code 0..7}, {@code month}
-   *     {@code 1..12}, or {@code year} {@code 0..99}; or if the {@code dayOfMonth}/{@code month}
-   *     combination is not a valid calendar date (such as February 31).
+   * @throws IllegalArgumentException if any component does not fit its wire bit field.
    */
   public Cp56Time2a {
-    if (milliseconds < 0 || milliseconds > 59999) {
-      throw new IllegalArgumentException("milliseconds out of range [0, 59999]: " + milliseconds);
+    checkField("milliseconds", milliseconds, 0xFFFF);
+    checkField("minute", minute, 0x3F);
+    checkField("hour", hour, 0x1F);
+    checkField("dayOfMonth", dayOfMonth, 0x1F);
+    checkField("dayOfWeek", dayOfWeek, 0x07);
+    checkField("month", month, 0x0F);
+    checkField("year", year, 0x7F);
+  }
+
+  /**
+   * Reports whether the calendar fields are within their specified ranges and name a real date and
+   * time.
+   *
+   * <p>This is independent of the {@link #invalid() IV} flag, which is the sender's own statement
+   * about the time tag. The {@code dayOfWeek} field is not checked against the date.
+   *
+   * @return {@code true} if {@link #toInstant(ZoneOffset)} can convert this time tag.
+   */
+  public boolean isWellFormed() {
+    if (milliseconds > 59999 || minute > 59 || hour > 23 || year > 99) {
+      return false;
     }
-    if (minute < 0 || minute > 59) {
-      throw new IllegalArgumentException("minute out of range [0, 59]: " + minute);
+    if (dayOfMonth < 1 || month < 1 || month > 12) {
+      return false;
     }
-    if (hour < 0 || hour > 23) {
-      throw new IllegalArgumentException("hour out of range [0, 23]: " + hour);
-    }
-    if (dayOfMonth < 1 || dayOfMonth > 31) {
-      throw new IllegalArgumentException("dayOfMonth out of range [1, 31]: " + dayOfMonth);
-    }
-    if (dayOfWeek < 0 || dayOfWeek > 7) {
-      throw new IllegalArgumentException("dayOfWeek out of range [0, 7]: " + dayOfWeek);
-    }
-    if (month < 1 || month > 12) {
-      throw new IllegalArgumentException("month out of range [1, 12]: " + month);
-    }
-    if (year < 0 || year > 99) {
-      throw new IllegalArgumentException("year out of range [0, 99]: " + year);
-    }
-    // Day and month are independent wire fields, so calendar-impossible dates (e.g. February 31)
-    // are peer-reachable. Reject them here so toInstant never throws for a constructed instance.
-    int seconds = milliseconds / 1000;
-    int nanos = (milliseconds % 1000) * 1_000_000;
-    try {
-      // Called for its DateTimeException side effect: validates the calendar date; result unused.
-      //noinspection ResultOfMethodCallIgnored
-      LocalDateTime.of(2000 + year, month, dayOfMonth, hour, minute, seconds, nanos);
-    } catch (DateTimeException e) {
-      throw new IllegalArgumentException("invalid CP56Time2a calendar date: " + e.getMessage());
-    }
+    return dayOfMonth <= YearMonth.of(2000 + year, month).lengthOfMonth();
   }
 
   /**
@@ -162,8 +163,12 @@ public record Cp56Time2a(
    *
    * @param offset the zone offset at which the calendar fields are interpreted.
    * @return the instant represented by this time tag at {@code offset}.
+   * @throws DateTimeException if this time tag is not {@linkplain #isWellFormed() well-formed}.
    */
   public Instant toInstant(ZoneOffset offset) {
+    if (!isWellFormed()) {
+      throw new DateTimeException("CP56Time2a fields do not form a valid date and time: " + this);
+    }
     int seconds = milliseconds / 1000;
     int nanos = (milliseconds % 1000) * 1_000_000;
 
@@ -234,12 +239,11 @@ public record Cp56Time2a(
      * Decodes a {@code Cp56Time2a} from the next seven octets of {@code buffer}.
      *
      * <p>The buffer is owned by the caller; this method reads from it and never releases it.
-     * Reserved bits are ignored. Decoded calendar fields are validated against their specified
-     * ranges.
+     * Reserved bits are ignored. Calendar fields are kept as received, even when they are out of
+     * range; check {@link Cp56Time2a#isWellFormed()} before converting the result to an instant.
      *
      * @param buffer the source buffer positioned at the first octet of the time element.
      * @return the decoded time element.
-     * @throws AsduDecodeException if any decoded calendar component is outside its specified range.
      */
     public static Cp56Time2a decode(ByteBuf buffer) {
       int milliseconds = buffer.readUnsignedShortLE();
@@ -263,21 +267,23 @@ public record Cp56Time2a(
       int octet7 = buffer.readUnsignedByte();
       int year = octet7 & 0x7F;
 
-      try {
-        return new Cp56Time2a(
-            milliseconds,
-            minute,
-            hour,
-            dayOfMonth,
-            dayOfWeek,
-            month,
-            year,
-            invalid,
-            summerTime,
-            genuine);
-      } catch (IllegalArgumentException e) {
-        throw new AsduDecodeException("malformed CP56Time2a: " + e.getMessage());
-      }
+      return new Cp56Time2a(
+          milliseconds,
+          minute,
+          hour,
+          dayOfMonth,
+          dayOfWeek,
+          month,
+          year,
+          invalid,
+          summerTime,
+          genuine);
+    }
+  }
+
+  private static void checkField(String name, int value, int max) {
+    if (value < 0 || value > max) {
+      throw new IllegalArgumentException(name + " out of range [0, " + max + "]: " + value);
     }
   }
 }

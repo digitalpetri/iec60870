@@ -71,9 +71,9 @@ class MeasuredValueShortFloatWithCp56TimeTest {
     assertThrows(
         NullPointerException.class,
         () -> new MeasuredValueShortFloatWithCp56Time(null, 0.0f, quality, time));
-    // CP56Time2a also rejects an out-of-range milliseconds value.
+    // CP56Time2a also rejects a milliseconds value that does not fit its wire field.
     assertThrows(
         IllegalArgumentException.class,
-        () -> new Cp56Time2a(60000, 0, 0, 1, 0, 1, 0, false, false, true));
+        () -> new Cp56Time2a(65536, 0, 0, 1, 0, 1, 0, false, false, true));
   }
 }

@@ -65,7 +65,7 @@ class SinglePointWithCp24TimeTest {
 
   @Test
   void compactConstructorRejectsOutOfRangeTime() {
-    // The CP24Time2a component validates its own ranges; minute 60 is out of range.
+    // The CP24Time2a component validates its own bit fields; minute 64 does not fit.
     assertThrows(
         IllegalArgumentException.class,
         () ->
@@ -73,6 +73,6 @@ class SinglePointWithCp24TimeTest {
                 IOA,
                 true,
                 new Qds(false, false, false, false, false),
-                new Cp24Time2a(0, 60, false, true)));
+                new Cp24Time2a(0, 64, false, true)));
   }
 }

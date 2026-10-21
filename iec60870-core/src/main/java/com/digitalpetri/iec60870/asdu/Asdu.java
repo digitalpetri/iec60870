@@ -146,7 +146,8 @@ public record Asdu(
      * @param profile the protocol profile selecting the field widths.
      * @param buffer the source buffer to read from.
      * @return the decoded ASDU.
-     * @throws AsduDecodeException if the buffer ends before a fixed envelope field is fully read.
+     * @throws AsduDecodeException if the ASDU is truncated or holds an undefined cause or a value
+     *     an information element rejects.
      * @throws com.digitalpetri.iec60870.UnsupportedAsduTypeException if the type identification is
      *     undefined or has no registered codec.
      */
@@ -228,14 +229,27 @@ public record Asdu(
      * @param registry the registry supplying the per-type information element codec.
      * @param buffer the source buffer to read from.
      * @return the decoded ASDU.
-     * @throws AsduDecodeException if the buffer ends before a fixed envelope field is fully read,
-     *     the cause of transmission is undefined, the variable structure qualifier reports a count
-     *     outside {@code 0..127}, or sequence addressing would carry an information object address
-     *     past {@code 0x00FF_FFFF}.
+     * @throws AsduDecodeException if the buffer ends before a field is fully read, the cause of
+     *     transmission is undefined, sequence addressing would carry an information object address
+     *     past {@code 0x00FF_FFFF}, or an information element holds a value its record rejects.
      * @throws com.digitalpetri.iec60870.UnsupportedAsduTypeException if the type identification is
      *     undefined or no codec is registered for it.
      */
     public static Asdu decode(
+        ProtocolProfile profile, InformationObjectCodecRegistry registry, ByteBuf buffer) {
+
+      try {
+        return decodeUnchecked(profile, registry, buffer);
+      } catch (IndexOutOfBoundsException e) {
+        // Element codecs read the buffer directly; running out of octets mid-element is truncation.
+        throw new AsduDecodeException("truncated ASDU: " + e.getMessage(), e);
+      } catch (IllegalArgumentException e) {
+        // A record's compact constructor rejected a decoded element value.
+        throw new AsduDecodeException("malformed ASDU: " + e.getMessage(), e);
+      }
+    }
+
+    private static Asdu decodeUnchecked(
         ProtocolProfile profile, InformationObjectCodecRegistry registry, ByteBuf buffer) {
 
       int headerLength = 3 + (profile.cotLength() == 2 ? 1 : 0) + profile.commonAddressLength();

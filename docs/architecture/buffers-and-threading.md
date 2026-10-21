@@ -85,8 +85,11 @@ loudly as a `LEAK:` log during the build.)
 
 Client transport lifecycle has one extra distinction: `disconnect()` is an intentional shutdown that
 may stop reconnection, while `closeConnection()` closes only the current connection. The cs104
-binding uses that narrower close when a malformed inbound frame cannot be decoded, so a persistent
-TCP client can drop the bad socket and reconnect without the core SPI exposing Netty channel types.
+binding uses that narrower close when an inbound frame has a framing error (or, under
+`UndecodableAsduPolicy.STRICT`, an undecodable ASDU), so a persistent TCP client can drop the bad
+socket and reconnect without the core SPI exposing Netty channel types. An undecodable ASDU in an
+intact frame does not close anything by default; the binding copies its octets out of the frame
+before `onFrame` returns, so the reported `byte[]` never aliases the transport's buffer.
 
 ## Threading and callback serialization
 

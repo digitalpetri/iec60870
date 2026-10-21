@@ -28,7 +28,7 @@ layer, and of the high-level facade:
   `ApduFramer`) happens above the SPI, so the 101-over-TCP variant reuses the same transport.
   `ClientTransport.disconnect()` means intentional shutdown; `ClientTransport.closeConnection()`
   closes only the current connection so a persistent transport can reconnect after a protocol
-  binding drops malformed input.
+  binding drops a malformed frame.
 
 `iec60870-cs104` owns the genuinely-104 link/session code (the package `.cs104`):
 
@@ -113,12 +113,13 @@ it:
 
 - constructs an `ApciSession` whose `Output.send(Apdu)` runs `ApduFramer.encode(apdu, profile,
   allocator)` then `octetTransport.send(ByteBuf)`;
-- registers a `TransportListener` whose `onFrame(ByteBuf)` runs `ApduFramer.decode(profile, frame)`
-  then `apciSession.onApdu(apdu)`;
+- registers a `TransportListener` whose `onFrame(ByteBuf)` runs `ApduFramer.decodeHeader(frame)`,
+  decodes the ASDU of an I-frame, then calls `apciSession.onApdu(apdu)`, or
+  `apciSession.onUndecodableIFrame(...)` when only the ASDU fails to decode;
 - routes a failed outbound send or a connection loss to `Session.Events.onConnectionLost`;
-- closes the underlying current connection when a malformed inbound frame fails during deframing,
-  using `ClientTransport.closeConnection()` for client sessions and
-  `ServerTransportConnection.close()` for server sessions;
+- closes the underlying current connection when an inbound frame has a framing error (or an
+  undecodable ASDU under `UndecodableAsduPolicy.STRICT`), using `ClientTransport.closeConnection()`
+  for client sessions and `ServerTransportConnection.close()` for server sessions;
 - performs the `(ApciSettings) sessionSettings` downcast — this is the one place that downcast lives.
 
 The `TcpIec104Client`/`TcpIec104Server` builders are the *only* types that name both the protocol

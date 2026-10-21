@@ -1,11 +1,14 @@
 package com.digitalpetri.iec60870.client;
 
+import com.digitalpetri.iec60870.Iec60870Exception;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.asdu.Asdu;
 import com.digitalpetri.iec60870.asdu.AsduType;
 import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.point.PointValue;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -35,6 +38,7 @@ public sealed interface ClientEvent
         ClientEvent.DataTransferStopped,
         ClientEvent.PointUpdated,
         ClientEvent.AsduReceived,
+        ClientEvent.UndecodableAsdu,
         ClientEvent.NegativeConfirmation,
         ClientEvent.ProtocolWarning {
 
@@ -124,6 +128,62 @@ public sealed interface ClientEvent
      */
     public AsduReceived {
       Objects.requireNonNull(asdu, "asdu");
+    }
+  }
+
+  /**
+   * Published for every received ASDU that the session accepted but could not decode, in place of
+   * {@link AsduReceived}.
+   *
+   * <p>The frame was correctly framed, so the session acknowledged it and the connection stays
+   * open. Causes include a private or reserved type identification, a file-transfer type, a private
+   * or reserved cause of transmission, and malformed information objects. A stream of these events
+   * after connecting often means the {@link com.digitalpetri.iec60870.ProtocolProfile} field widths
+   * do not match the peer's.
+   *
+   * @param asdu the raw ASDU octets, starting at the type identification.
+   * @param cause the decode failure, an {@link com.digitalpetri.iec60870.AsduDecodeException} or an
+   *     {@link com.digitalpetri.iec60870.UnsupportedAsduTypeException}.
+   */
+  record UndecodableAsdu(byte[] asdu, Iec60870Exception cause) implements ClientEvent {
+
+    /**
+     * Validates the components and copies the octets.
+     *
+     * @param asdu the raw ASDU octets, starting at the type identification.
+     * @param cause the decode failure.
+     * @throws NullPointerException if {@code asdu} or {@code cause} is null.
+     */
+    public UndecodableAsdu {
+      asdu = Objects.requireNonNull(asdu, "asdu").clone();
+      Objects.requireNonNull(cause, "cause");
+    }
+
+    /**
+     * Returns a copy of the raw ASDU octets.
+     *
+     * @return the raw ASDU octets, starting at the type identification.
+     */
+    @Override
+    public byte[] asdu() {
+      return asdu.clone();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return o instanceof UndecodableAsdu other
+          && Arrays.equals(asdu, other.asdu)
+          && cause.equals(other.cause);
+    }
+
+    @Override
+    public int hashCode() {
+      return 31 * Arrays.hashCode(asdu) + cause.hashCode();
+    }
+
+    @Override
+    public String toString() {
+      return "UndecodableAsdu[asdu=" + HexFormat.of().formatHex(asdu) + ", cause=" + cause + "]";
     }
   }
 

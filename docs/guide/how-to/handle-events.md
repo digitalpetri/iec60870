@@ -85,7 +85,8 @@ targets Java 17, so the body snippets here use `instanceof` chains, matching `Cl
 | `ConnectionOpened` | the TCP/TLS transport connection is established | log "link up" |
 | `DataTransferStarted` | the [STARTDT](../reference/glossary.md) handshake completed; user data may now flow | enable polling/UI |
 | `PointUpdated` | once per information object of a received [monitor ASDU](../reference/glossary.md) | update your value cache |
-| `AsduReceived` | once for *every* received [ASDU](../reference/glossary.md) | inspect raw or unmodeled frames |
+| `AsduReceived` | once for *every* received [ASDU](../reference/glossary.md) that decodes | inspect raw or unmodeled frames |
+| `UndecodableAsdu` | a received ASDU could not be decoded (private TypeID or cause, `F_*` type, bad objects); the connection stays open | log the raw octets; see [Work with raw ASDUs](./work-with-raw-asdus.md#receive-an-undecodable-asdu) |
 | `NegativeConfirmation` | the peer sent a negative confirmation not tied to a pending blocking call | log/audit a stray rejection |
 | `ProtocolWarning` | the client hit a recoverable protocol anomaly (no disconnect) | diagnostics/logging |
 | `DataTransferStopped` | the [STOPDT](../reference/glossary.md) handshake completed; user data paused | pause polling/UI |
@@ -202,7 +203,8 @@ server.events().subscribe(new Flow.Subscriber<ServerEvent>() {
 | `ConnectionAccepted` | a controlling-station connection is accepted |
 | `DataTransferStarted` | a connection's STARTDT handshake completed |
 | `CommandReceived` | a control command arrived on a connection |
-| `AsduReceived` | *every* ASDU arrived on a connection |
+| `AsduReceived` | *every* ASDU that decodes arrived on a connection |
+| `UndecodableAsdu` | an ASDU that could not be decoded arrived; the server has already sent any negative mirror |
 | `DataTransferStopped` | a connection's STOPDT handshake completed |
 | `ConnectionClosed` | a connection closed or was lost (`causeOptional()` distinguishes fault from orderly) |
 

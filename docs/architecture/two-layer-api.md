@@ -227,4 +227,5 @@ the values.
 | Host an outstation with a value image | High-level: `Iec60870Server` + `Station` |
 | Per-point values with quality and timestamps | `PointValue<T>` and `ClientEvent.PointUpdated` |
 | Conformance / exact wire control of a modeled type | Raw: build `Asdu`, `client.send(asdu)` / `events()` |
-| Receiving an unmodeled or unsupported type | Raw: `ClientEvent.AsduReceived` / `ServerHandler.onRawAsdu` |
+| Receiving a supported type the facade does not act on | Raw: `ClientEvent.AsduReceived` / `ServerHandler.onRawAsdu` |
+| Receiving a private or `F_*` type, or any ASDU that fails to decode | Raw octets: `ClientEvent.UndecodableAsdu` / `ServerEvent.UndecodableAsdu` |

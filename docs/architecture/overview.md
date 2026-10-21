@@ -31,9 +31,11 @@ them on the same connection.
 **The raw protocol layer** models the wire faithfully. `Asdu`, `AsduType`, `Cause`, and the
 per-type `InformationObject` records in `com.digitalpetri.iec60870.asdu.object` are direct,
 immutable representations of what travels on the wire, each with a co-located `Serde` that
-encodes and decodes it. A caller who needs full control — conformance testing, private TypeIDs,
-unusual cause/qualifier combinations — builds an `Asdu` and sends it with `Iec60870Client.send(Asdu)`,
-and observes every inbound `Asdu` through the event stream. Nothing is hidden at this layer.
+encodes and decodes it. A caller who needs full control — conformance testing, unusual
+cause/qualifier combinations — builds an `Asdu` and sends it with `Iec60870Client.send(Asdu)`, and
+observes every inbound `Asdu` through the event stream. A received ASDU the model cannot represent,
+such as a private TypeID or a file-transfer type, arrives as its raw octets in an undecodable-ASDU
+event. Nothing is hidden at this layer.
 
 **The high-level facade** turns that wire model into a domain API. `Iec60870Client` offers
 `interrogate`, `read`, `commands().single(...)`, and `synchronizeClock`; `Iec60870Server` hosts

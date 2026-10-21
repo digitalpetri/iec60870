@@ -1312,6 +1312,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
 
     @Override
+    public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
+      LOGGER.debug("received an undecodable ASDU ({} octets): {}", asdu.length, cause.toString());
+      publish(new ClientEvent.UndecodableAsdu(asdu, cause));
+    }
+
+    @Override
     public void onDataTransferStateChanged(boolean started) {
       publish(
           started ? new ClientEvent.DataTransferStarted() : new ClientEvent.DataTransferStopped());
