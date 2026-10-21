@@ -177,6 +177,14 @@ increment, and the `w`/`t2` acknowledgement) and reports the octets through
 retransmits unconfirmed I-frames after reconnecting has nothing to retransmit. See
 [errors-and-extensibility.md](errors-and-extensibility.md#undecodable-asdus).
 
+A session constructed with an `ApciDiagnostics` listener reports, under its lock, each `t1`, `t2`,
+and `t3` expiry (`onTimerExpired`), a full window (`onWindowFull`, once per stall: when `k` I-frames
+are unacknowledged and ASDUs wait, and again only after an acknowledgement opens the window), every
+U-frame it ignores (`onFrameIgnored`, also reported as `Events.onProtocolWarning`), and the error
+behind each self-close (`onProtocolError`) before `Events.onClosed`. A `t1` expiry therefore reports
+`onTimerExpired(T1)`, then `onProtocolError(ProtocolTimeoutException)`, then the close. See
+[buffers-and-threading.md](buffers-and-threading.md#diagnostics-listeners).
+
 All mutable session state is guarded by one internal `ReentrantLock`, and the timer callbacks acquire
 that same lock, so any method may be called from any thread. The `Output` (outbound APDU sink) and
 `Events` callbacks are invoked while the lock is held and must not block or re-enter the session —

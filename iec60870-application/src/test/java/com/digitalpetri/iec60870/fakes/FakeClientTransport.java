@@ -23,6 +23,8 @@ public final class FakeClientTransport implements ClientTransport {
   private int closeCount;
   private int closeConnectionCount;
   private @Nullable Throwable connectFailure;
+  private boolean holdConnect;
+  private @Nullable CompletableFuture<Void> heldConnect;
 
   @Override
   public CompletionStage<Void> connect() {
@@ -32,6 +34,12 @@ public final class FakeClientTransport implements ClientTransport {
       return CompletableFuture.failedFuture(failure);
     }
     connected = true;
+    if (holdConnect) {
+      holdConnect = false;
+      var held = new CompletableFuture<Void>();
+      heldConnect = held;
+      return held;
+    }
     return CompletableFuture.completedFuture(null);
   }
 
@@ -78,6 +86,28 @@ public final class FakeClientTransport implements ClientTransport {
    */
   public void failConnect(@Nullable Throwable cause) {
     this.connectFailure = cause;
+  }
+
+  /**
+   * Makes the next {@link #connect()} return a stage that completes only when the test completes
+   * {@link #heldConnect()}, as a real transport does after it has reported the connection.
+   */
+  public void holdNextConnect() {
+    holdConnect = true;
+  }
+
+  /**
+   * Returns the stage of the held {@link #connect()} call.
+   *
+   * @return the pending connect stage.
+   * @throws IllegalStateException if no connect was held.
+   */
+  public CompletableFuture<Void> heldConnect() {
+    CompletableFuture<Void> held = heldConnect;
+    if (held == null) {
+      throw new IllegalStateException("no connect was held");
+    }
+    return held;
   }
 
   /**

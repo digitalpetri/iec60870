@@ -63,6 +63,22 @@
     </dependency>
   </dependencies>
 
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${maven-surefire-plugin.version}</version>
+        <configuration>
+          <systemPropertyVariables>
+            <!-- slf4j-simple discards MDC entries; LoggingContextTest needs a working MDC. -->
+            <slf4j.provider>com.digitalpetri.iec60870.diagnostics.MdcServiceProvider</slf4j.provider>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
   <profiles>
     <profile>
       <id>release</id>

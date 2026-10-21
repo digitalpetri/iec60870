@@ -209,6 +209,20 @@ public interface Session {
     void onDataTransferStateChanged(boolean started);
 
     /**
+     * Reports a recoverable protocol anomaly that the session ignored without closing.
+     *
+     * <p>For example, an IEC 60870-5-104 session reports a confirmation that matches no outstanding
+     * activation, or an activation the peer is not allowed to send in this session's role. The
+     * session state is unchanged.
+     *
+     * <p>May be invoked while internal locks are held; implementations must not block or re-enter
+     * the session. The default ignores the warning.
+     *
+     * @param message a description of the anomaly.
+     */
+    default void onProtocolWarning(String message) {}
+
+    /**
      * Reports that the session has closed itself because of a protocol error or timeout.
      *
      * <p>Invoked at most once per connection. The current transport connection should be closed in

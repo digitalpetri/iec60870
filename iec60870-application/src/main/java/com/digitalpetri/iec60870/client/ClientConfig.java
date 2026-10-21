@@ -4,7 +4,9 @@ import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.catalog.PointCatalog;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
@@ -18,9 +20,9 @@ import org.jspecify.annotations.Nullable;
  * APCI flow-control parameters, the originator address, an optional point catalog, whether to start
  * data transfer automatically on connect, the request and command timeouts, the bound on the
  * objects a single interrogation will accumulate, the executor that delivers events and completes
- * blocking calls, the event backlog at which the client pauses inbound data, and the policy that
- * reconnects after a loss. Transport concerns (host, port, TLS) are configured on the transport,
- * not here.
+ * blocking calls, the event backlog at which the client pauses inbound data, the policy that
+ * reconnects after a loss, and the diagnostics listener and logging context. Transport concerns
+ * (host, port, TLS) are configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -47,6 +49,9 @@ import org.jspecify.annotations.Nullable;
  * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at which
  *     the client pauses inbound data.
  * @param reconnectPolicy when the client reconnects after a lost connection or a failed attempt.
+ * @param diagnostics the listener for closed connections, scheduled reconnects, inbound pauses, and
+ *     discarded events.
+ * @param loggingContext the MDC entries set around the client's log lines.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -59,7 +64,9 @@ public record ClientConfig(
     int maxInterrogationResponseObjects,
     Executor callbackExecutor,
     int eventBacklogLimit,
-    ReconnectPolicy reconnectPolicy) {
+    ReconnectPolicy reconnectPolicy,
+    ConnectionDiagnostics diagnostics,
+    Map<String, String> loggingContext) {
 
   /**
    * Validates the components.
@@ -80,6 +87,9 @@ public record ClientConfig(
    * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at
    *     which the client pauses inbound data.
    * @param reconnectPolicy when the client reconnects after a lost connection or a failed attempt.
+   * @param diagnostics the listener for closed connections, scheduled reconnects, inbound pauses,
+   *     and discarded events.
+   * @param loggingContext the MDC entries set around the client's log lines; copied.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
    *     negative, {@code maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit}
@@ -92,6 +102,8 @@ public record ClientConfig(
     Objects.requireNonNull(requestTimeout, "requestTimeout");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
+    Objects.requireNonNull(diagnostics, "diagnostics");
+    loggingContext = Map.copyOf(loggingContext);
     requirePositive(commandTimeout, "commandTimeout");
     requirePositive(requestTimeout, "requestTimeout");
     if (maxInterrogationResponseObjects < 0) {
@@ -154,6 +166,8 @@ public record ClientConfig(
     private Executor callbackExecutor = ForkJoinPool.commonPool();
     private int eventBacklogLimit = DEFAULT_EVENT_BACKLOG_LIMIT;
     private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+    private ConnectionDiagnostics diagnostics = ConnectionDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
 
     private Builder() {}
 
@@ -322,6 +336,34 @@ public record ClientConfig(
     }
 
     /**
+     * Sets the listener for the client's connection-level events. Defaults to {@link
+     * ConnectionDiagnostics#NONE}.
+     *
+     * <p>The client reports each closed connection, each scheduled reconnect, each pause and resume
+     * of inbound data, and each inbound ASDU it discards while closing a connection whose event
+     * subscriber fell too far behind. Connect attempts and frame events come from the transport and
+     * the session; the TCP builders hand one listener to all of them.
+     *
+     * @param diagnostics the diagnostics listener.
+     * @return this builder.
+     */
+    public Builder diagnostics(ConnectionDiagnostics diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets the MDC entries set around the client's log lines. Defaults to none.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link ClientConfig} from the current builder state.
      *
      * @return the configuration.
@@ -340,7 +382,9 @@ public record ClientConfig(
           maxInterrogationResponseObjects,
           callbackExecutor,
           eventBacklogLimit,
-          reconnectPolicy);
+          reconnectPolicy,
+          diagnostics,
+          loggingContext);
     }
   }
 }

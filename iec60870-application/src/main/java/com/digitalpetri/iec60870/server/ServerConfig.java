@@ -3,13 +3,17 @@ package com.digitalpetri.iec60870.server;
 import com.digitalpetri.iec60870.OutboundQueuePolicy;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import com.digitalpetri.iec60870.point.TimeTagStyle;
+import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -19,8 +23,9 @@ import org.jspecify.annotations.Nullable;
  * APCI flow-control parameters, the hosted stations, the request handler, the policy for a full
  * outbound queue, the bound on each connection's outbound queue, the time-tag style used when
  * reporting monitor data, the maximum number of concurrent connections, the bound on each
- * connection's inbound dispatch backlog, and the executor that delivers events and runs handler
- * callbacks. Transport concerns (host, port, TLS) are configured on the transport, not here.
+ * connection's inbound dispatch backlog, the executor that delivers events and runs handler
+ * callbacks, and the per-connection diagnostics listener and logging context. Transport concerns
+ * (host, port, TLS) are configured on the transport, not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -48,6 +53,10 @@ import org.jspecify.annotations.Nullable;
  * @param maxInboundQueue the bound on the number of inbound ASDUs a started connection holds on its
  *     serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded chain.
  * @param callbackExecutor the executor used to deliver events and run handler callbacks.
+ * @param diagnostics maps the remote address of each accepted connection to its diagnostics
+ *     listener.
+ * @param loggingContext the MDC entries set around the server's log lines; each connection adds its
+ *     remote address.
  */
 public record ServerConfig(
     ProtocolProfile protocolProfile,
@@ -60,7 +69,9 @@ public record ServerConfig(
     TimeTagStyle timeTagStyle,
     int maxConnections,
     int maxInboundQueue,
-    Executor callbackExecutor) {
+    Executor callbackExecutor,
+    Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics,
+    Map<String, String> loggingContext) {
 
   /**
    * Validates the configuration and defensively copies the station list.
@@ -82,6 +93,9 @@ public record ServerConfig(
    *     its serial dispatch chain before further ASDUs are dropped, or {@code 0} for an unbounded
    *     chain.
    * @param callbackExecutor the executor used to deliver events and run handler callbacks.
+   * @param diagnostics maps the remote address of each accepted connection to its diagnostics
+   *     listener.
+   * @param loggingContext the MDC entries set around the server's log lines; copied.
    * @throws NullPointerException if any non-primitive component is null.
    * @throws IllegalArgumentException if {@code maxConnections} is not positive, {@code
    *     maxOutboundQueue} or {@code maxInboundQueue} is negative, or {@code outboundBlockTimeout}
@@ -95,6 +109,8 @@ public record ServerConfig(
     Objects.requireNonNull(outboundBlockTimeout, "outboundBlockTimeout");
     Objects.requireNonNull(timeTagStyle, "timeTagStyle");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
+    Objects.requireNonNull(diagnostics, "diagnostics");
+    loggingContext = Map.copyOf(loggingContext);
     if (maxConnections < 1) {
       throw new IllegalArgumentException("maxConnections must be positive: " + maxConnections);
     }
@@ -138,6 +154,9 @@ public record ServerConfig(
     private TimeTagStyle timeTagStyle = TimeTagStyle.CP56;
     private int maxConnections = 16;
     private int maxInboundQueue = 1024;
+    private Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics =
+        remote -> ConnectionDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
     private Executor callbackExecutor = ForkJoinPool.commonPool();
 
     private Builder() {}
@@ -308,6 +327,39 @@ public record ServerConfig(
     }
 
     /**
+     * Sets the function that picks the diagnostics listener for each accepted connection. Defaults
+     * to {@link ConnectionDiagnostics#NONE} for every connection.
+     *
+     * <p>The function runs once per accepted connection, with the connection's remote address, and
+     * may return a shared instance to keep totals across connections. The server reports the
+     * accepted connection, its close, connections it rejects at {@link #maxConnections(int)},
+     * inbound ASDUs dropped at {@link #maxInboundQueue(int)}, monitor ASDUs its queue policy
+     * discards, and events it drops for a slow subscriber. The same listener reaches the session
+     * through {@link DefaultIec60870Server.SessionFactory}.
+     *
+     * @param diagnostics maps a remote address to its listener.
+     * @return this builder.
+     */
+    public Builder diagnostics(
+        Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets the MDC entries set around the server's log lines. Defaults to none.
+     *
+     * <p>Log lines for a connection also carry {@code iec60870.remote} with its remote address.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link ServerConfig} from the current builder state.
      *
      * @return the configuration.
@@ -326,7 +378,9 @@ public record ServerConfig(
           timeTagStyle,
           maxConnections,
           maxInboundQueue,
-          callbackExecutor);
+          callbackExecutor,
+          diagnostics,
+          loggingContext);
     }
   }
 }

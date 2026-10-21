@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
@@ -37,13 +38,26 @@ class NettyServerConnection implements ServerTransportConnection {
 
   private final Channel channel;
 
+  private final LoggingContext loggingContext;
+
   /**
    * Creates a connection wrapping an accepted child channel.
    *
    * @param channel the accepted Netty child channel.
    */
   NettyServerConnection(Channel channel) {
+    this(channel, LoggingContext.empty());
+  }
+
+  /**
+   * Creates a connection wrapping an accepted child channel that logs with the given context.
+   *
+   * @param channel the accepted Netty child channel.
+   * @param loggingContext the MDC entries for the connection.
+   */
+  NettyServerConnection(Channel channel, LoggingContext loggingContext) {
     this.channel = channel;
+    this.loggingContext = loggingContext;
   }
 
   /**
@@ -93,7 +107,8 @@ class NettyServerConnection implements ServerTransportConnection {
       }
       return Optional.of(chain[0]);
     } catch (SSLPeerUnverifiedException e) {
-      LOGGER.debug("peer certificate unavailable on {}: {}", channel, e.getMessage());
+      loggingContext.debug(
+          LOGGER, "peer certificate unavailable on {}: {}", channel, e.getMessage());
       return Optional.empty();
     }
   }

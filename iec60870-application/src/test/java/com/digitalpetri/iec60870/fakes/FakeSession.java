@@ -201,6 +201,15 @@ public final class FakeSession implements Session {
   }
 
   /**
+   * Reports an ignored protocol anomaly through {@link Session.Events#onProtocolWarning(String)}.
+   *
+   * @param message the warning.
+   */
+  public void deliverProtocolWarning(String message) {
+    events.onProtocolWarning(message);
+  }
+
+  /**
    * Returns every {@link #setInboundPaused(boolean)} argument, in call order.
    *
    * @return the recorded pause ({@code true}) and resume ({@code false}) requests.

@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -16,9 +17,30 @@ import com.digitalpetri.iec60870.asdu.Cause;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
 import com.digitalpetri.iec60870.session.OutboundAsduQueue;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class OutboundAsduQueueTest {
+  @Test
+  void discardsOfDiscardableEntriesAreReported() {
+    var discards = new AtomicInteger();
+    var oldest =
+        new OutboundAsduQueue(1, OutboundQueuePolicy.DROP_OLDEST, discards::incrementAndGet);
+    oldest.offer(asdu(1), false);
+    oldest.offer(asdu(2), false);
+    assertEquals(1, discards.get(), "the evicted entry");
+
+    var newest =
+        new OutboundAsduQueue(1, OutboundQueuePolicy.DROP_NEWEST, discards::incrementAndGet);
+    newest.offer(asdu(1), true);
+    newest.offer(asdu(2), false);
+    assertEquals(2, discards.get(), "the rejected discardable entry");
+
+    // A rejected reliable entry fails its own completion instead.
+    newest.offer(asdu(3), true);
+    assertEquals(2, discards.get());
+  }
+
   @Test
   void rawEntriesKeepACopyAndShareTheEvictionRules() {
     var queue = new OutboundAsduQueue(2, OutboundQueuePolicy.DROP_OLDEST);

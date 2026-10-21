@@ -19,6 +19,9 @@ import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.ReadCommand;
 import com.digitalpetri.iec60870.asdu.time.Cp56Time2a;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.diagnostics.Direction;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointValueExtraction;
 import com.digitalpetri.iec60870.session.Session;
@@ -74,6 +77,12 @@ import org.slf4j.LoggerFactory;
  * its scheduler according to the configured {@link ReconnectPolicy}, and every attempt resets the
  * session and repeats the initialization of {@link #connect()}.
  *
+ * <p>The client reports closed connections, scheduled reconnects, inbound pauses, and discarded
+ * events or inbound ASDUs to {@link ClientConfig#diagnostics()}, and sets {@link
+ * ClientConfig#loggingContext()} around its log lines. Ignored U-frames reported by the session
+ * through {@link Session.Events#onProtocolWarning(String)} are published as {@link
+ * ClientEvent.ProtocolWarning} while the event backlog has room for data.
+ *
  * <p>The instance is thread-safe. Construct it with a transport, a {@link ClientConfig}, and a
  * session factory that builds the {@link Session} wired to the facade's {@link Session.Events}.
  */
@@ -86,6 +95,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   private final ClientTransport transport;
   private final ClientConfig config;
+  private final ConnectionDiagnostics diagnostics;
+  private final LoggingContext loggingContext;
 
   /**
    * Cached from {@link ClientConfig#maxInterrogationResponseObjects()}; {@code 0} means no bound.
@@ -188,6 +199,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
     this.transport = Objects.requireNonNull(transport, "transport");
     this.config = Objects.requireNonNull(config, "config");
     Objects.requireNonNull(sessionFactory, "sessionFactory");
+    this.diagnostics = ConnectionDiagnostics.of(config.diagnostics());
+    this.loggingContext = LoggingContext.of(config.loggingContext());
     this.maxInterrogationResponseObjects = config.maxInterrogationResponseObjects();
     this.reconnectPolicy = config.reconnectPolicy();
 
@@ -200,7 +213,12 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
     this.callbackExecutor = config.callbackExecutor();
     this.publisher =
-        new EventStream<>(callbackExecutor, config.eventBacklogLimit(), this::setInboundPaused);
+        new EventStream<>(
+            callbackExecutor,
+            config.eventBacklogLimit(),
+            this::setInboundPaused,
+            event -> diagnostics.onEventDropped(event.getClass()),
+            loggingContext);
 
     // The facade owns the Session.Events sink; the factory wires the session to it. The factory
     // routes inbound frames to the session and transport-level connection loss to
@@ -286,7 +304,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
     transportConnected
         .thenCompose(
             connected -> {
-              started.transportConnected = true;
+              // The transport reported the connection before completing; a teardown that ran in
+              // between found no transport connection, so the close is reported here instead.
+              if (started.markTransportConnected()) {
+                diagnostics.onConnectionClosed(started.teardownCause());
+              }
               return CompletableFuture.supplyAsync(
                       () -> initializeConnection(started), this::executeSessionOperation)
                   .thenCompose(stage -> stage);
@@ -439,6 +461,9 @@ public final class DefaultIec60870Client implements Iec60870Client {
    */
   private void publishClosed(@Nullable Connection ended, @Nullable Throwable cause) {
     session.close();
+    if (ended != null && ended.markTornDown(cause)) {
+      diagnostics.onConnectionClosed(cause);
+    }
     // The session is closed, so no data-transfer callback can race these events.
     if (ended != null && ended.opened) {
       if (dataTransferStarted.getAndSet(false)) {
@@ -454,7 +479,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
     try {
       disconnected = transport.disconnect();
     } catch (RuntimeException e) {
-      LOGGER.debug("transport disconnect failed", e);
+      loggingContext.debug(LOGGER, "{}: transport disconnect failed", remote(), e);
       disconnected = CompletableFuture.completedFuture(null);
     }
     disconnected.whenComplete((ignored, error) -> ended.markClosed());
@@ -473,7 +498,14 @@ public final class DefaultIec60870Client implements Iec60870Client {
     } finally {
       lock.unlock();
     }
-    LOGGER.debug("reconnect attempt {} in {}: {}", wait.attempt, wait.delay, cause.toString());
+    loggingContext.debug(
+        LOGGER,
+        "{}: reconnect attempt {} in {}: {}",
+        remote(),
+        wait.attempt,
+        wait.delay,
+        cause.toString());
+    diagnostics.onReconnectScheduled(wait.attempt, wait.delay, cause);
     publish(new ClientEvent.ReconnectScheduled(wait.attempt, wait.delay, cause));
     wait.arm(wait.delay);
   }
@@ -490,8 +522,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
         // A subscriber is too far behind to take a new connection's events. Wait again for the
         // maximum delay, without publishing, so the lifecycle reserve is not used up while it
         // stays stalled.
-        LOGGER.debug(
-            "reconnect deferred: an event subscriber is {} events behind", publisher.maxBacklog());
+        loggingContext.debug(
+            LOGGER,
+            "{}: reconnect deferred: an event subscriber is {} events behind",
+            remote(),
+            publisher.maxBacklog());
         wait.arm(reconnectPolicy.maxDelay());
         return;
       }
@@ -581,7 +616,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
           try {
             disconnected = transport.disconnect();
           } catch (RuntimeException e) {
-            LOGGER.debug("transport disconnect failed", e);
+            loggingContext.debug(LOGGER, "{}: transport disconnect failed", remote(), e);
             disconnected = CompletableFuture.completedFuture(null);
           }
           disconnected.whenComplete(
@@ -697,7 +732,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
           try {
             transport.close();
           } catch (RuntimeException e) {
-            LOGGER.debug("transport close failed", e);
+            loggingContext.debug(LOGGER, "{}: transport close failed", remote(), e);
           }
           if (ended != null) {
             ended.markClosed();
@@ -947,11 +982,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
    */
   private boolean admitInbound() {
     if (backlogExceeded.get()) {
+      diagnostics.onAsduDropped(Direction.IN, "event backlog exceeded");
       return false;
     }
     if (publisher.hasRoomForData()) {
       return true;
     }
+    diagnostics.onAsduDropped(Direction.IN, "event backlog exceeded");
     if (backlogExceeded.compareAndSet(false, true)) {
       Connection current;
       lock.lock();
@@ -965,12 +1002,16 @@ public final class DefaultIec60870Client implements Iec60870Client {
           new EventBacklogExceededException(
               "an event subscriber is " + publisher.maxBacklog() + " events behind");
       if (current != null) {
-        LOGGER.warn("closing the connection: {}", cause.getMessage());
+        loggingContext.warn(LOGGER, "{}: closing the connection: {}", remote(), cause.getMessage());
         // Invoked under the session lock; close the session from the scheduler instead.
         try {
           scheduler.execute(() -> endConnection(current, cause));
         } catch (RejectedExecutionException e) {
-          LOGGER.debug("scheduler rejected the backlog close; the client is closing", e);
+          loggingContext.debug(
+              LOGGER,
+              "{}: scheduler rejected the backlog close; the client is closing",
+              remote(),
+              e);
         }
       }
     }
@@ -978,11 +1019,19 @@ public final class DefaultIec60870Client implements Iec60870Client {
   }
 
   private void setInboundPaused(boolean paused) {
-    LOGGER.debug(
-        "{} inbound data; event backlog {}",
+    loggingContext.debug(
+        LOGGER,
+        "{}: {} inbound data; event backlog {}",
+        remote(),
         paused ? "pausing" : "resuming",
         publisher.maxBacklog());
+    diagnostics.onInboundPaused(paused);
     session.setInboundPaused(paused);
+  }
+
+  /** Returns the remote address from the logging context, for messages read without the MDC. */
+  private String remote() {
+    return loggingContext.remote();
   }
 
   /**
@@ -1165,15 +1214,13 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
   }
 
-  /**
-   * Returns the number of in-flight requests awaiting a correlated response.
-   *
-   * <p>Package-private; exposed for tests that verify timed-out, failed, or completed requests are
-   * removed from the registry and do not leak.
-   *
-   * @return the count of currently pending requests.
-   */
-  int pendingRequestCount() {
+  @Override
+  public int pendingSendCount() {
+    return session.pendingSendCount();
+  }
+
+  @Override
+  public int pendingRequestCount() {
     lock.lock();
     try {
       return pending.size();
@@ -1717,11 +1764,27 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
-      LOGGER.debug("received an undecodable ASDU ({} octets): {}", asdu.length, cause.toString());
+      loggingContext.debug(
+          LOGGER,
+          "{}: received an undecodable ASDU ({} octets): {}",
+          remote(),
+          asdu.length,
+          cause.toString());
       if (!admitInbound()) {
         return;
       }
       publish(new ClientEvent.UndecodableAsdu(asdu, cause));
+      publisher.afterInbound();
+    }
+
+    @Override
+    public void onProtocolWarning(String message) {
+      // Best effort: a peer that floods ignored U-frames must not use up the lifecycle reserve.
+      if (backlogExceeded.get() || !publisher.hasRoomForData()) {
+        diagnostics.onEventDropped(ClientEvent.ProtocolWarning.class);
+        return;
+      }
+      publish(new ClientEvent.ProtocolWarning(message));
       publisher.afterInbound();
     }
 
@@ -1894,14 +1957,63 @@ public final class DefaultIec60870Client implements Iec60870Client {
     /** The {@link #closed} stage of the connection or barrier before this one. */
     private final CompletableFuture<Void> predecessorClosed;
 
-    /** Set once the transport connected; a loss reported before this belongs to another one. */
+    /**
+     * Set once the transport connected; a loss reported before this belongs to another one. Written
+     * under this connection's monitor.
+     */
     private volatile boolean transportConnected;
+
+    /** Whether the teardown has run; guarded by this connection's monitor. */
+    private boolean tornDown;
+
+    /** The cause the teardown was given; guarded by this connection's monitor. */
+    private @Nullable Throwable teardownCause;
+
+    /** Whether onConnectionClosed was reported; guarded by this connection's monitor. */
+    private boolean closeReported;
 
     /** Set once ConnectionOpened was published; read and written on the operation queue. */
     private volatile boolean opened;
 
     private Connection(CompletableFuture<Void> predecessorClosed) {
       this.predecessorClosed = predecessorClosed;
+    }
+
+    /**
+     * Records that the transport connected.
+     *
+     * @return {@code true} if the teardown already ran and the caller must report the close, which
+     *     happens when a disconnect lands between the transport reporting the connection and
+     *     completing its connect stage.
+     */
+    private synchronized boolean markTransportConnected() {
+      transportConnected = true;
+      return tornDown && claimCloseReport();
+    }
+
+    /**
+     * Records that the teardown ran.
+     *
+     * @param cause the teardown's cause, or {@code null} for an application close.
+     * @return {@code true} if the transport connected and the caller must report the close.
+     */
+    private synchronized boolean markTornDown(@Nullable Throwable cause) {
+      tornDown = true;
+      teardownCause = cause;
+      return transportConnected && claimCloseReport();
+    }
+
+    private synchronized @Nullable Throwable teardownCause() {
+      return teardownCause;
+    }
+
+    // Monitor held. Every connection the transport reported gets exactly one close report.
+    private boolean claimCloseReport() {
+      if (closeReported) {
+        return false;
+      }
+      closeReported = true;
+      return true;
     }
 
     /**
@@ -1954,7 +2066,8 @@ public final class DefaultIec60870Client implements Iec60870Client {
       try {
         timer = scheduler.schedule(() -> reconnect(this), millis, TimeUnit.MILLISECONDS);
       } catch (RejectedExecutionException e) {
-        LOGGER.debug("scheduler rejected the reconnect; the client is closing", e);
+        loggingContext.debug(
+            LOGGER, "{}: scheduler rejected the reconnect; the client is closing", remote(), e);
         return;
       }
       if (cancelled) {

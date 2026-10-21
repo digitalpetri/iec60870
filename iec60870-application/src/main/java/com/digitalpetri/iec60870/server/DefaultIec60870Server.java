@@ -19,6 +19,9 @@ import com.digitalpetri.iec60870.asdu.object.ClockSynchronizationCommand;
 import com.digitalpetri.iec60870.asdu.object.CounterInterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.InterrogationCommand;
 import com.digitalpetri.iec60870.asdu.object.ResetProcessCommand;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.diagnostics.Direction;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
@@ -67,6 +70,14 @@ import org.slf4j.LoggerFactory;
  * connection. Server events are delivered through a {@link SubmissionPublisher} on the configured
  * callback executor.
  *
+ * <p>For each accepted connection the server resolves a listener through {@link
+ * ServerConfig#diagnostics()}, reports the accepted connection and its close, inbound ASDUs dropped
+ * at the dispatch backlog bound, monitor ASDUs discarded by the queue policy, and server events
+ * dropped for a slow subscriber, and hands the listener to the session through {@link
+ * SessionFactory#create(ServerTransportConnection, Session.Events, ScheduledExecutorService,
+ * ConnectionDiagnostics)}. Log lines for a connection carry {@link ServerConfig#loggingContext()}
+ * plus the connection's remote address.
+ *
  * <p>The instance is thread-safe. Construct it with a transport, a {@link ServerConfig}, and a
  * per-connection session factory; the server registers itself as the transport's connection handler
  * on construction. Per-connection handler callbacks are serialized.
@@ -82,6 +93,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
   private final ServerTransport transport;
   private final ServerConfig config;
+  private final LoggingContext loggingContext;
 
   /** Cached from {@link ServerConfig#maxInboundQueue()}; {@code 0} means an unbounded chain. */
   private final int maxInboundQueue;
@@ -151,6 +163,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     this.config = Objects.requireNonNull(config, "config");
     this.sessionFactory = Objects.requireNonNull(sessionFactory, "sessionFactory");
     this.maxInboundQueue = config.maxInboundQueue();
+    this.loggingContext = LoggingContext.of(config.loggingContext());
 
     if (scheduler != null) {
       this.scheduler = scheduler;
@@ -190,6 +203,28 @@ public final class DefaultIec60870Server implements Iec60870Server {
         ServerTransportConnection connection,
         Session.Events events,
         ScheduledExecutorService scheduler);
+
+    /**
+     * Builds the session for an accepted connection, handing it the connection's diagnostics
+     * listener.
+     *
+     * <p>The server calls this method. The default ignores {@code diagnostics} and calls {@link
+     * #create(ServerTransportConnection, Session.Events, ScheduledExecutorService)}; a factory
+     * whose session reports link-layer events overrides it.
+     *
+     * @param connection the accepted transport connection.
+     * @param events the connection's event sink, owned by the facade.
+     * @param scheduler the facade's shared scheduler for session timers.
+     * @param diagnostics the listener {@link ServerConfig#diagnostics()} chose for this connection.
+     * @return the session wired to {@code events}.
+     */
+    default Session create(
+        ServerTransportConnection connection,
+        Session.Events events,
+        ScheduledExecutorService scheduler,
+        ConnectionDiagnostics diagnostics) {
+      return create(connection, events, scheduler);
+    }
   }
 
   // --- Iec60870Server: lifecycle ----------------------------------------------------------------
@@ -229,7 +264,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
     try {
       transport.unbind();
     } catch (RuntimeException e) {
-      LOGGER.debug("transport unbind failed during close", e);
+      loggingContext.debug(LOGGER, "transport unbind failed during close", e);
     }
     for (ServerConnection connection : connections) {
       connection.close(null);
@@ -305,18 +340,43 @@ public final class DefaultIec60870Server implements Iec60870Server {
     // cannot both pass a size()>=max check and exceed the cap.
     if (connectionCount.incrementAndGet() > config.maxConnections()) {
       connectionCount.decrementAndGet();
-      LOGGER.debug(
-          "rejecting connection from {}: max connections ({}) reached",
-          transportConnection.remoteAddress(),
-          config.maxConnections());
+      SocketAddress remote = transportConnection.remoteAddress();
+      loggingContext
+          .withRemote(remote)
+          .debug(
+              LOGGER,
+              "rejecting connection from {}: max connections ({}) reached",
+              remote,
+              config.maxConnections());
       transportConnection.close();
+      ConnectionDiagnostics.of(diagnosticsFor(remote))
+          .onConnectFailed(
+              remote,
+              new ConnectionClosedException(
+                  "connection rejected: maxConnections=" + config.maxConnections() + " reached"));
       return;
     }
 
     ServerConnection connection = new ServerConnection(transportConnection);
     connections.add(connection);
+    connection.diagnostics.onConnectionAccepted(connection.remoteAddress());
     connection.onConnected();
-    publish(new ServerEvent.ConnectionAccepted(connection.remoteAddress()));
+    connection.publish(new ServerEvent.ConnectionAccepted(connection.remoteAddress()));
+  }
+
+  /**
+   * Resolves the diagnostics listener for a connection through {@link ServerConfig#diagnostics()}.
+   *
+   * @param remote the connection's remote address.
+   * @return the configured listener, or {@link ConnectionDiagnostics#NONE} if the function failed.
+   */
+  private ConnectionDiagnostics diagnosticsFor(SocketAddress remote) {
+    try {
+      return Objects.requireNonNull(config.diagnostics().apply(remote), "diagnostics");
+    } catch (RuntimeException e) {
+      loggingContext.withRemote(remote).warn(LOGGER, "diagnostics function threw", e);
+      return ConnectionDiagnostics.NONE;
+    }
   }
 
   // --- Event publishing -----------------------------------------------------------------------
@@ -325,15 +385,20 @@ public final class DefaultIec60870Server implements Iec60870Server {
    * Publishes a server event to subscribers, dropping it for any subscriber whose buffer is full.
    *
    * @param event the event to publish.
+   * @param diagnostics the listener told about a drop.
+   * @param context the logging context for a drop.
    */
-  private void publish(ServerEvent event) {
+  private void publish(
+      ServerEvent event, ConnectionDiagnostics diagnostics, LoggingContext context) {
     if (publisher.isClosed()) {
       return;
     }
     publisher.offer(
         event,
         (subscriber, dropped) -> {
-          LOGGER.warn("dropped a server event for a subscriber whose buffer is full: {}", dropped);
+          context.warn(
+              LOGGER, "dropped a server event for a subscriber whose buffer is full: {}", dropped);
+          diagnostics.onEventDropped(dropped.getClass());
           return false;
         });
   }
@@ -432,6 +497,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
     private final SocketAddress remoteAddress;
     private final Session session;
     private final MonitorPublicationQueue monitors;
+    private final ConnectionDiagnostics diagnostics;
+    private final LoggingContext connectionContext;
 
     // Serializes handler dispatch; each ASDU chains off the previous dispatch.
     private volatile CompletableFuture<Void> dispatchTail = CompletableFuture.completedFuture(null);
@@ -444,15 +511,30 @@ public final class DefaultIec60870Server implements Iec60870Server {
     ServerConnection(ServerTransportConnection transportConnection) {
       this.transportConnection = transportConnection;
       this.remoteAddress = transportConnection.remoteAddress();
+      // The session factory gets the listener as configured, so it can recognize a link-layer
+      // listener type; the facade guards its own calls.
+      ConnectionDiagnostics configured = diagnosticsFor(remoteAddress);
+      this.diagnostics = ConnectionDiagnostics.of(configured);
+      this.connectionContext = loggingContext.withRemote(remoteAddress);
       // The facade owns the Session.Events sink; the factory builds the protocol session wired to
       // it, using the facade's shared scheduler.
       this.session =
           Objects.requireNonNull(
-              sessionFactory.create(transportConnection, new SessionEvents(), scheduler),
+              sessionFactory.create(
+                  transportConnection, new SessionEvents(), scheduler, configured),
               "session");
       monitors =
           new MonitorPublicationQueue(
-              config, this::sendMonitor, session::sendAsduAsync, callbackExecutor, this::close);
+              config,
+              this::sendMonitor,
+              session::sendAsduAsync,
+              callbackExecutor,
+              this::close,
+              reason -> diagnostics.onAsduDropped(Direction.OUT, reason));
+    }
+
+    void publish(ServerEvent event) {
+      DefaultIec60870Server.this.publish(event, diagnostics, connectionContext);
     }
 
     SocketAddress remoteAddress() {
@@ -485,6 +567,7 @@ public final class DefaultIec60870Server implements Iec60870Server {
           session.awaitSendCapacity(config.outboundBlockTimeout().toMillis());
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
+          diagnostics.onAsduDropped(Direction.OUT, "publisher interrupted");
           return;
         }
         if (closed.get()) {
@@ -600,10 +683,12 @@ public final class DefaultIec60870Server implements Iec60870Server {
       boolean bounded = maxInboundQueue > 0;
       if (bounded && inFlightDispatches.incrementAndGet() > maxInboundQueue) {
         inFlightDispatches.decrementAndGet();
-        LOGGER.debug(
+        connectionContext.debug(
+            LOGGER,
             "dropping inbound ASDU from {}: dispatch backlog at limit ({})",
             remoteAddress,
             maxInboundQueue);
+        diagnostics.onAsduDropped(Direction.IN, "dispatch backlog full");
         return;
       }
       dispatchTail =
@@ -616,7 +701,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
                       inFlightDispatches.decrementAndGet();
                     }
                     if (error != null) {
-                      LOGGER.debug("dispatch failed for {}", remoteAddress, error);
+                      connectionContext.debug(
+                          LOGGER, "dispatch failed for {}", remoteAddress, error);
                     }
                     // null is the only valid completion value for a CompletableFuture<Void>.
                     //noinspection DataFlowIssue
@@ -1083,8 +1169,11 @@ public final class DefaultIec60870Server implements Iec60870Server {
             .whenCompleteAsync(
                 (ignored, error) -> {
                   if (error instanceof UnsupportedOperationException) {
-                    LOGGER.debug(
-                        "session for {} cannot send a raw negative mirror", remoteAddress, error);
+                    connectionContext.debug(
+                        LOGGER,
+                        "session for {} cannot send a raw negative mirror",
+                        remoteAddress,
+                        error);
                   } else if (error != null) {
                     close(error);
                   }
@@ -1162,8 +1251,9 @@ public final class DefaultIec60870Server implements Iec60870Server {
       try {
         transportConnection.close();
       } catch (RuntimeException e) {
-        LOGGER.debug("transport close failed for {}", remoteAddress, e);
+        connectionContext.debug(LOGGER, "transport close failed for {}", remoteAddress, e);
       }
+      diagnostics.onConnectionClosed(cause);
       publish(new ServerEvent.ConnectionClosed(remoteAddress, cause));
     }
 
@@ -1186,7 +1276,8 @@ public final class DefaultIec60870Server implements Iec60870Server {
 
       @Override
       public void onUndecodableAsdu(byte[] asdu, Iec60870Exception cause) {
-        LOGGER.debug(
+        connectionContext.debug(
+            LOGGER,
             "received an undecodable ASDU ({} octets) from {}: {}",
             asdu.length,
             remoteAddress,

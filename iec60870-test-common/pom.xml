@@ -61,18 +61,25 @@
       <artifactId>junit-jupiter-api</artifactId>
       <scope>compile</scope>
     </dependency>
+    <!-- CapturingLogger extends the SLF4J logger helpers. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
 
     <!-- This module runs its own tests (the loopback/fault-injecting transport fixtures), so it
-         needs the engine and an slf4j binding for Netty's leak-detector output at test scope. -->
+         needs the engine at test scope. -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Compile scope: RecordingSlf4jProvider delegates console output to slf4j-simple. -->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
-      <scope>test</scope>
+      <scope>compile</scope>
     </dependency>
   </dependencies>
 

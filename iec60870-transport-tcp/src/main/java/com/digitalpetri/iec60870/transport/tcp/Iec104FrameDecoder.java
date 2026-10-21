@@ -22,8 +22,10 @@ import java.util.List;
  * available: the decoder peeks at the length octet without consuming, returns if fewer than {@code
  * 2 + length} octets are readable, and only then slices a single full frame. A bad START octet
  * (anything other than {@code 0x68}) is unrecoverable for a byte stream, so an {@link
- * AsduDecodeException} is raised; Netty propagates it through {@code exceptionCaught} and the
- * transport closes the channel.
+ * AsduDecodeException} carrying the offending octets is raised; Netty propagates it through {@code
+ * exceptionCaught}, the inbound handler reports the octets to {@link
+ * com.digitalpetri.iec60870.transport.TransportListener#onFramingError}, and the transport closes
+ * the channel.
  *
  * <p>This handler is pure octet framing: it does <b>not</b> parse the APDU. Each emitted frame is a
  * complete, length-delimited {@link ByteBuf} the protocol layer above decodes (via {@code
@@ -69,8 +71,11 @@ public class Iec104FrameDecoder extends ByteToMessageDecoder {
     // byte stream.
     int start = in.getUnsignedByte(startIndex);
     if (start != START_OCTET) {
-      throw new AsduDecodeException(
-          String.format("invalid START octet: 0x%02X (expected 0x68)", start));
+      // Carry the offending octets so the inbound handler can report them before the close.
+      byte[] octets = new byte[Math.min(in.readableBytes(), FramingException.MAX_OCTETS)];
+      in.getBytes(startIndex, octets);
+      throw new FramingException(
+          String.format("invalid START octet: 0x%02X (expected 0x68)", start), octets);
     }
 
     // Peek the length octet; the full frame is HEADER_LENGTH + length octets.

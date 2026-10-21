@@ -1,11 +1,13 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -40,6 +42,9 @@ import org.jspecify.annotations.Nullable;
  * @param frameDecoderFactory supplies the pipeline frame decoder, or {@code null} to use the
  *     default IEC 60870-5-104 frame decoder; supply a factory to carry an alternative wire framing
  *     (such as FT1.2 for 101-over-TCP) over the same Netty transport.
+ * @param diagnostics the listener for connect attempts, established connections, and failed
+ *     attempts.
+ * @param loggingContext the MDC entries set around the transport's log lines.
  */
 public record NettyClientTransportConfig(
     String host,
@@ -49,7 +54,9 @@ public record NettyClientTransportConfig(
     @Nullable TlsOptions tlsOptions,
     @Nullable EventLoopGroup sharedEventLoopGroup,
     @Nullable Consumer<Bootstrap> bootstrapCustomizer,
-    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory,
+    ConnectionDiagnostics diagnostics,
+    Map<String, String> loggingContext) {
 
   /**
    * Validates the configuration.
@@ -66,13 +73,19 @@ public record NettyClientTransportConfig(
    *     options, allocators, and the like), or {@code null} for none.
    * @param frameDecoderFactory supplies the pipeline frame decoder, or {@code null} to use the
    *     default IEC 60870-5-104 frame decoder.
-   * @throws NullPointerException if {@code host} or {@code connectTimeout} is null.
+   * @param diagnostics the listener for connect attempts, established connections, and failed
+   *     attempts.
+   * @param loggingContext the MDC entries set around the transport's log lines; copied.
+   * @throws NullPointerException if {@code host}, {@code connectTimeout}, {@code diagnostics}, or
+   *     {@code loggingContext} is null.
    * @throws IllegalArgumentException if {@code port} is not in the range {@code 1..65535}, or
    *     {@code connectTimeout} is not positive.
    */
   public NettyClientTransportConfig {
     Objects.requireNonNull(host, "host");
     Objects.requireNonNull(connectTimeout, "connectTimeout");
+    Objects.requireNonNull(diagnostics, "diagnostics");
+    loggingContext = Map.copyOf(loggingContext);
     if (port < 1 || port > 65535) {
       throw new IllegalArgumentException("port must be in 1..65535: " + port);
     }
@@ -155,6 +168,8 @@ public record NettyClientTransportConfig(
     private @Nullable EventLoopGroup sharedEventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
     private @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory;
+    private ConnectionDiagnostics diagnostics = ConnectionDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
 
     private Builder(String host, int port) {
       this.host = Objects.requireNonNull(host, "host");
@@ -238,6 +253,32 @@ public record NettyClientTransportConfig(
     }
 
     /**
+     * Sets the listener for connect attempts, established connections, and failed attempts.
+     * Defaults to {@link ConnectionDiagnostics#NONE}.
+     *
+     * <p>Each {@link NettyClientTransport#connect()} reports one attempt, followed by either a
+     * connected or a failed event; a failed TLS handshake is a failed attempt.
+     *
+     * @param diagnostics the diagnostics listener.
+     * @return this builder.
+     */
+    public Builder diagnostics(ConnectionDiagnostics diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets the MDC entries set around the transport's log lines. Defaults to none.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link NettyClientTransportConfig}.
      *
      * @return the configuration.
@@ -251,7 +292,9 @@ public record NettyClientTransportConfig(
           tlsOptions,
           sharedEventLoopGroup,
           bootstrapCustomizer,
-          frameDecoderFactory);
+          frameDecoderFactory,
+          diagnostics,
+          loggingContext);
     }
   }
 }

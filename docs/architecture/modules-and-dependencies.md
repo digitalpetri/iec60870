@@ -19,6 +19,10 @@ layer, and of the high-level facade:
 - the raw protocol model and codecs (`.asdu`, `.address`, `.asdu.element`, `.asdu.time`);
 - the **`Session` SPI** (`.session`) — the protocol-neutral data-transfer lifecycle contract — but
   **no** session engine: the concrete 104 `ApciSession` lives in `iec60870-cs104`;
+- the protocol-neutral diagnostics SPI (`.diagnostics`) — `ConnectionDiagnostics`, `Direction`, and
+  the per-connection `LoggingContext` — which each link layer extends with its own frame callbacks
+  (`ApciDiagnostics` in `iec60870-cs104`), so neither `application` nor `transport-tcp` imports a
+  cs104 type to report diagnostics;
 - the error model (package-root exceptions) and the configuration types (`ProtocolProfile`, the
   neutral `SessionSettings` marker, the neutral `OutboundQueuePolicy`, `TlsOptions`);
 - the **octet transport SPI** (`.transport`) — `ClientTransport`, `ServerTransport`,
@@ -253,9 +257,11 @@ modules. The parent enforcer's `banCircularDependencies` rule asserts this acycl
 `iec60870-test-common` is an internal, test-only module that holds the shared, core-level test
 fixtures (the deterministic `ManualScheduler`, the `RecordingEvents` `Session.Events` recorder, the
 frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
-`LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, and the
-`ParanoidLeakDetection` JUnit extension). It depends on **core only** — plus `netty-buffer` for the
-`ByteBuf` boundary and `junit-jupiter-api` for the extension — and is consumed at `test` scope by
+`LoopbackOctetTransport` and fault-injecting `FaultInjectingOctetTransport` octet transports, the
+`ParanoidLeakDetection` JUnit extension, the `CapturingLogger` SLF4J logger, and the
+`RecordingSlf4jProvider` that gives tests a working MDC and records library log calls). It depends on
+**core only** — plus `netty-buffer` for the `ByteBuf` boundary, `junit-jupiter-api` for the
+extension, and `slf4j-simple` for the provider's console output — and is consumed at `test` scope by
 `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-transport-tcp`,
 `iec60870-transport-serial`, `iec60870-tcp`, `iec60870-serial`, and `iec60870-test-integration`. Keeping it
 core-only mirrors the octet-classes-stay-core-only rule and means it can never become a path for a

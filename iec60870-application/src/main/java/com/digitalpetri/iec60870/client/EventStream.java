@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.client;
 
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -56,6 +57,8 @@ final class EventStream<T> implements Flow.Publisher<T> {
   private final int resumeAt;
   private final int dataCapacity;
   private final Consumer<Boolean> pauseControl;
+  private final Consumer<T> onDropped;
+  private final LoggingContext loggingContext;
 
   private final List<TrackedSubscriber> subscribers = new CopyOnWriteArrayList<>();
 
@@ -83,12 +86,34 @@ final class EventStream<T> implements Flow.Publisher<T> {
    *     data; must not block and may run on a producer or subscriber thread.
    */
   EventStream(Executor executor, int limit, Consumer<Boolean> pauseControl) {
+    this(executor, limit, pauseControl, event -> {}, LoggingContext.empty());
+  }
+
+  /**
+   * Creates a stream that reports dropped events and logs with a context.
+   *
+   * @param executor the executor that delivers events to subscribers.
+   * @param limit the backlog at which inbound data is paused; resumes at half of it.
+   * @param pauseControl invoked with {@code true} to pause and {@code false} to resume inbound
+   *     data; must not block and may run on a producer or subscriber thread.
+   * @param onDropped invoked on the publishing thread for each event dropped for a subscriber whose
+   *     buffer is full; must not block.
+   * @param loggingContext the MDC entries set around the stream's log lines.
+   */
+  EventStream(
+      Executor executor,
+      int limit,
+      Consumer<Boolean> pauseControl,
+      Consumer<T> onDropped,
+      LoggingContext loggingContext) {
     if (limit < 1 || limit > MAX_BACKLOG_LIMIT) {
       throw new IllegalArgumentException("limit must be in 1.." + MAX_BACKLOG_LIMIT + ": " + limit);
     }
     this.limit = limit;
     this.resumeAt = limit / 2;
     this.pauseControl = Objects.requireNonNull(pauseControl, "pauseControl");
+    this.onDropped = Objects.requireNonNull(onDropped, "onDropped");
+    this.loggingContext = Objects.requireNonNull(loggingContext, "loggingContext");
     int capacity = hardCapacity(limit);
     this.dataCapacity = capacity - LIFECYCLE_RESERVE;
     this.publisher = new SubmissionPublisher<>(executor, capacity);
@@ -139,13 +164,15 @@ final class EventStream<T> implements Flow.Publisher<T> {
         publisher.offer(event, this::onDrop);
       } catch (RuntimeException e) {
         // The executor rejected a delivery task; the publisher has closed that subscription.
-        LOGGER.warn("event delivery failed: {}", e.toString());
+        loggingContext.warn(LOGGER, "event delivery failed: {}", e.toString());
       }
     }
   }
 
   private boolean onDrop(Flow.Subscriber<? super T> subscriber, T event) {
-    LOGGER.warn("dropped an event for a subscriber whose buffer is full: {}", event);
+    loggingContext.warn(
+        LOGGER, "dropped an event for a subscriber whose buffer is full: {}", event);
+    onDropped.accept(event);
     if (subscriber instanceof EventStream<?>.TrackedSubscriber tracked) {
       tracked.consumed.incrementAndGet();
     }
@@ -259,7 +286,7 @@ final class EventStream<T> implements Flow.Publisher<T> {
         publisher.close();
       } catch (RuntimeException e) {
         // The executor rejected a completion task; that subscriber is never completed.
-        LOGGER.debug("event stream completion failed: {}", e.toString());
+        loggingContext.debug(LOGGER, "event stream completion failed: {}", e.toString());
       }
     }
   }

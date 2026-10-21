@@ -290,6 +290,25 @@ public interface Iec60870Client extends AutoCloseable {
   boolean isConnected();
 
   /**
+   * Returns the number of ASDUs waiting in the session's send queue, not yet written to the
+   * transport.
+   *
+   * <p>ASDUs wait while {@code k} sent I-frames are unacknowledged or data transfer is stopped. A
+   * depth that keeps growing means the peer stopped acknowledging.
+   *
+   * @return the send-queue depth; {@code 0} when no connection is open.
+   */
+  int pendingSendCount();
+
+  /**
+   * Returns the number of requests awaiting a correlated response: interrogations, reads, commands,
+   * and clock synchronizations.
+   *
+   * @return the number of in-flight requests.
+   */
+  int pendingRequestCount();
+
+  /**
    * Closes the client for good.
    *
    * <p>Stops the managed connection like {@link #disconnect()}, publishes {@link
