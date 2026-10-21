@@ -153,17 +153,25 @@ ACCEPT IOA range : 2000 .. 2999  (inclusive)
 REJECT IOA       : 3000          (single, well-known)
 ```
 
-The server inspects each control ASDU's IOA:
+The server inspects each control ASDU's cause of transmission and IOA:
 
 - **IOA in 2000..2999 -> ACCEPT.** The server confirms with `ACT_CON` **positive (P/N = 0)**.
-  - **Direct execute** (S/E = 0): single `ACT_CON` positive. For commands that map onto a monitor
-    point (see below) the server also enqueues a **return-information** monitor update
+  - **Direct execute** (S/E = 0): `ACT_CON` positive, then `ACT_TERM` (P/N = 0), then, for commands
+    that map onto a monitor point (see below), a **return-information** monitor update
     (COT = RETURN_INFO_REMOTE, 11) reflecting the commanded value.
   - **Select/execute** (S/E = 1 on the first ASDU = select): the server replies `ACT_CON` positive to
-    the **select**, then expects a matching **execute** (S/E = 0, same IOA/value) and replies `ACT_CON`
-    positive to the execute, followed by `ACT_TERM`, then the return-information update.
+    the **select** and sends nothing else. The **execute** (S/E = 0) is answered like a direct execute:
+    `ACT_CON` positive, `ACT_TERM`, then the return-information update. The fixture keeps no
+    selection state, so it does not check that an execute follows a select.
+  - **Deactivation** (COT = DEACTIVATION, 8): the server breaks off the selection with `DEACT_CON`
+    (COT 9) **positive (P/N = 0)** echoing the command.
+  - **IOA 2998** sends no `ACT_TERM` after an accepted execute, and **IOA 2999** sends `ACT_TERM` with
+    **P/N = 1**. Both are otherwise ordinary accept IOAs.
 - **IOA == 3000 -> REJECT.** The server replies `ACT_CON` **negative (P/N = 1)** and performs no update.
-- **IOA anywhere else** (outside 2000..2999 and not 3000) -> stack returns `UNKNOWN_IOA (47)`.
+  A deactivation is answered with `DEACT_CON` **negative (P/N = 1)**.
+- **IOA anywhere else** (outside 2000..2999 and not 3000) -> the server mirrors the command with
+  `UNKNOWN_IOA (47)` and **P/N = 0**, as the lib60870-C examples do.
+- **Any other cause** than ACTIVATION or DEACTIVATION -> mirrored with `UNKNOWN_COT (45)`, P/N = 1.
 
 Supported command type IDs:
 
@@ -218,7 +226,8 @@ The server prints stable, greppable markers. Anchor waits on these substrings:
 | `CLOCKSYNC` | clock sync accepted |
 | `TEST` | test command accepted |
 | `RESET-PROCESS` | reset process accepted |
-| `CMD <type> ioa=N <ACCEPT|REJECT> <DIRECT|SELECT|EXECUTE> sel=<0|1>` | command handled |
+| `CMD <type> ioa=N <ACCEPT\|REJECT> <SELECT\|EXECUTE/DIRECT\|CANCEL> sel=<0\|1>` | command handled |
+| `CMD <type> ioa=N UNKNOWN-IOA sel=<0\|1>` / `UNKNOWN-COT cot=N` | command answered with COT 47 / 45 |
 | `RETURN-INFO ioa=N` | return-information update enqueued |
 | `PERIODIC ioa=1050 value=N` | periodic update enqueued |
 

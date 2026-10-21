@@ -103,10 +103,13 @@ than a closed connection.
 Some operations report a negative answer as a value rather than an exception, because a rejection is
 a normal, expected outcome:
 
-- **`CommandResult(target, positive, cause, confirmation)`** — returned by `CommandService`. A
-  command does **not** throw when the station rejects it: `positive() == false` means a negative
-  confirmation arrived, and `cause()` / `confirmation()` describe it. Only transport/session failures
-  (timeout, disconnect) throw.
+- **`CommandResult(target, outcome, cause, confirmation, termination)`** — returned by
+  `CommandService` and `SelectedCommand`. A command does **not** throw when the station rejects it:
+  `positive() == false` means a negative confirmation or termination arrived, or the termination
+  never did, and `outcome()`, `cause()`, `confirmation()`, and `termination()` describe it. Only
+  transport/session failures (timeout, disconnect) before the station confirms the command throw.
+  `CommandService.select` is the exception: there is no selection to hold after a rejected select,
+  so it throws `NegativeConfirmationException`.
 - **`ParameterResult(target, positive, cause, valueInOperation, confirmation)`** — returned by
   `ParameterService.load`. A station confirms a parameter load with the value now in operation, the
   old value when it rejects the load, so a rejection is `positive() == false` with that value, not an

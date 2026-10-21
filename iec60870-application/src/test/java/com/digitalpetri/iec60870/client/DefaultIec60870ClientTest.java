@@ -1452,11 +1452,14 @@ class DefaultIec60870ClientTest {
 
       var ex = assertThrows(CompletionException.class, () -> stage.toCompletableFuture().join());
       assertInstanceOf(ProtocolTimeoutException.class, ex.getCause());
+      List<Asdu> sent = requireNonNull(quietSession.get()).sentAsdus();
+      assertEquals(2, sent.size(), "a timed-out select is deactivated, never executed");
+      assertEquals(Cause.DEACTIVATION, sent.get(1).cause());
+      assertEquals(1, timingClient.pendingRequestCount(), "the deactivation holds the reservation");
+
+      clock.advance(50, TimeUnit.MILLISECONDS);
       assertEquals(0, timingClient.pendingRequestCount(), "timed-out request must not leak");
-      assertEquals(
-          1,
-          requireNonNull(quietSession.get()).sentAsdus().size(),
-          "only the select phase was sent");
+      assertEquals(2, sent.size());
     }
   }
 

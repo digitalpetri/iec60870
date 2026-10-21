@@ -70,6 +70,19 @@ master engine.
 *See:* [Link layer](link-layer.md),
 [Connect over serial](../how-to/connect-over-serial.md).
 
+### Activation termination (ACT_TERM)
+
+The reply (COT 10) a controlled station sends when a procedure it confirmed has finished: the
+end of an interrogation, or for a command the end of the output procedure, such as a pulse.
+It follows the activation confirmation (ACT_CON, COT 7), which only says the station accepted
+the request. Neither proves that the equipment reached the new state; return information on
+the monitor point does that. Many outstations never send ACT_TERM for commands.
+*In this library:* `com.digitalpetri.iec60870.client.CommandCompletion.TERMINATION`, set per
+command family on `ClientConfig` (`commandCompletion`, `setpointCompletion`) or per call with
+`CommandOptions`, makes a command wait for it; `CommandResult.termination()` carries it and
+`CommandOutcome` reports `TERMINATED`, `TERMINATED_NEGATIVE`, or `TERMINATION_MISSING`.
+*See:* [Send commands](../how-to/send-commands.md#activation-confirmation-and-termination).
+
 ### APCI
 
 **Application Protocol Control Information** — the fixed frame header (start octet `0x68`,
@@ -132,6 +145,16 @@ it; field width is `ProtocolProfile.commonAddressLength()` (1–2 octets). Value
 unused and `0xFFFF` is the global (broadcast) address.
 *See:* [Host a server](../how-to/host-a-server.md),
 [Tune the APCI session](../how-to/tune-apci.md).
+
+### Deactivation (DEACT)
+
+A control-direction ASDU with COT 8 that breaks off a procedure. For a command, the
+controlling station repeats the select object (S/E = 1, same value and qualifier) to cancel
+a selection before it is executed; the station answers with a deactivation confirmation
+(DEACT_CON, COT 9), positive or negative.
+*In this library:* `com.digitalpetri.iec60870.client.SelectedCommand.cancel()` and `close()`;
+`ParameterService.deactivate` for P_AC_NA_1.
+*See:* [Send commands](../how-to/send-commands.md#select-now-execute-or-cancel-later).
 
 ### Direct execute
 
@@ -269,8 +292,9 @@ A two-step control mode: first send a *select* activation and wait for confirmat
 send an *execute* activation — guarding against accidental operation. Contrast with
 [Direct execute](#direct-execute).
 *In this library:* `com.digitalpetri.iec60870.client.CommandMode.selectBeforeOperate()`
-(`SELECT_BEFORE_OPERATE`), passed to `CommandService.send(command, mode)`; the returned
-`CommandResult` reflects the **execute** confirmation. On the server,
+(`SELECT_BEFORE_OPERATE`), passed to `CommandService.send(command, mode)`, runs both steps in
+one call; the returned `CommandResult` reflects the **execute**. `CommandService.select(command)`
+splits them: it returns a `SelectedCommand` handle to `execute()` or `cancel()` later. On the server,
 `ServerHandler.onCommand(...)` sees `CommandRequest.isSelect()` and the server-side
 `com.digitalpetri.iec60870.server.CommandMode` (`SELECT` / `EXECUTE`).
 *See:* [Send commands](../how-to/send-commands.md).

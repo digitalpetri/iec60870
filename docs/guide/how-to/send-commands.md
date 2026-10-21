@@ -38,8 +38,9 @@ The mental model is three small pieces:
   [time tag](../reference/glossary.md);
 - a **`CommandMode`** carries *how* — [direct execute](../reference/glossary.md) versus
   [select-before-operate](../reference/glossary.md);
-- a **`CommandResult`** carries the station's *answer* — accepted or rejected, plus the
-  [cause of transmission](../reference/glossary.md) of the confirming ASDU.
+- a **`CommandResult`** carries the station's *answer* — a `CommandOutcome` such as accepted,
+  terminated, or rejected, plus the [cause of transmission](../reference/glossary.md) of the ASDU
+  that decided it.
 
 Every snippet below assumes an in-scope, connected `Iec60870Client client` and these constants, matching
 the shipped [`ClientExample`](../../../iec60870-examples/src/main/java/com/digitalpetri/iec60870/examples/ClientExample.java)
@@ -52,10 +53,15 @@ import com.digitalpetri.iec60870.asdu.element.DoubleCommandState;
 import com.digitalpetri.iec60870.asdu.element.NormalizedValue;
 import com.digitalpetri.iec60870.asdu.element.StepCommandState;
 import com.digitalpetri.iec60870.client.Command;
+import com.digitalpetri.iec60870.client.CommandCompletion;
 import com.digitalpetri.iec60870.client.CommandMode;
+import com.digitalpetri.iec60870.client.CommandOptions;
 import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.CommandService;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.client.SelectedCommand;
+import com.digitalpetri.iec60870.tcp.TcpIec104Client;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -114,21 +120,39 @@ For which command type maps to a given real-world signal, see
 
 ## Reading the result
 
-A `CommandResult` is a record with four components:
+A `CommandResult` is a record with five components:
 
 ```java
-record CommandResult(PointAddress target, boolean positive, Cause cause, Optional<Asdu> confirmation)
+record CommandResult(
+    PointAddress target,
+    CommandOutcome outcome,
+    Cause cause,
+    Optional<Asdu> confirmation,
+    Optional<Asdu> termination)
 ```
 
 - `target()` — the point the command addressed.
-- `positive()` — `true` when the controlled station confirmed the command positively (the confirming
-  ASDU's P/N bit was clear); `false` on a negative confirmation.
-- `cause()` — the [cause of transmission](../reference/glossary.md) of the confirming ASDU.
-- `confirmation()` — the confirming `Asdu`, if one was received.
+- `outcome()` — how the procedure ended (table below).
+- `positive()` — `true` for `CONFIRMED` and `TERMINATED`.
+- `cause()` — the [cause of transmission](../reference/glossary.md) of the ASDU that decided the
+  outcome.
+- `confirmation()` — the activation confirmation (or deactivation confirmation, or cause 44 to 47
+  echo), if one was received.
+- `termination()` — the activation termination, when the command waited for one and it arrived.
+
+| `CommandOutcome` | Meaning |
+|---|---|
+| `CONFIRMED` | Positive ACT_CON (or DEACT_CON for a cancel); termination not awaited |
+| `TERMINATED` | Positive ACT_CON, then ACT_TERM with P/N = 0 |
+| `REJECTED` | Negative ACT_CON or DEACT_CON, or the command echoed with cause 44 to 47 (unknown type, cause, CA, or IOA) whatever its P/N bit |
+| `TERMINATED_NEGATIVE` | Positive ACT_CON, then ACT_TERM with P/N = 1 |
+| `TERMINATION_MISSING` | Positive ACT_CON, then no ACT_TERM before the termination timeout or the connection ended |
 
 The key rule: **a rejection is not an exception.** A station that understands a command but declines it
 returns a non-positive `CommandResult` — you read `positive()`, you do not catch anything. Only
-transport- or session-level failures (a timeout waiting for confirmation, or a dropped link) throw.
+transport- or session-level failures *before* the station confirms the command (a timeout waiting for
+confirmation, or a dropped link) throw. Once the station has confirmed it, a late or missing
+termination is an outcome, so you learn that the command was accepted and do not blindly repeat it.
 Both thrown types are unchecked, so the `try`/`catch` is optional — add it only where you want to react
 to transport failure:
 
@@ -142,7 +166,7 @@ try {
 } catch (ProtocolTimeoutException e) {
   // No confirmation arrived within the configured command timeout.
 } catch (ConnectionClosedException e) {
-  // The link dropped while the command was in flight.
+  // The link dropped before the command was confirmed.
 }
 ```
 
@@ -177,6 +201,18 @@ confirmed positively, the operate step is skipped and the non-positive select co
 in the result — you still read it the same way, through `positive()` and `cause()`, and nothing is
 thrown.
 
+Cancelling the `sendAsync` stage stops the procedure only before the execute is submitted. The client
+checks for cancellation once, just before it writes the execute. If you cancel while the select is still
+awaiting its confirmation, a positive confirmation is answered with a
+[deactivation](../reference/glossary.md#deactivation-deact) (COT 8) instead of the execute. The execute
+follows a positive select confirmation almost at once, so a cancel after that confirmation usually
+arrives too late. Once the execute is submitted, cancelling the stage does not retract it; the command
+runs to completion and only the result is discarded. When an operator must confirm between select and
+execute, use [`select`](#select-now-execute-or-cancel-later) and its `SelectedCommand` handle instead.
+
+A select that times out is deactivated too, in case the station accepted it late. After any of these
+deactivations the point stays reserved until the deactivation is confirmed or times out.
+
 Choose the mode to match the station and the criticality of the output:
 
 | Mode | What goes on the wire | Use when | Consequence |
@@ -184,16 +220,83 @@ Choose the mode to match the station and the criticality of the output:
 | `CommandMode.directExecute()` (helpers' default) | One activation, S/E = 0; the station acts immediately | Routine controls; the station does not require reservation; lowest latency | No reservation step — a mistargeted command operates immediately |
 | `CommandMode.selectBeforeOperate()` | Select activation (S/E = 1) → confirm → execute activation (S/E = 0) → confirm | Safety-critical outputs (breakers, tap changers) where the station must reserve or validate the output first; or a station that requires SBO | Two round-trips; a station that requires SBO rejects a direct execute, and vice-versa — the two ends must agree |
 
-## The activation lifecycle
+## Activation confirmation and termination
 
-A command is an [activation](../reference/glossary.md). You send an ASDU with cause
-`ACTIVATION`; the station answers with an `ACTIVATION_CONFIRMATION` whose P/N bit reports accept or
-reject. Unlike a [general interrogation](connect-and-interrogate.md), a command does **not** produce a
-separate activation-termination step on the client side — the activation confirmation *is* the result.
-`CommandResult.cause()` is the [cause of transmission](../reference/glossary.md) of that confirming
-ASDU, and `CommandResult.positive()` is the inverse of its P/N bit. For the underlying timing and
-window mechanics, see the [Timers & window](../reference/timers-and-window.md) reference; you do not
-need them to send a command.
+A command is an [activation](../reference/glossary.md). You send an ASDU with cause `ACTIVATION`; the
+station answers with an `ACTIVATION_CONFIRMATION` (ACT_CON, COT 7) whose P/N bit reports accept or
+reject. When the output procedure has finished, for example when a pulse ends, the station may also
+send an [activation termination](../reference/glossary.md#activation-termination-act_term)
+(ACT_TERM, COT 10). Neither proves the equipment moved; the return information on the monitor point
+does that.
+
+By default a command completes on the ACT_CON (`CommandCompletion.CONFIRMATION`), because many
+outstations never send ACT_TERM. If yours do, wait for it. Set it per command family on the client
+builder, or per call:
+
+```java
+// Per family: single, double, and regulating step commands, and set-points and bit strings.
+Iec60870Client terminatingClient = TcpIec104Client.builder()
+    .host("10.0.0.5")
+    .commandCompletion(CommandCompletion.TERMINATION)
+    .setpointCompletion(CommandCompletion.CONFIRMATION)
+    .commandTerminationTimeout(Duration.ofSeconds(60))
+    .build();
+terminatingClient.connect();
+CommandService terminatingCommands = terminatingClient.commands();
+CommandResult awaited = terminatingCommands.single(SWITCH, true);   // waits for ACT_TERM
+
+// Per call, on any client.
+CommandResult result = commands.send(
+    Command.single(SWITCH, true),
+    CommandMode.directExecute(),
+    CommandOptions.defaults().withCompletion(CommandCompletion.TERMINATION));
+switch (result.outcome()) {
+  case TERMINATED -> System.out.println("finished");
+  case TERMINATED_NEGATIVE -> System.out.println("accepted, then failed");
+  case TERMINATION_MISSING -> System.out.println("accepted, no termination seen");
+  default -> System.out.println("rejected: " + result.cause());
+}
+```
+
+With `TERMINATION`, a positive ACT_CON keeps the point reserved and the client waits up to
+`commandTerminationTimeout` (default 60 s) for an ACT_TERM that echoes the command. A negative ACT_CON
+still completes at once with `REJECTED`. A second command to the same point and family fails with
+`RequestInProgressException` until the first one terminates or its timeout passes. With
+`CONFIRMATION`, an ACT_TERM that arrives later is published as an ordinary `AsduReceived` event.
+
+For the underlying timing and window mechanics, see the [Timers & window](../reference/timers-and-window.md)
+reference; you do not need them to send a command.
+
+## Select now, execute or cancel later
+
+`CommandMode.selectBeforeOperate()` runs select and execute in one call. When an operator must confirm
+between the two steps, use `select`, which returns a `SelectedCommand` handle once the station confirms
+the select:
+
+```java
+try (SelectedCommand selected = commands.select(Command.single(SWITCH, true))) {
+  if (operatorConfirms()) {
+    CommandResult executed = selected.execute();   // S/E = 0, same value and qualifier
+  } else {
+    CommandResult cancelled = selected.cancel();   // DEACT (COT 8), awaits DEACT_CON
+  }
+}
+```
+
+- `select` throws `NegativeConfirmationException` if the station rejects the select, and
+  `IllegalArgumentException` for a bit-string command, which has no select/execute flag.
+- While you hold the handle, other commands to that point and family fail with
+  `RequestInProgressException`. Other points are unaffected. The client does not limit how many points
+  of one station you select at once; serialize selections yourself if your station allows only one.
+- `execute()` and `cancel()` each succeed at most once and exclude each other. A second call fails with
+  `IllegalStateException` and sends nothing. `execute()` completes per the `CommandOptions` you gave
+  `select`. `cancel()` completes with `CONFIRMED` on a positive DEACT_CON and `REJECTED` otherwise.
+- For a time-tagged command, the execute and the cancel carry the time they are sent, not the time of
+  the select.
+- After `selectionTimeout` (default 30 s, set on the client builder) the client deactivates the
+  selection itself and the handle is expired. `close()` does the same for a selection still held, so
+  try-with-resources cleans up an abandoned dialog.
+- A connection loss ends the selection; the handle's calls then fail with `ConnectionClosedException`.
 
 ## Command qualifiers
 
@@ -278,7 +381,9 @@ guarantee.
 ## Server side, briefly
 
 The positive or negative confirmation you read on the client is produced by the controlled station's
-handler. A `ServerHandler` decides on each command in `onCommand`, returning a `CommandDecision`:
+handler. The built-in server sends ACT_CON, then any return information, then ACT_TERM for every
+accepted execute, so `TERMINATION` works against it. It answers a deactivation with cause 45 (unknown
+cause), so a `cancel()` against it is `REJECTED` unless a raw `onRawAsdu` hook answers the DEACT. A `ServerHandler` decides on each command in `onCommand`, returning a `CommandDecision`:
 `accept()` to confirm without changing the value image, `acceptAndUpdate(value)` to confirm and write
 back (the new value returns to you as monitor data), or `reject(cause)` to confirm negatively. This is
 exactly what `ServerExample` does for its commandable switch:

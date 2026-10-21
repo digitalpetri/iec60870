@@ -5,6 +5,7 @@ import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.address.OriginatorAddress;
 import com.digitalpetri.iec60870.client.ClientConfig;
+import com.digitalpetri.iec60870.client.CommandCompletion;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.ReconnectPolicy;
@@ -20,6 +21,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -72,8 +74,8 @@ public final class TcpIec104Client {
    * <p>Transport knobs ({@code host}, {@code port}, {@code localBind}, {@code tls}, {@code
    * eventLoopGroup}, {@code bootstrapCustomizer}) configure the Netty transport; protocol knobs
    * ({@code profile}, {@code apci}, {@code originatorAddress}, {@code startDataTransferOnConnect},
-   * {@code timePolicy}, {@code commandTimeTagMatch}, {@code callbackExecutor}) configure the core
-   * client. The builder is not thread-safe.
+   * {@code timePolicy}, {@code commandTimeTagMatch}, the command completion and selection settings,
+   * {@code callbackExecutor}) configure the core client. The builder is not thread-safe.
    */
   public static final class Builder {
 
@@ -91,6 +93,10 @@ public final class TcpIec104Client {
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private TimePolicy timePolicy = TimePolicy.utc();
     private TimeTagMatch commandTimeTagMatch = TimeTagMatch.INSTANT;
+    private CommandCompletion commandCompletion = CommandCompletion.CONFIRMATION;
+    private CommandCompletion setpointCompletion = CommandCompletion.CONFIRMATION;
+    private Duration commandTerminationTimeout = Duration.ofSeconds(60);
+    private Duration selectionTimeout = Duration.ofSeconds(30);
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
     private ApciDiagnostics diagnostics = ApciDiagnostics.NONE;
@@ -241,6 +247,59 @@ public final class TcpIec104Client {
     }
 
     /**
+     * Sets when single, double, and regulating step commands complete. Defaults to {@link
+     * CommandCompletion#CONFIRMATION}.
+     *
+     * @param commandCompletion the completion policy.
+     * @return this builder.
+     * @see ClientConfig.Builder#commandCompletion(CommandCompletion)
+     */
+    public Builder commandCompletion(CommandCompletion commandCompletion) {
+      this.commandCompletion = Objects.requireNonNull(commandCompletion, "commandCompletion");
+      return this;
+    }
+
+    /**
+     * Sets when set-point and bit-string commands complete. Defaults to {@link
+     * CommandCompletion#CONFIRMATION}.
+     *
+     * @param setpointCompletion the completion policy.
+     * @return this builder.
+     * @see ClientConfig.Builder#setpointCompletion(CommandCompletion)
+     */
+    public Builder setpointCompletion(CommandCompletion setpointCompletion) {
+      this.setpointCompletion = Objects.requireNonNull(setpointCompletion, "setpointCompletion");
+      return this;
+    }
+
+    /**
+     * Sets how long a command awaits ACT_TERM after the positive ACT_CON of its final phase.
+     * Defaults to 60 seconds.
+     *
+     * @param commandTerminationTimeout the termination timeout; must be positive.
+     * @return this builder.
+     * @see ClientConfig.Builder#commandTerminationTimeout(Duration)
+     */
+    public Builder commandTerminationTimeout(Duration commandTerminationTimeout) {
+      this.commandTerminationTimeout =
+          Objects.requireNonNull(commandTerminationTimeout, "commandTerminationTimeout");
+      return this;
+    }
+
+    /**
+     * Sets how long a {@link com.digitalpetri.iec60870.client.SelectedCommand} may be held without
+     * execute or cancel. Defaults to 30 seconds.
+     *
+     * @param selectionTimeout the selection timeout; must be positive.
+     * @return this builder.
+     * @see ClientConfig.Builder#selectionTimeout(Duration)
+     */
+    public Builder selectionTimeout(Duration selectionTimeout) {
+      this.selectionTimeout = Objects.requireNonNull(selectionTimeout, "selectionTimeout");
+      return this;
+    }
+
+    /**
      * Sets the executor that delivers events and completes blocking calls. Defaults to the core
      * client's default executor.
      *
@@ -382,7 +441,11 @@ public final class TcpIec104Client {
               .originatorAddress(originatorAddress)
               .startDataTransferOnConnect(startDataTransferOnConnect)
               .timePolicy(timePolicy)
-              .commandTimeTagMatch(commandTimeTagMatch);
+              .commandTimeTagMatch(commandTimeTagMatch)
+              .commandCompletion(commandCompletion)
+              .setpointCompletion(setpointCompletion)
+              .commandTerminationTimeout(commandTerminationTimeout)
+              .selectionTimeout(selectionTimeout);
       if (callbackExecutor != null) {
         clientConfigBuilder.callbackExecutor(callbackExecutor);
       }

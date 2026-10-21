@@ -30,11 +30,15 @@ import com.digitalpetri.iec60870.asdu.object.IntegratedTotals;
 import com.digitalpetri.iec60870.asdu.object.TestCommandWithCp56Time;
 import com.digitalpetri.iec60870.client.ClientEvent;
 import com.digitalpetri.iec60870.client.Command;
+import com.digitalpetri.iec60870.client.CommandCompletion;
 import com.digitalpetri.iec60870.client.CommandMode;
+import com.digitalpetri.iec60870.client.CommandOptions;
+import com.digitalpetri.iec60870.client.CommandOutcome;
 import com.digitalpetri.iec60870.client.CommandResult;
 import com.digitalpetri.iec60870.client.CounterInterrogationResult;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.InterrogationResult;
+import com.digitalpetri.iec60870.client.SelectedCommand;
 import com.digitalpetri.iec60870.client.TestResult;
 import com.digitalpetri.iec60870.point.MonitorMapping;
 import com.digitalpetri.iec60870.point.PointType;
@@ -133,6 +137,12 @@ class ClientVsLib60870ServerInteropTest {
 
   private static final int IOA_ACCEPT = 2000;
   private static final int IOA_REJECT = 3000;
+  private static final int IOA_NO_ACT_TERM = 2998;
+  private static final int IOA_NEGATIVE_ACT_TERM = 2999;
+  private static final int IOA_UNKNOWN = 4000;
+
+  private static final CommandOptions AWAIT_TERMINATION =
+      CommandOptions.defaults().withCompletion(CommandCompletion.TERMINATION);
 
   /** Fixed monitor values (contract section 2). */
   private static final boolean VAL_SINGLE = true;
@@ -536,7 +546,7 @@ class ClientVsLib60870ServerInteropTest {
   // --- Commands -------------------------------------------------------------------------------
 
   @Test
-  @DisplayName("Every command type to an ACCEPT IOA is positively confirmed")
+  @DisplayName("Every command type to an ACCEPT IOA is confirmed and terminated")
   void acceptedCommands() {
     PointAddress accept = PointAddress.of(1, IOA_ACCEPT);
 
@@ -560,23 +570,87 @@ class ClientVsLib60870ServerInteropTest {
             new Case("bitstring(51)", Command.bitstring(accept, 0x0F0F0F0F), false));
 
     for (Case c : cases) {
-      CommandResult direct = client().commands().send(c.command(), CommandMode.directExecute());
-      assertTrue(
-          direct.positive(),
+      CommandResult direct =
+          client().commands().send(c.command(), CommandMode.directExecute(), AWAIT_TERMINATION);
+      assertEquals(
+          CommandOutcome.TERMINATED,
+          direct.outcome(),
           () ->
-              c.label() + " direct-execute must be positively confirmed; cause=" + direct.cause());
+              c.label()
+                  + " direct-execute must be confirmed and terminated; cause="
+                  + direct.cause());
 
       if (c.supportsSelectBeforeOperate()) {
         CommandResult sbo =
-            client().commands().send(c.command(), CommandMode.selectBeforeOperate());
-        assertTrue(
-            sbo.positive(),
+            client()
+                .commands()
+                .send(c.command(), CommandMode.selectBeforeOperate(), AWAIT_TERMINATION);
+        assertEquals(
+            CommandOutcome.TERMINATED,
+            sbo.outcome(),
             () ->
                 c.label()
-                    + " select-before-operate must be positively confirmed; cause="
+                    + " select-before-operate must be confirmed and terminated; cause="
                     + sbo.cause());
       }
     }
+  }
+
+  @Test
+  @DisplayName("A selection at an ACCEPT IOA is cancelled with DEACT_CON")
+  void selectThenCancel() {
+    PointAddress accept = PointAddress.of(1, IOA_ACCEPT);
+    for (Command command :
+        List.of(
+            Command.single(accept, true),
+            Command.doublePoint(accept, DoubleCommandState.ON),
+            Command.setpointShortFloat(accept, 2.71828f))) {
+      SelectedCommand selected = client().commands().select(command);
+      CommandResult cancelled = selected.cancel();
+      assertEquals(CommandOutcome.CONFIRMED, cancelled.outcome(), () -> command + " cancel");
+      assertEquals(Cause.DEACTIVATION_CONFIRMATION, cancelled.cause());
+
+      // The reservation was released, so the point can be selected and executed again.
+      try (SelectedCommand again = client().commands().select(command, AWAIT_TERMINATION)) {
+        assertEquals(CommandOutcome.TERMINATED, again.execute().outcome());
+      }
+    }
+  }
+
+  @Test
+  @DisplayName("An execute at IOA 2998 is confirmed but never terminated")
+  void missingTermination() {
+    CommandResult result =
+        client()
+            .commands()
+            .send(
+                Command.single(PointAddress.of(1, IOA_NO_ACT_TERM), true),
+                CommandMode.directExecute(),
+                AWAIT_TERMINATION.withTerminationTimeout(Duration.ofSeconds(1)));
+    assertEquals(CommandOutcome.TERMINATION_MISSING, result.outcome());
+  }
+
+  @Test
+  @DisplayName("An execute at IOA 2999 is terminated negatively")
+  void negativeTermination() {
+    CommandResult result =
+        client()
+            .commands()
+            .send(
+                Command.single(PointAddress.of(1, IOA_NEGATIVE_ACT_TERM), true),
+                CommandMode.selectBeforeOperate(),
+                AWAIT_TERMINATION);
+    assertEquals(CommandOutcome.TERMINATED_NEGATIVE, result.outcome());
+    assertFalse(result.positive());
+  }
+
+  @Test
+  @DisplayName("A command to an unknown IOA is rejected by its COT 47 reply without P/N")
+  void unknownAddressCommand() {
+    CommandResult result = client().commands().single(PointAddress.of(1, IOA_UNKNOWN), true);
+    assertEquals(CommandOutcome.REJECTED, result.outcome());
+    assertEquals(Cause.UNKNOWN_INFORMATION_OBJECT_ADDRESS, result.cause());
+    assertFalse(result.confirmation().orElseThrow().negative(), "the fixture leaves P/N clear");
   }
 
   @Test
