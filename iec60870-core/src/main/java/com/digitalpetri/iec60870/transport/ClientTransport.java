@@ -65,6 +65,10 @@ public interface ClientTransport {
    * it and releases it. The caller must <b>not</b> release {@code frame} after invoking {@code
    * send}.
    *
+   * <p><b>Ordering.</b> Frames reach the peer in the order {@code send} is called, even when the
+   * calls come from different threads. Sessions emit frames under their lock from both transport
+   * and application threads and rely on this to keep the I-frame sequence intact.
+   *
    * <p>The returned stage reflects only the outcome of the send (the channel write); it does not
    * represent any application-level acknowledgement. Responses arrive asynchronously through the
    * registered {@link TransportListener}.

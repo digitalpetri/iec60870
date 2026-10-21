@@ -149,17 +149,16 @@ public class NettyClientTransport implements ClientTransport {
         .whenComplete(
             (channel, ex) -> {
               if (channel != null) {
-                channel
-                    .writeAndFlush(frame)
-                    .addListener(
-                        future -> {
-                          if (future.isSuccess()) {
+                OrderedFrameWriter.writeAndFlush(channel, frame)
+                    .whenComplete(
+                        (ignored, error) -> {
+                          if (error == null) {
                             // CompletableFuture<Void> can only be completed with null; the
                             // @NotNull on complete() does not apply to a Void result.
                             //noinspection DataFlowIssue
                             result.complete(null);
                           } else {
-                            result.completeExceptionally(future.cause());
+                            result.completeExceptionally(error);
                           }
                         });
               } else {

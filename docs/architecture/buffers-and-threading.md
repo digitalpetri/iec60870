@@ -75,6 +75,13 @@ single uniform direction at each call:
 - **Outbound** — `ClientTransport.send(ByteBuf)` / `ServerTransportConnection.send(ByteBuf)`: the
   caller allocates the frame; the transport writes-and-flushes it and releases it. The caller must
   **not** release it after calling `send`.
+- **Outbound order** — frames reach the peer in the order `send` is called, whichever thread calls
+  it. `ApciSession` emits frames under its lock from the Netty event loop (acknowledgements, window
+  flushes after an S-frame) and from application and timer threads (new I-frames, `t2` S-frames).
+  Netty writes immediately on the event loop but queues a task from any other thread, so a direct
+  `writeAndFlush` would let an event-loop frame overtake an earlier queued one and break the N(S) or
+  N(R) sequence at the peer. `NettyClientTransport` and `NettyServerConnection` therefore submit every
+  write as an event-loop task through `OrderedFrameWriter`.
 
 Because the codecs do not release and the SPI transfers ownership cleanly in one direction per call,
 reference counting stays correct and there is no double-free or use-after-free across the boundary. A
