@@ -201,8 +201,10 @@ public record TimePolicy(
    * Resolves a CP56Time2a time tag to an instant.
    *
    * <p>The result is present whenever the fields name a real date-time, including for a tag marked
-   * invalid (IV=1). It is empty when the fields do not form a calendar date in the mapped century,
-   * for example February 29 in a year that is not a leap year.
+   * invalid (IV=1). It is empty when the tag is not {@linkplain Cp56Time2a#isWellFormed()
+   * well-formed} (for example the all-zero tag of a device whose clock was never set, or February
+   * 30) or when the fields do not form a calendar date in the mapped century, for example February
+   * 29 in a year that is not a leap year. This method never throws for a received tag.
    *
    * @param time the time tag.
    * @return the resolved instant, or empty if the fields cannot be resolved.
@@ -210,6 +212,9 @@ public record TimePolicy(
    */
   public Optional<Instant> toInstant(Cp56Time2a time) {
     Objects.requireNonNull(time, "time");
+    if (!time.isWellFormed()) {
+      return Optional.empty();
+    }
     LocalDateTime local;
     try {
       local =
@@ -244,14 +249,15 @@ public record TimePolicy(
    *
    * @param time the time tag.
    * @param receivedAt the time the carrying ASDU was received.
-   * @return the inferred instant, or empty if {@code completeCp24} is clear or no instant in that
-   *     window has the tag's minute and milliseconds.
+   * @return the inferred instant, or empty if {@code completeCp24} is clear, the tag is not
+   *     {@linkplain Cp24Time2a#isWellFormed() well-formed}, or no instant in that window has the
+   *     tag's minute and milliseconds.
    * @throws NullPointerException if {@code time} or {@code receivedAt} is null.
    */
   public Optional<Instant> complete(Cp24Time2a time, Instant receivedAt) {
     Objects.requireNonNull(time, "time");
     Objects.requireNonNull(receivedAt, "receivedAt");
-    if (!completeCp24) {
+    if (!completeCp24 || !time.isWellFormed()) {
       return Optional.empty();
     }
     Instant limit = receivedAt.plus(CP24_FUTURE_ALLOWANCE);

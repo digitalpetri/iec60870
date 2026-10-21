@@ -145,6 +145,33 @@ class TimePolicyTest {
   }
 
   @Test
+  void malformedTagsDoNotResolve() {
+    TimePolicy policy = TimePolicy.of(BERLIN);
+    // All zero with IV=1, as sent by a device whose clock was never set.
+    var unset = new Cp56Time2a(0, 0, 0, 0, 0, 0, 0, true, false, true);
+    var february30 = new Cp56Time2a(0, 0, 12, 30, 0, 2, 26, false, false, true);
+    var year120 = new Cp56Time2a(0, 0, 12, 1, 0, 6, 120, false, false, true);
+    var ms60000 = new Cp56Time2a(60_000, 0, 12, 1, 0, 6, 26, false, false, true);
+    var hour24 = new Cp56Time2a(0, 0, 24, 1, 0, 6, 26, false, false, true);
+
+    for (Cp56Time2a tag : List.of(unset, february30, year120, ms60000, hour24)) {
+      assertFalse(tag.isWellFormed(), tag.toString());
+      assertEquals(Optional.empty(), policy.toInstant(tag), tag.toString());
+      assertEquals(Optional.empty(), policy.withBaseYear(1990).toInstant(tag), tag.toString());
+    }
+  }
+
+  @Test
+  void malformedCp24TagsDoNotComplete() {
+    TimePolicy policy = TimePolicy.utc().withCompleteCp24(true);
+    Instant receivedAt = Instant.parse("2026-06-01T10:05:00Z");
+
+    assertEquals(Optional.empty(), policy.complete(new Cp24Time2a(0, 63, true, true), receivedAt));
+    assertEquals(
+        Optional.empty(), policy.complete(new Cp24Time2a(65_535, 3, false, true), receivedAt));
+  }
+
+  @Test
   void rejectsUnsupportedBaseYear() {
     assertThrows(
         IllegalArgumentException.class, () -> TimePolicy.utc().withBaseYear(Integer.MAX_VALUE));

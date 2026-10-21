@@ -107,6 +107,55 @@ class MonitorMappingTimeTagTest {
   }
 
   @Test
+  void malformedCp56TagKeepsRawFieldsWithoutInstant() {
+    // All zero with IV=1, as sent by a device whose clock was never set.
+    var unset = new Cp56Time2a(0, 0, 0, 0, 0, 0, 0, true, false, true);
+    var february30 = new Cp56Time2a(0, 0, 12, 30, 0, 2, 26, false, true, false);
+
+    PointValueExtraction a =
+        MonitorMapping.extract(
+                new SinglePointWithCp56Time(IOA, true, GOOD, unset), BERLIN, RECEIVED)
+            .orElseThrow();
+    PointValueExtraction b =
+        MonitorMapping.extract(
+                new SinglePointWithCp56Time(IOA, false, GOOD, february30), BERLIN, RECEIVED)
+            .orElseThrow();
+
+    TimeTag unsetTag = a.timeTag().orElseThrow();
+    assertEquals(unset, unsetTag.cp56());
+    assertTrue(unsetTag.invalid());
+    assertEquals(Optional.empty(), unsetTag.instant());
+    assertEquals(Optional.empty(), a.timestamp());
+    assertEquals(true, a.value().value());
+
+    TimeTag february30Tag = b.timeTag().orElseThrow();
+    assertEquals(february30, february30Tag.cp56());
+    assertFalse(february30Tag.invalid());
+    assertTrue(february30Tag.summerTime());
+    assertTrue(february30Tag.substituted());
+    assertEquals(Optional.empty(), february30Tag.instant());
+    assertEquals(Optional.empty(), b.value().timestamp());
+  }
+
+  @Test
+  void malformedCp24TagKeepsRawFieldsWithoutInstant() {
+    var raw = new Cp24Time2a(0, 63, true, true);
+
+    PointValueExtraction e =
+        MonitorMapping.extract(
+                new SinglePointWithCp24Time(IOA, true, GOOD, raw),
+                TimePolicy.utc().withCompleteCp24(true),
+                RECEIVED)
+            .orElseThrow();
+
+    TimeTag tag = e.timeTag().orElseThrow();
+    assertEquals(raw, tag.cp24());
+    assertTrue(tag.invalid());
+    assertEquals(Optional.empty(), tag.instant());
+    assertFalse(tag.inferred());
+  }
+
+  @Test
   void cp24TagIsKeptWithoutInstantByDefault() {
     var raw = new Cp24Time2a(12_345, 17, false, false);
 

@@ -63,8 +63,8 @@ import org.jspecify.annotations.Nullable;
  * {@link TimePolicy#utc()}. On extraction, a CP56Time2a tag resolves to an instant in the policy's
  * zone; a CP24Time2a tag carries only the minute and milliseconds, so its instant is empty unless
  * the policy completes it from the receive time. The extracted {@link PointValue#timestamp()} is
- * empty when the tag is marked invalid (IV=1); the raw fields and flags stay on the {@link
- * TimeTag}.
+ * empty when the tag is marked invalid (IV=1) or its fields do not form a date; the raw fields and
+ * flags stay on the {@link TimeTag} either way.
  *
  * <p>Example:
  *
