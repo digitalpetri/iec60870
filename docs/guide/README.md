@@ -72,6 +72,8 @@ If you are new to the library, read in this order:
   addressing field sizes, as a decision table.
 - [Work with raw ASDUs](how-to/work-with-raw-asdus.md) — drop to the raw protocol layer: build,
   encode, and decode an `Asdu`, and handle unmodeled TypeIDs via the send/receive hooks.
+- [Monitor connections](how-to/monitor-connections.md) — count frames, timer expiries, errors, and
+  reconnects with `ApciCounters`, trace raw frames, and tag log lines with a per-connection MDC.
 - [Connect over serial](how-to/connect-over-serial.md) — run the same facade over an IEC 60870-5-101
   FT1.2 serial link (balanced or unbalanced, RS-485) with `SerialIec101Client` / `SerialIec101Server`,
   or 101-over-TCP with `TcpIec101Client` / `TcpIec101Server`.

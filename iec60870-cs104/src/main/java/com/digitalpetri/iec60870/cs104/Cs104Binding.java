@@ -7,6 +7,8 @@ import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.SessionSettings;
 import com.digitalpetri.iec60870.UndecodableAsduPolicy;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.diagnostics.Direction;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
@@ -15,11 +17,14 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.UnpooledByteBufAllocator;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Assembles a complete IEC 60870-5-104 {@link Session} over a core octet transport handle.
@@ -58,13 +63,27 @@ import org.jspecify.annotations.Nullable;
  * <p><b>Allocator.</b> The binding holds the {@link ByteBufAllocator} used for outbound framing,
  * defaulting to {@link UnpooledByteBufAllocator#DEFAULT} when none is supplied. The frame buffers
  * it allocates are handed to the transport's {@code send}, which owns and releases them.
+ *
+ * <p><b>Diagnostics.</b> A binding constructed with an {@link ApciDiagnostics} listener reports
+ * every APDU it frames ({@link ApciDiagnostics#onApduSent(ControlField, int)}, before the transport
+ * takes ownership of the buffer) and every frame whose control field decodes ({@link
+ * ApciDiagnostics#onApduReceived(ControlField, int)}), each decode failure with the offending frame
+ * ({@link ApciDiagnostics#onDecodeError(ByteBuf, RuntimeException)}), and, while {@link
+ * ApciDiagnostics#traceFrames()} returns {@code true}, a read-only view of each raw frame. The
+ * trace and decode-error callbacks run with the connection's logging context in the MDC. It hands
+ * the same listener and its logging context to the assembled {@link ApciSession}. A server binding
+ * adds {@value LoggingContext#REMOTE_KEY} with each accepted connection's remote address.
  */
 public final class Cs104Binding {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(Cs104Binding.class);
 
   private final ApciSettings settings;
   private final ProtocolProfile profile;
   private final ByteBufAllocator allocator;
   private final UndecodableAsduPolicy undecodableAsduPolicy;
+  private final ApciDiagnostics diagnostics;
+  private final LoggingContext loggingContext;
 
   /**
    * Creates a binding with the {@link UnpooledByteBufAllocator#DEFAULT default unpooled allocator}.
@@ -109,12 +128,42 @@ public final class Cs104Binding {
       ProtocolProfile profile,
       @Nullable ByteBufAllocator allocator,
       UndecodableAsduPolicy undecodableAsduPolicy) {
+    this(settings, profile, allocator, undecodableAsduPolicy, ApciDiagnostics.NONE, Map.of());
+  }
+
+  /**
+   * Creates a binding with an explicit outbound-framing allocator, undecodable-ASDU policy,
+   * diagnostics listener, and logging context.
+   *
+   * @param settings the APCI flow-control parameters for the assembled sessions; if a neutral
+   *     {@link SessionSettings} is supplied it must be an {@link ApciSettings}.
+   * @param profile the wire profile that governs ASDU field widths during framing.
+   * @param allocator the allocator used to obtain outbound frame buffers, or {@code null} for the
+   *     default unpooled allocator.
+   * @param undecodableAsduPolicy what the assembled sessions do with a correctly framed I-frame
+   *     whose ASDU cannot be decoded.
+   * @param diagnostics the listener for the assembled sessions' frame and APCI events, shared by
+   *     every session this binding assembles unless {@link #bindServer(ServerTransportConnection,
+   *     Session.Events, ScheduledExecutorService, int, OutboundQueuePolicy, ApciDiagnostics)}
+   *     supplies one per connection; exceptions it throws are caught and logged.
+   * @param loggingContext the MDC entries set around the log lines of the assembled sessions.
+   * @throws IllegalArgumentException if {@code settings} is not an {@link ApciSettings}.
+   */
+  public Cs104Binding(
+      SessionSettings settings,
+      ProtocolProfile profile,
+      @Nullable ByteBufAllocator allocator,
+      UndecodableAsduPolicy undecodableAsduPolicy,
+      ApciDiagnostics diagnostics,
+      Map<String, String> loggingContext) {
     Objects.requireNonNull(settings, "settings");
     this.settings = downcast(settings);
     this.profile = Objects.requireNonNull(profile, "profile");
     this.allocator = allocator != null ? allocator : UnpooledByteBufAllocator.DEFAULT;
     this.undecodableAsduPolicy =
         Objects.requireNonNull(undecodableAsduPolicy, "undecodableAsduPolicy");
+    this.diagnostics = ApciDiagnostics.of(Objects.requireNonNull(diagnostics, "diagnostics"));
+    this.loggingContext = LoggingContext.of(loggingContext);
   }
 
   /**
@@ -147,7 +196,9 @@ public final class Cs104Binding {
         transport::setListener,
         transport::setReadPaused,
         null,
-        transport::closeConnection);
+        transport::closeConnection,
+        diagnostics,
+        loggingContext);
   }
 
   /**
@@ -173,10 +224,39 @@ public final class Cs104Binding {
       ScheduledExecutorService scheduler,
       int maxOutboundQueue,
       OutboundQueuePolicy queuePolicy) {
+    return bindServer(connection, events, scheduler, maxOutboundQueue, queuePolicy, diagnostics);
+  }
+
+  /**
+   * Assembles a SERVER-role {@link Session} bound to one accepted {@code connection}, reporting to
+   * a diagnostics listener chosen for that connection.
+   *
+   * <p>Behaves like {@link #bindServer(ServerTransportConnection, Session.Events,
+   * ScheduledExecutorService, int, OutboundQueuePolicy)}, except that {@code diagnostics} replaces
+   * the binding's listener for this connection.
+   *
+   * @param connection the accepted octet transport connection to bind.
+   * @param events the facade's event sink for this connection.
+   * @param scheduler the shared scheduler for the session's {@code t1}/{@code t2}/{@code t3}
+   *     timers.
+   * @param maxOutboundQueue the maximum number of ASDUs held while the window is closed, or {@code
+   *     0} for an unbounded queue.
+   * @param queuePolicy the action taken when a bounded outbound queue overflows.
+   * @param diagnostics the listener for this connection's frame and APCI events.
+   * @return the assembled session.
+   */
+  public Session bindServer(
+      ServerTransportConnection connection,
+      Session.Events events,
+      ScheduledExecutorService scheduler,
+      int maxOutboundQueue,
+      OutboundQueuePolicy queuePolicy,
+      ApciDiagnostics diagnostics) {
     Objects.requireNonNull(connection, "connection");
     Objects.requireNonNull(events, "events");
     Objects.requireNonNull(scheduler, "scheduler");
     Objects.requireNonNull(queuePolicy, "queuePolicy");
+    Objects.requireNonNull(diagnostics, "diagnostics");
 
     // The server connection SPI exposes close() (a per-connection teardown), exactly matching the
     // Netty server's decode-failure behavior: tear down just this one accepted connection. Use it
@@ -190,7 +270,9 @@ public final class Cs104Binding {
         connection::setListener,
         paused -> {},
         new ServerQueueConfig(maxOutboundQueue, queuePolicy),
-        connection::close);
+        connection::close,
+        ApciDiagnostics.of(diagnostics),
+        loggingContext.withRemote(connection.remoteAddress()));
   }
 
   private Session assemble(
@@ -201,7 +283,9 @@ public final class Cs104Binding {
       Consumer<TransportListener> listenerSink,
       Consumer<Boolean> readPause,
       @Nullable ServerQueueConfig queueConfig,
-      Runnable closeConnection) {
+      Runnable closeConnection,
+      ApciDiagnostics diagnostics,
+      LoggingContext loggingContext) {
 
     // A failed write or a transport loss is reported and nothing else: the receiver closes the
     // session
@@ -216,12 +300,12 @@ public final class Cs104Binding {
 
           @Override
           public CompletionStage<Void> sendAsync(Apdu apdu) {
-            return write(ApduFramer.encode(apdu, profile, allocator));
+            return write(apdu.control(), ApduFramer.encode(apdu, profile, allocator));
           }
 
           @Override
           public CompletionStage<Void> sendRawAsync(ControlField.TypeI control, byte[] asdu) {
-            return write(ApduFramer.encode(control, asdu, allocator));
+            return write(control, ApduFramer.encode(control, asdu, allocator));
           }
 
           @Override
@@ -229,7 +313,14 @@ public final class Cs104Binding {
             readPause.accept(paused);
           }
 
-          private CompletionStage<Void> write(ByteBuf buffer) {
+          private CompletionStage<Void> write(ControlField control, ByteBuf buffer) {
+            // Report before send(), which takes ownership of the buffer and may release it.
+            diagnostics.onApduSent(control, buffer.readableBytes());
+            if (diagnostics.traceFrames()) {
+              try (LoggingContext.Scope ignored = loggingContext.open()) {
+                diagnostics.onFrame(Direction.OUT, buffer.asReadOnly());
+              }
+            }
             return frameSink
                 .send(buffer)
                 .whenComplete(
@@ -243,7 +334,16 @@ public final class Cs104Binding {
 
     ApciSession session =
         queueConfig == null
-            ? new ApciSession(role, settings, scheduler, output, events)
+            ? new ApciSession(
+                role,
+                settings,
+                scheduler,
+                output,
+                events,
+                0,
+                OutboundQueuePolicy.DROP_OLDEST,
+                diagnostics,
+                loggingContext)
             : new ApciSession(
                 role,
                 settings,
@@ -251,7 +351,9 @@ public final class Cs104Binding {
                 output,
                 events,
                 queueConfig.maxOutboundQueue(),
-                queueConfig.queuePolicy());
+                queueConfig.queuePolicy(),
+                diagnostics,
+                loggingContext);
 
     listenerSink.accept(
         new TransportListener() {
@@ -270,13 +372,22 @@ public final class Cs104Binding {
             // acknowledges the frame, and reports the octets; under STRICT it is treated like a
             // framing error. The buffer is owned and released by the transport after onFrame
             // returns, so it is neither retained nor released here.
+            int frameStart = frame.readerIndex();
+            int frameLength = frame.readableBytes();
+            if (diagnostics.traceFrames()) {
+              try (LoggingContext.Scope ignored = loggingContext.open()) {
+                diagnostics.onFrame(Direction.IN, frame.asReadOnly());
+              }
+            }
             ApduFramer.Header header;
             try {
               header = ApduFramer.decodeHeader(frame);
             } catch (RuntimeException decodeFailure) {
+              reportDecodeError(frame, frameStart, frameLength, decodeFailure);
               closeOnDecodeFailure(decodeFailure);
               return;
             }
+            diagnostics.onApduReceived(header.control(), frameLength);
             if (!(header.control() instanceof ControlField.TypeI control)) {
               session.onApdu(new Apdu(header.control(), null));
               return;
@@ -287,6 +398,7 @@ public final class Cs104Binding {
             try {
               asdu = Asdu.Serde.decode(profile, asduOctets);
             } catch (RuntimeException decodeFailure) {
+              reportDecodeError(frame, frameStart, frameLength, decodeFailure);
               if (undecodableAsduPolicy == UndecodableAsduPolicy.STRICT) {
                 closeOnDecodeFailure(decodeFailure);
                 return;
@@ -296,6 +408,21 @@ public final class Cs104Binding {
               return;
             }
             session.onApdu(new Apdu(control, asdu));
+          }
+
+          private void reportDecodeError(
+              ByteBuf frame, int frameStart, int frameLength, RuntimeException decodeFailure) {
+            loggingContext.debug(
+                LOGGER,
+                "{}: undecodable frame ({} octets): {}",
+                loggingContext.remote(),
+                frameLength,
+                decodeFailure.toString());
+            // Lend the whole frame, whatever the failed decode already consumed.
+            try (LoggingContext.Scope ignored = loggingContext.open()) {
+              diagnostics.onDecodeError(
+                  frame.slice(frameStart, frameLength).asReadOnly(), decodeFailure);
+            }
           }
 
           /** Set while this listener closes the connection itself after a decode failure. */

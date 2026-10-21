@@ -3,22 +3,31 @@ package com.digitalpetri.iec60870.tcp;
 import com.digitalpetri.iec60870.ProtocolProfile;
 import com.digitalpetri.iec60870.TlsOptions;
 import com.digitalpetri.iec60870.UndecodableAsduPolicy;
+import com.digitalpetri.iec60870.cs104.ApciCounters;
+import com.digitalpetri.iec60870.cs104.ApciDiagnostics;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import com.digitalpetri.iec60870.server.DefaultIec60870Server;
 import com.digitalpetri.iec60870.server.Iec60870Server;
 import com.digitalpetri.iec60870.server.ServerConfig;
 import com.digitalpetri.iec60870.server.ServerHandler;
 import com.digitalpetri.iec60870.server.Station;
+import com.digitalpetri.iec60870.session.Session;
+import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.tcp.NettyServerTransport;
 import com.digitalpetri.iec60870.transport.tcp.NettyServerTransportConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.EventLoopGroup;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -89,6 +98,9 @@ public final class TcpIec104Server {
     private @Nullable EventLoopGroup bossEventLoopGroup;
     private @Nullable EventLoopGroup workerEventLoopGroup;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
+    private Function<SocketAddress, ? extends ApciDiagnostics> diagnostics =
+        remote -> ApciDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
 
     private Builder() {}
 
@@ -259,6 +271,40 @@ public final class TcpIec104Server {
     }
 
     /**
+     * Sets the function that picks the diagnostics listener for each connection. Defaults to {@link
+     * ApciDiagnostics#NONE} for every connection.
+     *
+     * <p>The function runs once per accepted connection, with its remote address, and may return a
+     * shared instance such as one {@link ApciCounters} for totals across connections. The listener
+     * receives the accepted connection and its close, the session's frame, timer, and
+     * protocol-error events, and the server's dropped ASDUs and events for that connection. The
+     * function also runs once for each connection rejected because {@link #maxConnections(int)}
+     * connections are open, to report the rejection.
+     *
+     * @param diagnostics maps a remote address to its listener.
+     * @return this builder.
+     */
+    public Builder diagnostics(Function<SocketAddress, ? extends ApciDiagnostics> diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets MDC entries that the library sets around its log lines for this server. Defaults to
+     * none.
+     *
+     * <p>Log lines for a connection also carry {@code iec60870.remote} with the connection's remote
+     * address.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds the Netty transport and the core server and returns the {@link Iec60870Server}.
      *
      * @return the configured server.
@@ -271,6 +317,8 @@ public final class TcpIec104Server {
               .workerEventLoopGroup(workerEventLoopGroup)
               .maxConnections(maxConnections)
               .serverBootstrapCustomizer(serverBootstrapCustomizer)
+              .diagnostics(diagnostics)
+              .loggingContext(loggingContext)
               .build();
 
       NettyServerTransport transport = new NettyServerTransport(transportConfig);
@@ -280,7 +328,9 @@ public final class TcpIec104Server {
               .protocolProfile(profile)
               .sessionSettings(apci)
               .stations(stations)
-              .maxConnections(maxConnections);
+              .maxConnections(maxConnections)
+              .diagnostics(diagnostics)
+              .loggingContext(loggingContext);
       if (handler != null) {
         serverConfigBuilder.handler(handler);
       }
@@ -291,20 +341,40 @@ public final class TcpIec104Server {
 
       // The builder is the sole 104 assembly point, but it holds no Apdu<->octet wiring itself.
       // Cs104Binding owns the full per-connection ApciSession + framing assembly (see its Javadoc).
-      Cs104Binding binding = new Cs104Binding(apci, profile, null, undecodableAsduPolicy);
+      Cs104Binding binding =
+          new Cs104Binding(
+              apci, profile, null, undecodableAsduPolicy, ApciDiagnostics.NONE, loggingContext);
 
       // The outbound-queue bound and policy are passed as scalars rather than the ServerConfig
       // object so Cs104Binding stays free of an iec60870-application import.
-      return new DefaultIec60870Server(
-          transport,
-          serverConfig,
-          (connection, events, scheduler) ->
-              binding.bindServer(
+      DefaultIec60870Server.SessionFactory sessionFactory =
+          new DefaultIec60870Server.SessionFactory() {
+            @Override
+            public Session create(
+                ServerTransportConnection connection,
+                Session.Events events,
+                ScheduledExecutorService scheduler) {
+              return create(connection, events, scheduler, ApciDiagnostics.NONE);
+            }
+
+            @Override
+            public Session create(
+                ServerTransportConnection connection,
+                Session.Events events,
+                ScheduledExecutorService scheduler,
+                ConnectionDiagnostics diagnostics) {
+              // The server passes the listener the diagnostics function returned for this
+              // connection, which this builder only accepts as an ApciDiagnostics.
+              return binding.bindServer(
                   connection,
                   events,
                   scheduler,
                   serverConfig.maxOutboundQueue(),
-                  serverConfig.eventQueuePolicy()));
+                  serverConfig.eventQueuePolicy(),
+                  ApciDiagnostics.from(diagnostics));
+            }
+          };
+      return new DefaultIec60870Server(transport, serverConfig, sessionFactory);
     }
   }
 }

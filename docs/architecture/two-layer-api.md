@@ -195,7 +195,13 @@ records cover the connection lifecycle and inbound data: `ConnectionOpened`, `Co
 `ProtocolWarning(message)`. Every
 received monitor ASDU yields one `PointUpdated` per information object **and** an always-published
 `AsduReceived`, so a subscriber can work at the point level, the ASDU level, or both. Events are
-delivered serially — a subscriber never observes two events concurrently.
+delivered serially — a subscriber never observes two events concurrently. `ProtocolWarning` is
+published when the session ignores a U-frame without closing (an unsolicited TESTFR con, STARTDT
+con, or STOPDT con, or a STARTDT act or STOPDT act sent to the client), reported through
+`Session.Events.onProtocolWarning`. It is best effort: while the slowest subscriber's backlog is at
+its data capacity the warning is dropped and reported to the diagnostics listener instead. Counts,
+timer expiries, and frames below the event stream come from the diagnostics listener described in
+[buffers-and-threading.md](buffers-and-threading.md#diagnostics-listeners).
 
 ```java
 client.events().subscribe(subscriber);

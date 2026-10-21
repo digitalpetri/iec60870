@@ -1,5 +1,8 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
+import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.ServerTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import io.netty.bootstrap.ServerBootstrap;
@@ -19,6 +22,7 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,6 +75,7 @@ public class NettyServerTransport implements ServerTransport {
   private final AtomicInteger childCount = new AtomicInteger();
 
   private final NettyServerTransportConfig config;
+  private final LoggingContext loggingContext;
   private final EventLoopGroup bossGroup;
   private final EventLoopGroup workerGroup;
   private final boolean ownsBossGroup;
@@ -87,6 +92,7 @@ public class NettyServerTransport implements ServerTransport {
    */
   public NettyServerTransport(NettyServerTransportConfig config) {
     this.config = config;
+    this.loggingContext = LoggingContext.of(config.loggingContext());
 
     EventLoopGroup sharedBoss = config.bossEventLoopGroupOptional().orElse(null);
     if (sharedBoss != null) {
@@ -163,7 +169,7 @@ public class NettyServerTransport implements ServerTransport {
             return;
           }
           if (future.isSuccess()) {
-            LOGGER.debug("bound IEC 104 server on {}", bindAddress);
+            loggingContext.debug(LOGGER, "bound IEC 104 server on {}", bindAddress);
             // null is the only valid completion value for a CompletableFuture<Void>.
             //noinspection DataFlowIssue
             result.complete(null);
@@ -268,13 +274,17 @@ public class NettyServerTransport implements ServerTransport {
   private void initChildChannel(Channel channel) {
     // Reserve a slot atomically: increment first, roll back on overshoot, so concurrent accepts on
     // different event-loop threads cannot both pass a size() check and exceed the cap.
+    SocketAddress remote = channel.remoteAddress();
+    LoggingContext connectionContext = loggingContext.withRemote(remote);
     if (childCount.incrementAndGet() > config.maxConnections()) {
       childCount.decrementAndGet();
-      LOGGER.debug(
+      connectionContext.debug(
+          LOGGER,
           "rejecting connection from {}; maxConnections={} reached",
-          channel.remoteAddress(),
+          remote,
           config.maxConnections());
       channel.close();
+      reportRejected(remote);
       return;
     }
 
@@ -282,21 +292,37 @@ public class NettyServerTransport implements ServerTransport {
     // Free the reserved slot once the channel closes, registered exactly once here at admission.
     channel.closeFuture().addListener(future -> childCount.decrementAndGet());
 
-    NettyServerConnection connection = new NettyServerConnection(channel);
+    NettyServerConnection connection = new NettyServerConnection(channel, connectionContext);
 
     Iec104Pipeline.configure(
         channel,
         config.tlsOptionsOptional().orElse(null),
         false,
         connection::listener,
-        config.frameDecoderFactoryOptional().orElse(null));
+        null,
+        -1,
+        config.frameDecoderFactoryOptional().orElse(null),
+        connectionContext);
 
     Consumer<ServerTransportConnection> handler = connectionHandler.get();
     if (handler != null) {
       handler.accept(connection);
     } else {
-      LOGGER.debug("no connection handler registered; closing {}", channel.remoteAddress());
+      connectionContext.debug(LOGGER, "no connection handler registered; closing {}", remote);
       channel.close();
+    }
+  }
+
+  /** Reports a connection rejected at the connection cap to the configured listener. */
+  private void reportRejected(SocketAddress remote) {
+    var cause =
+        new ConnectionClosedException(
+            "connection rejected: maxConnections=" + config.maxConnections() + " reached");
+    try {
+      ConnectionDiagnostics.of(config.diagnostics().apply(remote)).onConnectFailed(remote, cause);
+    } catch (RuntimeException e) {
+      // The diagnostics function itself failed; the listener's own failures are caught by of().
+      loggingContext.withRemote(remote).warn(LOGGER, "diagnostics function threw", e);
     }
   }
 

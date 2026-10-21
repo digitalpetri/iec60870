@@ -25,6 +25,7 @@ import org.jspecify.annotations.Nullable;
 public final class OutboundAsduQueue {
   private final int capacity;
   private final OutboundQueuePolicy policy;
+  private final Runnable onDiscard;
   private final ArrayDeque<Entry> queue = new ArrayDeque<>();
   private final Set<Entry> outstanding = ConcurrentHashMap.newKeySet();
 
@@ -35,11 +36,25 @@ public final class OutboundAsduQueue {
    * @param policy the overflow policy for discardable entries.
    */
   public OutboundAsduQueue(int capacity, OutboundQueuePolicy policy) {
+    this(capacity, policy, () -> {});
+  }
+
+  /**
+   * Creates an outbound queue that reports each discardable entry the overflow policy discards.
+   *
+   * @param capacity the pending queue bound, or zero for an unbounded queue.
+   * @param policy the overflow policy for discardable entries.
+   * @param onDiscard invoked once for each discardable entry that a full queue evicts or rejects,
+   *     from the thread that offered the new entry. Rejected reliable entries are not reported;
+   *     their completion fails instead.
+   */
+  public OutboundAsduQueue(int capacity, OutboundQueuePolicy policy, Runnable onDiscard) {
     if (capacity < 0) {
       throw new IllegalArgumentException("capacity must not be negative");
     }
     this.capacity = capacity;
     this.policy = Objects.requireNonNull(policy, "policy");
+    this.onDiscard = Objects.requireNonNull(onDiscard, "onDiscard");
   }
 
   /**
@@ -77,9 +92,13 @@ public final class OutboundAsduQueue {
               : null;
       if (evicted == null) {
         entry.fail(new RejectedExecutionException("outbound ASDU queue is full"));
+        if (!reliable) {
+          onDiscard.run();
+        }
         return entry;
       }
       evicted.fail(new RejectedExecutionException("outbound ASDU evicted"));
+      onDiscard.run();
     }
     outstanding.add(entry);
     entry.completion.whenComplete((ignored, error) -> outstanding.remove(entry));

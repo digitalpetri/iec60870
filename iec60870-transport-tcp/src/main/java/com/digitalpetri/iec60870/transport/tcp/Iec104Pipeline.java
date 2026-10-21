@@ -1,6 +1,7 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
@@ -170,6 +171,48 @@ final class Iec104Pipeline {
       int peerPort,
       @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
 
+    return configure(
+        channel,
+        tlsOptions,
+        clientMode,
+        listenerSupplier,
+        peerHost,
+        peerPort,
+        frameDecoderFactory,
+        LoggingContext.empty());
+  }
+
+  /**
+   * Installs the handlers on {@code channel} in the fixed safe order, with a logging context for
+   * the inbound handler's log lines.
+   *
+   * <p>Behaves exactly like {@link #configure(Channel, TlsOptions, boolean, Supplier, String, int,
+   * Supplier)}; {@code loggingContext} is set around the log lines of the inbound handler.
+   *
+   * @param channel the channel whose pipeline is configured.
+   * @param tlsOptions the TLS options, or {@code null} for a plaintext connection.
+   * @param clientMode {@code true} to configure the TLS engine in client mode, {@code false} for
+   *     server mode.
+   * @param listenerSupplier supplies the {@link TransportListener} the inbound handler forwards to.
+   * @param peerHost the host being dialed, used for client-side identification, or {@code null}
+   *     when unknown.
+   * @param peerPort the port being dialed, or {@code -1} when unknown.
+   * @param frameDecoderFactory supplies the frame decoder to install, or {@code null} to install
+   *     the default {@link Iec104FrameDecoder}.
+   * @param loggingContext the MDC entries for the connection.
+   * @return the {@link SslHandler} that was installed, or {@code null} when TLS is not configured.
+   */
+  @SuppressWarnings("UnusedReturnValue")
+  static @Nullable SslHandler configure(
+      Channel channel,
+      @Nullable TlsOptions tlsOptions,
+      boolean clientMode,
+      Supplier<@Nullable TransportListener> listenerSupplier,
+      @Nullable String peerHost,
+      int peerPort,
+      @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory,
+      LoggingContext loggingContext) {
+
     ChannelPipeline pipeline = channel.pipeline();
 
     SslHandler sslHandler = null;
@@ -181,7 +224,7 @@ final class Iec104Pipeline {
     ByteToMessageDecoder frameDecoder =
         frameDecoderFactory != null ? frameDecoderFactory.get() : new Iec104FrameDecoder();
     pipeline.addLast(FRAME_DECODER, frameDecoder);
-    pipeline.addLast(INBOUND_HANDLER, new InboundFrameHandler(listenerSupplier));
+    pipeline.addLast(INBOUND_HANDLER, new InboundFrameHandler(listenerSupplier, loggingContext));
 
     return sslHandler;
   }

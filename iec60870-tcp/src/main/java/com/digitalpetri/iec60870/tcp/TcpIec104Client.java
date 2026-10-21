@@ -8,13 +8,17 @@ import com.digitalpetri.iec60870.client.ClientConfig;
 import com.digitalpetri.iec60870.client.DefaultIec60870Client;
 import com.digitalpetri.iec60870.client.Iec60870Client;
 import com.digitalpetri.iec60870.client.ReconnectPolicy;
+import com.digitalpetri.iec60870.cs104.ApciDiagnostics;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.cs104.Cs104Binding;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.tcp.NettyClientTransport;
 import com.digitalpetri.iec60870.transport.tcp.NettyClientTransportConfig;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.EventLoopGroup;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -84,6 +88,8 @@ public final class TcpIec104Client {
     private UndecodableAsduPolicy undecodableAsduPolicy = UndecodableAsduPolicy.DEFAULT;
     private @Nullable EventLoopGroup eventLoopGroup;
     private @Nullable Consumer<Bootstrap> bootstrapCustomizer;
+    private ApciDiagnostics diagnostics = ApciDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
 
     private Builder() {}
 
@@ -275,11 +281,56 @@ public final class TcpIec104Client {
     }
 
     /**
+     * Sets the diagnostics listener for the connection. Defaults to {@link ApciDiagnostics#NONE}.
+     *
+     * <p>The one listener receives the transport's connect attempts and their outcomes, the
+     * session's frame, timer, and protocol-error events, and the client's closed connections,
+     * reconnects, and inbound pauses, for the first connection and every reconnect. Combine several
+     * listeners with {@link ApciDiagnostics#of(ApciDiagnostics...)}.
+     *
+     * <pre>{@code
+     * ApciCounters counters = new ApciCounters();
+     * Iec60870Client client = TcpIec104Client.builder()
+     *     .host("10.0.0.5")
+     *     .diagnostics(ApciDiagnostics.of(counters, FrameTrace.logger(traceLogger)))
+     *     .loggingContext(Map.of("device", "rtu-5"))
+     *     .build();
+     * }</pre>
+     *
+     * @param diagnostics the diagnostics listener.
+     * @return this builder.
+     */
+    public Builder diagnostics(ApciDiagnostics diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets MDC entries that the library sets around its log lines for this connection. Defaults to
+     * none.
+     *
+     * <p>The client always adds {@code iec60870.remote} with the configured {@code host:port},
+     * unless {@code loggingContext} sets that key itself.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds the Netty transport and the core client and returns the {@link Iec60870Client}.
      *
      * @return the configured client.
      */
     public Iec60870Client build() {
+      Map<String, String> context =
+          LoggingContext.of(loggingContext)
+              .withRemote(InetSocketAddress.createUnresolved(host, port))
+              .entries();
+
       NettyClientTransportConfig transportConfig =
           NettyClientTransportConfig.builder(host, port)
               .localBind(localBind)
@@ -287,6 +338,8 @@ public final class TcpIec104Client {
               .tlsOptions(tls)
               .sharedEventLoopGroup(eventLoopGroup)
               .bootstrapCustomizer(bootstrapCustomizer)
+              .diagnostics(diagnostics)
+              .loggingContext(context)
               .build();
 
       NettyClientTransport transport = new NettyClientTransport(transportConfig);
@@ -302,10 +355,13 @@ public final class TcpIec104Client {
       }
       clientConfigBuilder.eventBacklogLimit(eventBacklogLimit);
       clientConfigBuilder.reconnectPolicy(reconnectPolicy);
+      clientConfigBuilder.diagnostics(diagnostics);
+      clientConfigBuilder.loggingContext(context);
 
       // The builder is the sole 104 assembly point but holds no Apdu<->octet wiring itself: it
       // delegates the full ApciSession + framing assembly to Cs104Binding (see its Javadoc).
-      Cs104Binding binding = new Cs104Binding(apci, profile, null, undecodableAsduPolicy);
+      Cs104Binding binding =
+          new Cs104Binding(apci, profile, null, undecodableAsduPolicy, diagnostics, context);
 
       return new DefaultIec60870Client(
           transport,

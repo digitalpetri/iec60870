@@ -194,7 +194,88 @@ repeated connect or start/stop cycles cannot exhaust the reserve.
 
 `DefaultIec60870Server` keeps a plain `SubmissionPublisher` with `Flow.defaultBufferSize()` slots per
 subscriber. Its events follow control-direction traffic, so the risk is lower; an event that finds
-a full buffer is dropped for that subscriber and logged at WARN.
+a full buffer is dropped for that subscriber, logged at WARN, and reported to the connection's
+diagnostics listener through `onEventDropped`.
+
+## Diagnostics listeners
+
+The diagnostics listener is an opt-in observer below the event stream. It is split by layer so the
+module rule holds:
+
+- `ConnectionDiagnostics` (`iec60870-core`, package `.diagnostics`) carries the protocol-neutral
+  events. `NettyClientTransport` reports each connect attempt, its success with the local and remote
+  addresses, or its failure with the cause (including a failed TLS handshake and an attempt aborted
+  by a disconnect). `NettyServerTransport` and `DefaultIec60870Server` report connections rejected at
+  `maxConnections`. The client facade reports closed connections, scheduled reconnects, inbound
+  pauses, and inbound ASDUs it discards after the event backlog reached its hard capacity. The server
+  facade reports accepted and closed connections, inbound ASDUs dropped at the dispatch bound,
+  monitor ASDUs its queue policy discards, and events dropped for a slow subscriber. `ApciSession`
+  reports discardable ASDUs its bounded send queue evicts or rejects.
+- `ApciDiagnostics` (`iec60870-cs104`) adds the 104 frame-level events. `Cs104Binding` reports
+  every APDU it frames (before `send` takes ownership) and every frame whose control field decodes
+  (before the ASDU is decoded), each decode failure with the frame, and the raw frame trace. The
+  trace and decode-error callbacks run with the connection's logging context in the MDC, so
+  `FrameTrace.logger` lines carry it. `ApciSession` reports a full `k`
+  window, `t1`/`t2`/`t3` expiries, ignored U-frames, and the protocol errors that make it close
+  itself, before it reports the close to the facade.
+
+The TCP builders hand one listener to the transport, the binding, and the facade (for a server, one
+per accepted connection, chosen by a `Function<SocketAddress, ApciDiagnostics>` that runs once per
+connection). `DefaultIec60870Server.SessionFactory` has a four-argument `create` that receives the
+connection's listener, so the binding can use it too. `ApciCounters` counts everything with one
+`LongAdder` per field and may be shared by any number of connections; `FrameTrace.logger(Logger)`
+writes one trace-level line per frame.
+
+### Threading
+
+Callbacks run on the thread that drives the event and are not hopped to the callback executor:
+
+| Event source | Thread | Lock held |
+|---|---|---|
+| Inbound frames (`onApduReceived`, `onDecodeError`, inbound `onFrame`) | Netty I/O thread | none in the binding; the session callbacks that follow take the session lock |
+| Outbound frames (`onApduSent`, outbound `onFrame`) | the thread that made the session write: application, scheduler, or I/O thread | session lock |
+| `onWindowFull`, `onTimerExpired`, `onFrameIgnored`, `onProtocolError` | the thread driving the session; timers on the scheduler | session lock |
+| Connect lifecycle (`onConnectAttempt`, `onConnected`, `onConnectFailed`) | caller of `connect()` for the attempt, Netty I/O thread for the outcome | none |
+| Facade events (`onConnectionClosed`, `onReconnectScheduled`, `onInboundPaused`, drops) | the facade's operation queue, I/O thread, or publishing thread | sometimes a facade or queue lock |
+
+For one connection, frame callbacks arrive in wire order: outbound in the order the session hands
+APDUs to the transport under its lock (which `OrderedFrameWriter` preserves on the wire), inbound in
+the I/O thread's read order. A listener must return quickly, must not block, and must not call back
+into the client, server, or session. Slow work belongs on the listener's own executor, after copying
+what it needs.
+
+Every component wraps the configured listener with `ConnectionDiagnostics.of` or
+`ApciDiagnostics.of`, which catch and log an exception from each callback, so a faulty listener
+cannot change protocol state or close a connection. With several listeners combined through `of`,
+one failing listener does not keep the event from the others.
+
+### Lent buffers
+
+`onDecodeError(ByteBuf, RuntimeException)` and `onFrame(Direction, ByteBuf)` receive a read-only
+view (`ByteBuf.asReadOnly()`) of the whole frame, with indexes independent of the frame being decoded
+or written. The view shares the frame's reference count: the listener must read it synchronously,
+must not retain or release it, and must copy any octets it keeps. When `ApciDiagnostics.of` combines
+several listeners, each gets its own duplicate of the view, so one listener's reads cannot shift
+another's.
+
+### Cost when unused
+
+The default listener is `ApciDiagnostics.NONE` (or `ConnectionDiagnostics.NONE`); the call sites
+invoke empty default methods with arguments that already exist (the decoded control field, the
+frame length), so nothing is allocated per frame. The frame trace costs one `traceFrames()` call per
+frame while it is off, and the read-only view is created only while it returns `true`. A decode
+failure allocates the lent slice only on that error path.
+
+### Logging context
+
+`LoggingContext` (core, `.diagnostics`) holds the SLF4J MDC entries for a connection. The client
+builder adds `iec60870.remote=<host>:<port>`, and the server adds `iec60870.remote` with each
+accepted connection's address, to the entries the application configures. `ApciSession`,
+`Cs104Binding`, `DefaultIec60870Client`, its `EventStream`, `DefaultIec60870Server`,
+`NettyClientTransport`, `NettyServerTransport`, `NettyServerConnection`, and `InboundFrameHandler` log
+through it: when the level is enabled, it puts the entries into the MDC, logs, and restores the
+previous MDC values, so nothing remains on a shared I/O or scheduler thread. Connection log
+messages also name the remote address, for log patterns that omit the MDC.
 
 ## Outbound completion and bounded replies
 

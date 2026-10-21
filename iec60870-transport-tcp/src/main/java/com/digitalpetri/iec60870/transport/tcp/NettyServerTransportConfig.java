@@ -1,12 +1,16 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.iec60870.TlsOptions;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.EventLoopGroup;
 import io.netty.handler.codec.ByteToMessageDecoder;
+import java.net.SocketAddress;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
@@ -37,6 +41,10 @@ import org.jspecify.annotations.Nullable;
  * @param frameDecoderFactory supplies the per-connection pipeline frame decoder, or {@code null} to
  *     use the default IEC 60870-5-104 frame decoder; supply a factory to carry an alternative wire
  *     framing (such as FT1.2 for 101-over-TCP) over the same Netty transport.
+ * @param diagnostics maps the remote address of a connection the transport rejects at {@code
+ *     maxConnections} to the listener told about the rejection.
+ * @param loggingContext the MDC entries set around the transport's log lines; each accepted
+ *     connection adds its remote address.
  */
 public record NettyServerTransportConfig(
     String bindHost,
@@ -46,7 +54,9 @@ public record NettyServerTransportConfig(
     @Nullable EventLoopGroup workerEventLoopGroup,
     int maxConnections,
     @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer,
-    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory) {
+    @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory,
+    Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics,
+    Map<String, String> loggingContext) {
 
   /**
    * Validates the configuration.
@@ -64,12 +74,18 @@ public record NettyServerTransportConfig(
    *     or {@code null} for none.
    * @param frameDecoderFactory supplies the per-connection pipeline frame decoder, or {@code null}
    *     to use the default IEC 60870-5-104 frame decoder.
-   * @throws NullPointerException if {@code bindHost} is null.
+   * @param diagnostics maps the remote address of a connection the transport rejects at {@code
+   *     maxConnections} to the listener told about the rejection.
+   * @param loggingContext the MDC entries set around the transport's log lines; copied.
+   * @throws NullPointerException if {@code bindHost}, {@code diagnostics}, or {@code
+   *     loggingContext} is null.
    * @throws IllegalArgumentException if {@code port} is not in {@code 0..65535} or {@code
    *     maxConnections} is not positive.
    */
   public NettyServerTransportConfig {
     Objects.requireNonNull(bindHost, "bindHost");
+    Objects.requireNonNull(diagnostics, "diagnostics");
+    loggingContext = Map.copyOf(loggingContext);
     if (port < 0 || port > 65535) {
       throw new IllegalArgumentException("port must be in 0..65535: " + port);
     }
@@ -153,6 +169,9 @@ public record NettyServerTransportConfig(
     private int maxConnections = 16;
     private @Nullable Consumer<ServerBootstrap> serverBootstrapCustomizer;
     private @Nullable Supplier<ByteToMessageDecoder> frameDecoderFactory;
+    private Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics =
+        remote -> ConnectionDiagnostics.NONE;
+    private Map<String, String> loggingContext = Map.of();
 
     private Builder(String bindHost, int port) {
       this.bindHost = Objects.requireNonNull(bindHost, "bindHost");
@@ -238,6 +257,38 @@ public record NettyServerTransportConfig(
     }
 
     /**
+     * Sets the function that picks the listener told about a connection the transport rejects
+     * because {@code maxConnections} connections are open. Defaults to {@link
+     * ConnectionDiagnostics#NONE} for every connection.
+     *
+     * <p>The function runs once per rejected connection, on a Netty I/O thread, and the rejection
+     * is reported through {@link ConnectionDiagnostics#onConnectFailed(SocketAddress, Throwable)}.
+     * Accepted connections are reported by the server facade, not the transport.
+     *
+     * @param diagnostics maps the remote address to a listener; may return a shared instance.
+     * @return this builder.
+     */
+    public Builder diagnostics(
+        Function<SocketAddress, ? extends ConnectionDiagnostics> diagnostics) {
+      this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+      return this;
+    }
+
+    /**
+     * Sets the MDC entries set around the transport's log lines. Defaults to none.
+     *
+     * <p>Log lines for an accepted connection also carry {@code iec60870.remote} with the
+     * connection's remote address.
+     *
+     * @param loggingContext the MDC entries.
+     * @return this builder.
+     */
+    public Builder loggingContext(Map<String, String> loggingContext) {
+      this.loggingContext = Map.copyOf(loggingContext);
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link NettyServerTransportConfig}.
      *
      * @return the configuration.
@@ -251,7 +302,9 @@ public record NettyServerTransportConfig(
           workerEventLoopGroup,
           maxConnections,
           serverBootstrapCustomizer,
-          frameDecoderFactory);
+          frameDecoderFactory,
+          diagnostics,
+          loggingContext);
     }
   }
 }

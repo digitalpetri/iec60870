@@ -29,7 +29,8 @@ layers, octet transports, or `application`. The lone exceptions are the two **as
 **Protocol core**
 
 - `iec60870-core/` — the Netty-runtime-free kernel: the raw ASDU layer (every standard TypeID +
-  co-located `Serde`), the `Session`/transport SPIs, `ProtocolProfile`, the neutral `SessionSettings`
+  co-located `Serde`), the `Session`/transport SPIs, the `ConnectionDiagnostics` listener SPI and
+  `LoggingContext`, `ProtocolProfile`, the neutral `SessionSettings`
   and `OutboundQueuePolicy` markers, and the exceptions. Holds no protocol session engine.
 - `iec60870-cs104/` — the 104 link/session code: `ApciSession` (`implements Session`), the
   `Apdu`/`ControlField`/`UFunction` model + `Apdu.Serde`, the `ApduFramer` `Apdu`↔`ByteBuf` bridge,
@@ -71,12 +72,13 @@ layers, octet transports, or `application`. The lone exceptions are the two **as
   deterministic `ManualScheduler` virtual clock, the `RecordingEvents` `Session.Events` recorder, the
   frame-capturing `RecordingClientTransport` / `RecordingServerConnection`, the in-JVM
   `LoopbackOctetTransport` and `FaultInjectingOctetTransport` (protocol-neutral, so they serve cs101 /
-  serial as readily as 104), and the `ParanoidLeakDetection` JUnit extension. Consumed at `test` scope
+  serial as readily as 104), the `ParanoidLeakDetection` JUnit extension, and the SLF4J test helpers
+  `CapturingLogger` and `RecordingSlf4jProvider` (a working MDC plus recorded log calls). Consumed at `test` scope
   by cs104, application, both transports, tcp, serial, and test-integration; never published.
 
 **Packages & build order.** Source lives under `com.digitalpetri.iec60870`. Kernel packages in
 `iec60870-core`: `asdu` (with `asdu.object`, `asdu.element`, `asdu.time`), `address`, `transport`,
-`session`. Link/session packages: `cs104` (`ApciSession`, `Apdu`, `ControlField`, `UFunction`,
+`session`, `diagnostics`. Link/session packages: `cs104` (`ApciSession`, `Apdu`, `ControlField`, `UFunction`,
 `ApduFramer`, `ApciSettings`) in `iec60870-cs104`, and `cs101` (`Ft12LinkLayer`, the FT1.2 frame
 model, `LinkSettings`, `Cs101Binding`) in `iec60870-cs101`. High-level packages `client`, `server`,
 `point`, `catalog` in `iec60870-application`; builder packages `…tcp` / `…serial` in the assembly

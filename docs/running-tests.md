@@ -75,8 +75,11 @@ Core-level test doubles reused across modules live in the internal `iec60870-tes
 (`com.digitalpetri.iec60870.test.common`): the deterministic `ManualScheduler` virtual clock, the
 `RecordingEvents` `Session.Events` recorder, the frame-capturing `RecordingClientTransport` /
 `RecordingServerConnection`, the in-JVM `LoopbackOctetTransport` / `FaultInjectingOctetTransport`
-octet transports (which carry their own unit tests in the module), and the `ParanoidLeakDetection`
-JUnit extension. Modules consume it at
+octet transports (which carry their own unit tests in the module), the `ParanoidLeakDetection`
+JUnit extension, the `CapturingLogger` SLF4J logger, and `RecordingSlf4jProvider`. The provider keeps
+slf4j-simple's console output but gives the MDC a working adapter (slf4j-simple's discards every
+entry) and records library log calls; a module selects it with the `slf4j.provider` system property
+in its surefire configuration, as `iec60870-test-integration` does. Modules consume it at
 `test` scope; a module opts into paranoid `ByteBuf` leak detection by shipping a
 `META-INF/services/org.junit.jupiter.api.extension.Extension` resource naming
 `com.digitalpetri.iec60870.test.common.ParanoidLeakDetection`. Fixtures that need types above core

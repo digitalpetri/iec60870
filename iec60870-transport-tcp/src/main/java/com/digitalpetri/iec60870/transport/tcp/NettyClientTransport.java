@@ -1,6 +1,8 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
 import com.digitalpetri.iec60870.ConnectionClosedException;
+import com.digitalpetri.iec60870.diagnostics.ConnectionDiagnostics;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.bootstrap.Bootstrap;
@@ -14,8 +16,11 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslHandler;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -49,6 +54,13 @@ import org.slf4j.LoggerFactory;
  * paused connection stops reading from its socket and the peer's own flow control throttles it.
  * Each new channel starts with reading enabled.
  *
+ * <p>Every attempt is reported to the configured {@link ConnectionDiagnostics}: {@link
+ * ConnectionDiagnostics#onConnectAttempt(SocketAddress)} when it starts, then either {@link
+ * ConnectionDiagnostics#onConnected(SocketAddress, SocketAddress)} or {@link
+ * ConnectionDiagnostics#onConnectFailed(SocketAddress, Throwable)} with the cause, including a
+ * failed TLS handshake and an attempt aborted by {@code disconnect()}. Log lines carry the
+ * configured logging context.
+ *
  * <p>This transport is thread-safe.
  */
 public class NettyClientTransport implements ClientTransport {
@@ -58,6 +70,8 @@ public class NettyClientTransport implements ClientTransport {
   private final AtomicReference<@Nullable TransportListener> listener = new AtomicReference<>();
 
   private final NettyClientTransportConfig config;
+  private final ConnectionDiagnostics diagnostics;
+  private final LoggingContext loggingContext;
   private final EventLoopGroup eventLoopGroup;
   private final boolean ownsEventLoopGroup;
 
@@ -83,6 +97,8 @@ public class NettyClientTransport implements ClientTransport {
    */
   public NettyClientTransport(NettyClientTransportConfig config) {
     this.config = config;
+    this.diagnostics = ConnectionDiagnostics.of(config.diagnostics());
+    this.loggingContext = LoggingContext.of(config.loggingContext());
 
     EventLoopGroup sharedGroup = config.sharedEventLoopGroupOptional().orElse(null);
     if (sharedGroup != null) {
@@ -123,9 +139,10 @@ public class NettyClientTransport implements ClientTransport {
         return CompletableFuture.failedFuture(
             new ConnectionClosedException("event loop group is shut down"));
       }
-      started = new Attempt();
+      started = new Attempt(InetSocketAddress.createUnresolved(config.host(), config.port()));
       pending = started;
     }
+    diagnostics.onConnectAttempt(started.remote);
 
     try {
       dial(started);
@@ -253,13 +270,14 @@ public class NettyClientTransport implements ClientTransport {
                         () -> channel == ch ? listener.get() : null,
                         config.host(),
                         config.port(),
-                        config.frameDecoderFactoryOptional().orElse(null));
+                        config.frameDecoderFactoryOptional().orElse(null),
+                        loggingContext);
                   }
                 });
 
     config.bootstrapCustomizerOptional().ifPresent(customizer -> customizer.accept(bootstrap));
 
-    InetSocketAddress remote = InetSocketAddress.createUnresolved(config.host(), config.port());
+    InetSocketAddress remote = attempt.remote;
 
     ChannelFuture connectFuture =
         config.localBindOptional().isPresent()
@@ -290,10 +308,11 @@ public class NettyClientTransport implements ClientTransport {
                 .addListener(
                     h -> {
                       if (h.isSuccess()) {
-                        LOGGER.debug("TLS handshake complete on {}", ch);
+                        loggingContext.debug(LOGGER, "TLS handshake complete on {}", ch);
                         finish(attempt, ch, null);
                       } else {
-                        LOGGER.debug("TLS handshake failed on {}: {}", ch, h.cause().toString());
+                        loggingContext.debug(
+                            LOGGER, "TLS handshake failed on {}: {}", ch, h.cause().toString());
                         finish(attempt, null, h.cause());
                       }
                     });
@@ -327,7 +346,11 @@ public class NettyClientTransport implements ClientTransport {
       }
     }
 
+    boolean first = attempt.reported.compareAndSet(false, true);
     if (accepted) {
+      if (first) {
+        reportConnected(attempt, Objects.requireNonNull(ch));
+      }
       // CompletableFuture<Void> can only be completed with null; the @NotNull on complete() does
       // not apply to a Void result.
       //noinspection DataFlowIssue
@@ -338,8 +361,24 @@ public class NettyClientTransport implements ClientTransport {
     if (attemptChannel != null) {
       attemptChannel.close();
     }
-    attempt.future.completeExceptionally(
-        cause != null ? cause : new ConnectionClosedException("connect aborted"));
+    Throwable failure = cause != null ? cause : new ConnectionClosedException("connect aborted");
+    if (first) {
+      loggingContext.debug(
+          LOGGER,
+          "connect to {} failed: {}",
+          LoggingContext.format(attempt.remote),
+          failure.toString());
+      diagnostics.onConnectFailed(attempt.remote, failure);
+    }
+    attempt.future.completeExceptionally(failure);
+  }
+
+  private void reportConnected(Attempt attempt, Channel ch) {
+    SocketAddress local = ch.localAddress();
+    SocketAddress remote = ch.remoteAddress();
+    loggingContext.debug(LOGGER, "connected {} -> {}", local, remote);
+    diagnostics.onConnected(
+        local != null ? local : attempt.remote, remote != null ? remote : attempt.remote);
   }
 
   /** One connection attempt and the stage its callers wait on. */
@@ -347,11 +386,21 @@ public class NettyClientTransport implements ClientTransport {
 
     private final CompletableFuture<Void> future = new CompletableFuture<>();
 
+    /** The address being dialed. */
+    private final InetSocketAddress remote;
+
+    /** Set once the attempt's outcome has been reported to the diagnostics listener. */
+    private final AtomicBoolean reported = new AtomicBoolean();
+
     /** The attempt's channel, set once the bootstrap has created it. */
     private volatile @Nullable Channel channel;
 
     /** Set when {@link #disconnect()} aborted this attempt. */
     private volatile boolean aborted;
+
+    private Attempt(InetSocketAddress remote) {
+      this.remote = remote;
+    }
 
     /** Fails the attempt and closes its channel, if it has one yet. */
     private void abort() {

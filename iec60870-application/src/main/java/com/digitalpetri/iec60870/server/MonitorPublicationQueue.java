@@ -31,6 +31,7 @@ final class MonitorPublicationQueue {
   private final Function<Asdu, CompletionStage<Void>> deferredSend;
   private final Executor executor;
   private final Consumer<Throwable> onFailure;
+  private final Consumer<String> onDiscard;
   private final ReentrantLock lock = new ReentrantLock();
   private final Condition capacityAvailable = lock.newCondition();
   private final Deque<Pending> queue = new ArrayDeque<>();
@@ -50,6 +51,22 @@ final class MonitorPublicationQueue {
       Function<Asdu, CompletionStage<Void>> deferredSend,
       Executor executor,
       Consumer<Throwable> onFailure) {
+    this(config, directSend, deferredSend, executor, onFailure, reason -> {});
+  }
+
+  /**
+   * Creates a queue that reports each monitor ASDU its overflow policy discards.
+   *
+   * @param onDiscard receives a short reason for each discarded monitor ASDU; invoked under the
+   *     queue lock, on the publishing thread.
+   */
+  MonitorPublicationQueue(
+      ServerConfig config,
+      Consumer<Asdu> directSend,
+      Function<Asdu, CompletionStage<Void>> deferredSend,
+      Executor executor,
+      Consumer<Throwable> onFailure,
+      Consumer<String> onDiscard) {
     capacity = config.maxOutboundQueue();
     policy = config.eventQueuePolicy();
     timeoutNanos = config.outboundBlockTimeout().toNanos();
@@ -57,6 +74,7 @@ final class MonitorPublicationQueue {
     this.deferredSend = deferredSend;
     this.executor = executor;
     this.onFailure = onFailure;
+    this.onDiscard = onDiscard;
   }
 
   void submit(Asdu asdu) {
@@ -65,6 +83,7 @@ final class MonitorPublicationQueue {
       long remaining = timeoutNanos;
       while (!closed && capacity > 0 && eventCount >= capacity) {
         if (policy == OutboundQueuePolicy.DROP_NEWEST) {
+          onDiscard.accept("event queue full (DROP_NEWEST)");
           return;
         }
         if (policy == OutboundQueuePolicy.DROP_OLDEST) {
@@ -72,12 +91,14 @@ final class MonitorPublicationQueue {
           break;
         }
         if (remaining <= 0) {
+          onDiscard.accept("event queue full (BLOCK timeout)");
           return;
         }
         try {
           remaining = capacityAvailable.awaitNanos(remaining);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
+          onDiscard.accept("publisher interrupted");
           return;
         }
       }
@@ -196,6 +217,7 @@ final class MonitorPublicationQueue {
         iterator.remove();
         eventCount--;
         capacityAvailable.signalAll();
+        onDiscard.accept("event queue full (evicted)");
         return true;
       }
     }

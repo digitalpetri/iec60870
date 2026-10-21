@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.transport.tcp;
 
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.transport.TransportListener;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -39,6 +40,8 @@ class InboundFrameHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
   private final Supplier<@Nullable TransportListener> listenerSupplier;
 
+  private final LoggingContext loggingContext;
+
   /**
    * Creates an inbound handler that resolves its listener lazily on each callback.
    *
@@ -46,11 +49,25 @@ class InboundFrameHandler extends SimpleChannelInboundHandler<ByteBuf> {
    *     is registered yet.
    */
   InboundFrameHandler(Supplier<@Nullable TransportListener> listenerSupplier) {
+    this(listenerSupplier, LoggingContext.empty());
+  }
+
+  /**
+   * Creates an inbound handler that resolves its listener lazily on each callback and logs with the
+   * given context.
+   *
+   * @param listenerSupplier supplies the current {@link TransportListener}, or {@code null} if none
+   *     is registered yet.
+   * @param loggingContext the MDC entries for the connection.
+   */
+  InboundFrameHandler(
+      Supplier<@Nullable TransportListener> listenerSupplier, LoggingContext loggingContext) {
     // autoRelease is true: the frame ByteBuf is released after channelRead0 returns, which is why
     // the SPI requires onFrame to decode synchronously and not retain the buffer.
     super(ByteBuf.class, true);
 
     this.listenerSupplier = listenerSupplier;
+    this.loggingContext = loggingContext;
   }
 
   /**
@@ -65,8 +82,11 @@ class InboundFrameHandler extends SimpleChannelInboundHandler<ByteBuf> {
     if (listener != null) {
       listener.onFrame(frame);
     } else {
-      LOGGER.debug(
-          "dropping inbound frame; no listener registered ({} octets)", frame.readableBytes());
+      loggingContext.debug(
+          LOGGER,
+          "{}: dropping inbound frame; no listener registered ({} octets)",
+          ctx.channel().remoteAddress(),
+          frame.readableBytes());
     }
   }
 
@@ -90,7 +110,7 @@ class InboundFrameHandler extends SimpleChannelInboundHandler<ByteBuf> {
    */
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-    LOGGER.debug("exceptionCaught on {}: {}", ctx.channel(), cause.toString());
+    loggingContext.debug(LOGGER, "exceptionCaught on {}: {}", ctx.channel(), cause.toString());
 
     signalConnectionLost(cause);
 

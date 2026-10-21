@@ -38,7 +38,8 @@ library or extending it, not for someone editing the protocol internals.
   its frame formats, the balanced and unbalanced link procedures, the stop-and-wait FCB flow control,
   and the `LinkSettings` timers, and how CS101 carries the shared ASDU layer over a serial link.
 - [buffers-and-threading.md](buffers-and-threading.md) — buffer ownership and `ByteBuf` release
-  rules, plus the threading and callback-serialization model.
+  rules, the threading and callback-serialization model, and the diagnostics listeners, lent frame
+  buffers, and per-connection logging context.
 - [tls-and-configuration.md](tls-and-configuration.md) — the TLS approach (`TlsOptions`, handshake
   gating, peer certificate exposure) and the configuration/profile types (`ProtocolProfile`,
   `ApciSettings`).

@@ -88,7 +88,7 @@ targets Java 17, so the body snippets here use `instanceof` chains, matching `Cl
 | `AsduReceived` | once for *every* received [ASDU](../reference/glossary.md) that decodes | inspect raw or unmodeled frames |
 | `UndecodableAsdu` | a received ASDU could not be decoded (private TypeID or cause, `F_*` type, bad objects); the connection stays open | log the raw octets; see [Work with raw ASDUs](./work-with-raw-asdus.md#receive-an-undecodable-asdu) |
 | `NegativeConfirmation` | the peer sent a negative confirmation not tied to a pending blocking call | log/audit a stray rejection |
-| `ProtocolWarning` | the client hit a recoverable protocol anomaly (no disconnect) | diagnostics/logging |
+| `ProtocolWarning` | the session ignored a U-frame without closing: an unsolicited TESTFR con, STARTDT con, or STOPDT con, or a STARTDT act or STOPDT act sent to the client. Best effort: dropped while the event backlog is at its data capacity | diagnostics/logging; use the [diagnostics listener](./monitor-connections.md) for reliable counts |
 | `DataTransferStopped` | the [STOPDT](../reference/glossary.md) handshake completed, or a started connection closed; user data paused | pause polling/UI |
 | `ConnectionClosed` | the connection closed or was lost | log "link down" (see below) |
 | `ReconnectScheduled` | the client scheduled an automatic connection attempt | log the attempt and its cause |
@@ -353,6 +353,9 @@ For the full ownership and serialization model, read
   event.
 - **The client reconnects on its own** per its `ReconnectPolicy`. Re-interrogate on
   `ConnectionOpened`; use `ReconnectPolicy.disabled()` if you want to drive reconnects yourself.
+- **Events are not diagnostics.** Frame counts, timer expiries, connect-attempt causes, and the
+  frame trace come from the diagnostics listener, not the event stream. See
+  [Monitor connections](./monitor-connections.md).
 - **Command rejection is not an exception.** On the client it surfaces as
   `CommandResult.positive() == false`; on the server you return `CommandDecision.reject(...)`. See
   [Send commands](./send-commands.md) and the [error model](../reference/errors.md).
@@ -383,6 +386,8 @@ Both are documented in the [examples README](../../../iec60870-examples/README.m
 - [Send commands](./send-commands.md) — the command lifecycle and why rejection is not an exception.
 - [Host a server](./host-a-server.md) — the full `ServerHandler` and station model (the publish side).
 - [Work with raw ASDUs](./work-with-raw-asdus.md) — `AsduReceived` / `onRawAsdu` for unmodeled types.
+- [Monitor connections](./monitor-connections.md) — the diagnostics listener, counters, frame trace,
+  and logging context.
 - [Reference: Error model](../reference/errors.md) — exceptions vs. result objects.
 - [Reference: Glossary](../reference/glossary.md) — IEC 104 terms mapped to Java types.
 - [Reference: Choosing a point type](../reference/choosing-a-point-type.md) — `PointType` and

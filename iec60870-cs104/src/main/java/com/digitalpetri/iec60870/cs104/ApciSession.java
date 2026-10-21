@@ -7,6 +7,8 @@ import com.digitalpetri.iec60870.ProtocolStateException;
 import com.digitalpetri.iec60870.ProtocolTimeoutException;
 import com.digitalpetri.iec60870.SequenceNumberException;
 import com.digitalpetri.iec60870.asdu.Asdu;
+import com.digitalpetri.iec60870.diagnostics.Direction;
+import com.digitalpetri.iec60870.diagnostics.LoggingContext;
 import com.digitalpetri.iec60870.session.OutboundAsduQueue;
 import com.digitalpetri.iec60870.session.OutboundAsduQueue.Entry;
 import com.digitalpetri.iec60870.session.Session;
@@ -51,6 +53,11 @@ import org.slf4j.LoggerFactory;
  * caller may invoke any method from any thread. The {@link Output} and {@link Session.Events}
  * callbacks are always invoked while the lock is held; they must not call back into the session and
  * should not block.
+ *
+ * <p><b>Diagnostics.</b> A session constructed with an {@link ApciDiagnostics} listener reports a
+ * full {@code k} window, timer expiries, ignored U-frames, and the protocol errors that make it
+ * close itself, under the session lock. Ignored U-frames are also reported to {@link
+ * Session.Events#onProtocolWarning(String)}. Log lines carry the session's {@link LoggingContext}.
  *
  * <p>Typical wiring:
  *
@@ -153,6 +160,8 @@ public final class ApciSession implements Session {
   private final ScheduledExecutorService scheduler;
   private final Output output;
   private final Session.Events events;
+  private final ApciDiagnostics diagnostics;
+  private final LoggingContext loggingContext;
 
   private final long t1Millis;
   private final long t2Millis;
@@ -164,6 +173,8 @@ public final class ApciSession implements Session {
   private int sendSequenceNumber; // V(S)
   private int ackSequenceNumber; // lowest unacknowledged send sequence number
   private final OutboundAsduQueue sendQueue;
+  // Set once a full window with queued ASDUs is reported; cleared when an acknowledgement opens it.
+  private boolean windowFullReported;
   private final ArrayDeque<AcknowledgementTimeout> iFrameTimeouts = new ArrayDeque<>();
 
   // Receive-side state.
@@ -245,16 +256,62 @@ public final class ApciSession implements Session {
       int maxOutboundQueue,
       OutboundQueuePolicy queuePolicy) {
 
+    this(
+        role,
+        settings,
+        scheduler,
+        output,
+        events,
+        maxOutboundQueue,
+        queuePolicy,
+        ApciDiagnostics.NONE,
+        LoggingContext.empty());
+  }
+
+  /**
+   * Creates an APCI session with a bounded outbound send queue, a diagnostics listener, and a
+   * logging context.
+   *
+   * @param role the role this session plays in the STARTDT/STOPDT handshake.
+   * @param settings the APCI flow-control parameters ({@code k}, {@code w}, and the timers).
+   * @param scheduler the executor used to schedule the {@code t1}/{@code t2}/{@code t3} timers;
+   *     callbacks run under the session lock.
+   * @param output the sink for outbound APDUs.
+   * @param events the callbacks for delivered ASDUs and lifecycle transitions.
+   * @param maxOutboundQueue the maximum number of ASDUs held in the send queue while the window is
+   *     closed, or {@code 0} for an unbounded queue.
+   * @param queuePolicy the action taken when a bounded queue overflows.
+   * @param diagnostics the listener for window, timer, ignored-frame, and protocol-error events;
+   *     exceptions it throws are caught and logged.
+   * @param loggingContext the MDC entries set around this session's log lines.
+   */
+  public ApciSession(
+      Role role,
+      ApciSettings settings,
+      ScheduledExecutorService scheduler,
+      Output output,
+      Session.Events events,
+      int maxOutboundQueue,
+      OutboundQueuePolicy queuePolicy,
+      ApciDiagnostics diagnostics,
+      LoggingContext loggingContext) {
+
     this.role = Objects.requireNonNull(role, "role");
     Objects.requireNonNull(settings, "settings");
     this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     this.output = Objects.requireNonNull(output, "output");
     this.events = Objects.requireNonNull(events, "events");
+    this.diagnostics = ApciDiagnostics.of(Objects.requireNonNull(diagnostics, "diagnostics"));
+    this.loggingContext = Objects.requireNonNull(loggingContext, "loggingContext");
     if (maxOutboundQueue < 0) {
       throw new IllegalArgumentException("maxOutboundQueue must be >= 0: " + maxOutboundQueue);
     }
     this.maxOutboundQueue = maxOutboundQueue;
-    this.sendQueue = new OutboundAsduQueue(maxOutboundQueue, queuePolicy);
+    this.sendQueue =
+        new OutboundAsduQueue(
+            maxOutboundQueue,
+            queuePolicy,
+            () -> this.diagnostics.onAsduDropped(Direction.OUT, "send queue full"));
 
     this.t1Millis = settings.t1().toMillis();
     this.t2Millis = settings.t2().toMillis();
@@ -297,6 +354,7 @@ public final class ApciSession implements Session {
       outboundTransferStopped = false;
       stopConfirmationPending = false;
       testFrameOutstanding = false;
+      windowFullReported = false;
       sendQueue.failAll(new ConnectionClosedException("session reset"));
       cancelAllTimers();
       armT3();
@@ -605,7 +663,8 @@ public final class ApciSession implements Session {
           pauseFuture = schedule(() -> onPauseExpired(generation), t1Millis);
         } catch (RejectedExecutionException e) {
           // The scheduler is shutting down with its owner; the session is closing too.
-          LOGGER.debug("inbound pause deadline not armed: {}", e.toString());
+          loggingContext.debug(
+              LOGGER, "{}: inbound pause deadline not armed: {}", remote(), e.toString());
         }
       }
       output.setReadPaused(paused);
@@ -702,7 +761,7 @@ public final class ApciSession implements Session {
           testFrameOutstanding = false;
           cancelUFrameTimeout(UFunction.TESTFR_ACT);
         } else {
-          LOGGER.debug("ignoring unsolicited TESTFR con");
+          ignore(UFunction.TESTFR_CON, "unsolicited TESTFR con");
         }
       }
       case STARTDT_ACT -> handleStartActivation();
@@ -714,11 +773,11 @@ public final class ApciSession implements Session {
 
   private void handleStartActivation() {
     if (role != Role.SERVER) {
-      LOGGER.debug("ignoring STARTDT act received by a CLIENT session");
+      ignore(UFunction.STARTDT_ACT, "STARTDT act received by a CLIENT session");
       return;
     }
     if (stopConfirmationPending) {
-      LOGGER.debug("ignoring STARTDT act while STOPDT acknowledgements are pending");
+      ignore(UFunction.STARTDT_ACT, "STARTDT act while STOPDT acknowledgements are pending");
       return;
     }
     boolean changed = !dataTransferStarted;
@@ -733,7 +792,7 @@ public final class ApciSession implements Session {
 
   private void handleStopActivation() {
     if (role != Role.SERVER) {
-      LOGGER.debug("ignoring STOPDT act received by a CLIENT session");
+      ignore(UFunction.STOPDT_ACT, "STOPDT act received by a CLIENT session");
       return;
     }
     boolean changed = dataTransferStarted;
@@ -749,6 +808,13 @@ public final class ApciSession implements Session {
     }
   }
 
+  /** Reports a received U-frame that leaves the session state unchanged. */
+  private void ignore(UFunction function, String reason) {
+    loggingContext.debug(LOGGER, "{}: ignoring {}", remote(), reason);
+    diagnostics.onFrameIgnored(function, reason);
+    events.onProtocolWarning("ignored " + reason);
+  }
+
   private void completeStopIfAcknowledged() {
     if (!closed && stopConfirmationPending && ackSequenceNumber == sendSequenceNumber) {
       stopConfirmationPending = false;
@@ -758,14 +824,14 @@ public final class ApciSession implements Session {
 
   private void handleStartConfirmation() {
     if (role != Role.CLIENT) {
-      LOGGER.debug("ignoring STARTDT con received by a SERVER session");
+      ignore(UFunction.STARTDT_CON, "STARTDT con received by a SERVER session");
       return;
     }
     // Only act on a confirmation that matches an outstanding STARTDT act; an unsolicited STARTDT
     // con must not cancel t1, which may still be guarding outstanding I-frames.
     CompletableFuture<Void> future = pendingStart;
     if (future == null) {
-      LOGGER.debug("ignoring unsolicited STARTDT con");
+      ignore(UFunction.STARTDT_CON, "unsolicited STARTDT con");
       return;
     }
     pendingStart = null;
@@ -788,14 +854,14 @@ public final class ApciSession implements Session {
 
   private void handleStopConfirmation() {
     if (role != Role.CLIENT) {
-      LOGGER.debug("ignoring STOPDT con received by a SERVER session");
+      ignore(UFunction.STOPDT_CON, "STOPDT con received by a SERVER session");
       return;
     }
     // Only act on a confirmation that matches an outstanding STOPDT act; an unsolicited STOPDT con
     // must not cancel t1, which may still be guarding outstanding I-frames or a STARTDT act.
     CompletableFuture<Void> future = pendingStop;
     if (future == null) {
-      LOGGER.debug("ignoring unsolicited STOPDT con");
+      ignore(UFunction.STOPDT_CON, "unsolicited STOPDT con");
       return;
     }
     pendingStop = null;
@@ -836,6 +902,7 @@ public final class ApciSession implements Session {
     for (int i = 0; i < acked; i++) {
       iFrameTimeouts.removeFirst().cancel();
     }
+    windowFullReported = false;
     flushSendQueue();
   }
 
@@ -892,6 +959,13 @@ public final class ApciSession implements Session {
       sendSequenceNumber = increment(sendSequenceNumber);
       armT3();
       entry.completeFrom(write);
+    }
+    if (!closed
+        && !windowFullReported
+        && !sendQueue.isEmpty()
+        && sequenceDistance(ackSequenceNumber, sendSequenceNumber) >= k) {
+      windowFullReported = true;
+      diagnostics.onWindowFull(sendQueue.size());
     }
   }
 
@@ -1009,6 +1083,7 @@ public final class ApciSession implements Session {
       if (closed) {
         return;
       }
+      diagnostics.onTimerExpired(ApciTimer.T1);
       closeWithError(new ProtocolTimeoutException("t1 elapsed with inbound data paused"));
     } finally {
       lock.unlock();
@@ -1022,6 +1097,7 @@ public final class ApciSession implements Session {
         return;
       }
       t2Future = null;
+      diagnostics.onTimerExpired(ApciTimer.T2);
       if (unackedReceivedCount > 0) {
         sendSupervisoryAck();
       }
@@ -1037,6 +1113,7 @@ public final class ApciSession implements Session {
         return;
       }
       t3Future = null;
+      diagnostics.onTimerExpired(ApciTimer.T3);
       // Only probe an otherwise idle connection.
       if (!testFrameOutstanding) {
         testFrameOutstanding = true;
@@ -1071,6 +1148,7 @@ public final class ApciSession implements Session {
         if (closed || cancelled) {
           return;
         }
+        diagnostics.onTimerExpired(ApciTimer.T1);
         closeWithError(
             new ProtocolTimeoutException(
                 "t1 elapsed awaiting acknowledgement of a sent I-frame or U-frame"));
@@ -1082,11 +1160,13 @@ public final class ApciSession implements Session {
 
   // --- Closure (lock held) --------------------------------------------------------------------
 
-  private void closeWithError(Throwable cause) {
+  private void closeWithError(Iec60870Exception cause) {
     if (closed) {
       return;
     }
     closed = true;
+    loggingContext.debug(LOGGER, "{}: closing the session: {}", remote(), cause.toString());
+    diagnostics.onProtocolError(cause);
     Runnable failWrites = sendQueue.detachAll(cause);
     cancelAllTimers();
     queueDrained.signalAll();
@@ -1120,6 +1200,10 @@ public final class ApciSession implements Session {
   }
 
   // --- Misc ------------------------------------------------------------------------------------
+
+  private String remote() {
+    return loggingContext.remote();
+  }
 
   private static int increment(int sequenceNumber) {
     return (sequenceNumber + 1) % SEQUENCE_MODULUS;
