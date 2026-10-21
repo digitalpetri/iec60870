@@ -2882,7 +2882,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
    * stage.
    */
   private void onCommandTimer(PendingCommand request, int token) {
-    @Nullable Runnable delivery = null;
+    Runnable delivery = null;
     boolean deactivate = false;
     lock.lock();
     try {

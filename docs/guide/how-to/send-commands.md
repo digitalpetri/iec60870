@@ -201,11 +201,17 @@ confirmed positively, the operate step is skipped and the non-positive select co
 in the result — you still read it the same way, through `positive()` and `cause()`, and nothing is
 thrown.
 
-The client never leaves the station selected on purpose. If you cancel the `sendAsync` stage after the
-select is confirmed, the client sends a [deactivation](../reference/glossary.md#deactivation-deact)
-(COT 8) instead of the execute. A select that times out is deactivated too, in case the station
-accepted it late. In both cases the point stays reserved until the deactivation is confirmed or times
-out.
+Cancelling the `sendAsync` stage stops the procedure only before the execute is submitted. The client
+checks for cancellation once, just before it writes the execute. If you cancel while the select is still
+awaiting its confirmation, a positive confirmation is answered with a
+[deactivation](../reference/glossary.md#deactivation-deact) (COT 8) instead of the execute. The execute
+follows a positive select confirmation almost at once, so a cancel after that confirmation usually
+arrives too late. Once the execute is submitted, cancelling the stage does not retract it; the command
+runs to completion and only the result is discarded. When an operator must confirm between select and
+execute, use [`select`](#select-now-execute-or-cancel-later) and its `SelectedCommand` handle instead.
+
+A select that times out is deactivated too, in case the station accepted it late. After any of these
+deactivations the point stays reserved until the deactivation is confirmed or times out.
 
 Choose the mode to match the station and the criticality of the output:
 
@@ -229,14 +235,17 @@ builder, or per call:
 
 ```java
 // Per family: single, double, and regulating step commands, and set-points and bit strings.
-Iec60870Client client = TcpIec104Client.builder()
+Iec60870Client terminatingClient = TcpIec104Client.builder()
     .host("10.0.0.5")
     .commandCompletion(CommandCompletion.TERMINATION)
     .setpointCompletion(CommandCompletion.CONFIRMATION)
     .commandTerminationTimeout(Duration.ofSeconds(60))
     .build();
+terminatingClient.connect();
+CommandService terminatingCommands = terminatingClient.commands();
+CommandResult awaited = terminatingCommands.single(SWITCH, true);   // waits for ACT_TERM
 
-// Per call.
+// Per call, on any client.
 CommandResult result = commands.send(
     Command.single(SWITCH, true),
     CommandMode.directExecute(),

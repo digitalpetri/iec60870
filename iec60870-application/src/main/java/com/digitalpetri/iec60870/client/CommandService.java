@@ -77,11 +77,16 @@ public interface CommandService {
    * <p>For {@link CommandMode#selectBeforeOperate()} the service sends the select activation, waits
    * for its confirmation, then sends the execute activation. A rejected select is the final result.
    * The operation reserves its command family and target through both phases. A connection loss
-   * ends the operation; reconnecting never resumes its execute phase. Cancelling the stage of
-   * {@link #sendAsync(Command, CommandMode, CommandOptions)} after a positive select sends a
-   * deactivation instead of the execute. A select that times out is also deactivated, in case the
-   * outstation accepted it late; the reservation is held until that deactivation is confirmed or
-   * times out.
+   * ends the operation; reconnecting never resumes its execute phase.
+   *
+   * <p>Cancelling the stage of {@link #sendAsync(Command, CommandMode, CommandOptions)} takes
+   * effect only before the execute is submitted, which happens right after a positive select
+   * confirmation. A stage cancelled while the select awaits its confirmation sends a deactivation
+   * instead of the execute when that confirmation is positive. Once the execute is submitted,
+   * cancelling the stage does not retract it. When an operator must confirm between select and
+   * execute, use {@link #select(Command, CommandOptions)} instead. A select that times out is also
+   * deactivated, in case the outstation accepted it late. After a deactivation the reservation is
+   * held until it is confirmed or times out.
    *
    * <p>With {@link CommandCompletion#CONFIRMATION} the result reflects the final ACT_CON. With
    * {@link CommandCompletion#TERMINATION} a positive final ACT_CON keeps the reservation and the
@@ -177,7 +182,9 @@ public interface CommandService {
   /**
    * Sends a select (S/E = 1) and returns a stage for the handle.
    *
-   * <p>Cancelling the stage after the outstation confirmed the select deactivates the selection.
+   * <p>Cancelling the stage before it completes deactivates the selection once the outstation
+   * confirms the select. After the stage has completed, end the selection through the handle, for
+   * example with {@link SelectedCommand#close()}.
    *
    * @param command the command to select.
    * @param options per-call overrides of the completion policy for the execute.

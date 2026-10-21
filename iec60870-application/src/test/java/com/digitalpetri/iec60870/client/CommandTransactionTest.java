@@ -278,6 +278,36 @@ class CommandTransactionTest {
   }
 
   @Test
+  void cancellingWhileSelectIsOutstandingDeactivatesOnPositiveConfirmation() {
+    try (Harness h = new Harness(Runnable::run)) {
+      CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
+      assertTrue(result.cancel(false));
+      h.session().deliverAsdu(reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false));
+      assertEquals(2, h.session().sentAsdus().size());
+      assertEquals(Cause.DEACTIVATION, h.sent(1).cause(), "the execute is never sent");
+      h.session().deliverAsdu(reply(h.sent(1), Cause.DEACTIVATION_CONFIRMATION, false));
+      assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void cancellingAfterExecuteIsSubmittedDoesNotRetractIt() {
+    try (Harness h = new Harness(Runnable::run)) {
+      CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
+      h.session().deliverAsdu(reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false));
+      assertEquals(2, h.session().sentAsdus().size(), "the execute followed the confirmation");
+      assertTrue(result.cancel(false));
+
+      Asdu execute = h.sent(1);
+      assertEquals(Cause.ACTIVATION, execute.cause());
+      assertFalse(((SingleCommand) execute.objects().get(0)).qualifier().select());
+      h.session().deliverAsdu(reply(execute, Cause.ACTIVATION_CONFIRMATION, false));
+      assertEquals(2, h.session().sentAsdus().size(), "no deactivation follows an execute");
+      assertEquals(0, h.client.pendingRequestCount());
+    }
+  }
+
+  @Test
   void executeTimeoutStartsWhenQueuedContinuationSendsExecute() {
     var callbacks = new QueuedExecutor();
     try (Harness h = new Harness(callbacks)) {

@@ -227,8 +227,9 @@ or DEACT_CON, or a matching echo with cause 44 to 47, ends the command with `REJ
 DEACT_CON gives `CONFIRMED`.
 
 The client sends a deactivation in four cases: an explicit `cancel`, `close` or expiry of a held
-selection, cancelling an atomic SBO stage after its select was confirmed, and a select that timed
-out, in case the outstation accepted it late. Only the explicit `cancel` reports the outcome. The
+selection, an atomic SBO stage cancelled before its execute is submitted (the check runs once, just
+before the execute is written, so an execute already submitted is not retracted), and a select that
+timed out, in case the outstation accepted it late. Only the explicit `cancel` reports the outcome. The
 others consume the DEACT_CON, even a negative one, and release the reservation when it arrives or
 the deactivation times out. An execute that follows a held selection, and every deactivation, carry
 the time they are sent when the command is time-tagged; an atomic SBO execute keeps the command's

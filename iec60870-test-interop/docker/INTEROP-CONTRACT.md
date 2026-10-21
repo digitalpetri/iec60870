@@ -226,8 +226,8 @@ The server prints stable, greppable markers. Anchor waits on these substrings:
 | `CLOCKSYNC` | clock sync accepted |
 | `TEST` | test command accepted |
 | `RESET-PROCESS` | reset process accepted |
-| `CMD <type> ioa=N <ACCEPT|REJECT> <SELECT|EXECUTE/DIRECT|CANCEL> sel=<0|1>` | command handled |
-| `CMD <type> ioa=N UNKNOWN-IOA sel=<0|1>` / `UNKNOWN-COT cot=N` | command answered with COT 47 / 45 |
+| `CMD <type> ioa=N <ACCEPT\|REJECT> <SELECT\|EXECUTE/DIRECT\|CANCEL> sel=<0\|1>` | command handled |
+| `CMD <type> ioa=N UNKNOWN-IOA sel=<0\|1>` / `UNKNOWN-COT cot=N` | command answered with COT 47 / 45 |
 | `RETURN-INFO ioa=N` | return-information update enqueued |
 | `PERIODIC ioa=1050 value=N` | periodic update enqueued |
 
