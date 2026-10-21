@@ -149,10 +149,23 @@ public final class OutboundAsduQueue {
    * @param cause the connection or session failure.
    */
   public void failAll(Throwable cause) {
+    detachAll(cause).run();
+  }
+
+  /**
+   * Discards queued entries and detaches every unfinished write, without failing them yet.
+   *
+   * <p>A session that closes itself uses this to report the close before the failed writes run
+   * their completion handlers, so those handlers cannot act on the session ahead of the report.
+   *
+   * @param cause the connection or session failure.
+   * @return an action that fails the detached writes with {@code cause}.
+   */
+  public Runnable detachAll(Throwable cause) {
     queue.clear();
     List<Entry> abandoned = List.copyOf(outstanding);
     outstanding.clear();
-    abandoned.forEach(entry -> entry.fail(cause));
+    return () -> abandoned.forEach(entry -> entry.fail(cause));
   }
 
   /** One submission and its first transport-write completion. */

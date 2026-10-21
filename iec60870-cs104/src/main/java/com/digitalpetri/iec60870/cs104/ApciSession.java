@@ -1087,11 +1087,23 @@ public final class ApciSession implements Session {
       return;
     }
     closed = true;
-    sendQueue.failAll(cause);
+    Runnable failWrites = sendQueue.detachAll(cause);
     cancelAllTimers();
     queueDrained.signalAll();
-    failPending(cause);
+    CompletableFuture<Void> start = pendingStart;
+    CompletableFuture<Void> stop = pendingStop;
+    pendingStart = null;
+    pendingStop = null;
+    // Report before failing anything: the receiver may reconnect on this session from a failed
+    // stage's handler, and the report must reach it while this connection is still its current one.
     events.onClosed(cause);
+    failWrites.run();
+    if (start != null) {
+      start.completeExceptionally(cause);
+    }
+    if (stop != null) {
+      stop.completeExceptionally(cause);
+    }
   }
 
   private void failPending(Throwable cause) {

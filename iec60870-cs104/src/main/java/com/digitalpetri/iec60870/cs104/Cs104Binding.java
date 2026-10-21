@@ -41,10 +41,12 @@ import org.jspecify.annotations.Nullable;
  *       ApciSession#onUndecodableIFrame(ControlField.TypeI, byte[], Iec60870Exception)} under the
  *       default {@link UndecodableAsduPolicy#REPORT_AND_CONTINUE} policy, so the session
  *       acknowledges it and reports its octets while the connection stays open;
- *   <li>a failed outbound send, a transport connection loss, an inbound framing error, or (under
- *       {@link UndecodableAsduPolicy#STRICT}) an undecodable ASDU closes the session and routes the
- *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
- *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close).
+ *   <li>a failed outbound send or a transport connection loss routes the cause to {@link
+ *       Session.Events#onConnectionLost(Throwable)} (distinct from the session's own protocol-error
+ *       {@link Session.Events#onClosed(Throwable)} self-close); the receiver closes the session;
+ *   <li>an inbound framing error, or (under {@link UndecodableAsduPolicy#STRICT}) an undecodable
+ *       ASDU, closes the transport connection and then routes the cause to {@link
+ *       Session.Events#onConnectionLost(Throwable)}; the receiver closes the session.
  * </ul>
  *
  * <p>This is the single, permanent home for the {@code Apdu}&lt;-&gt;octet wiring that the {@code
@@ -121,8 +123,8 @@ public final class Cs104Binding {
    * <p>The session's outbound APDUs are framed and written to {@code transport}; inbound frames
    * from the transport's {@link TransportListener} are deframed into the session. {@link
    * Session#setInboundPaused(boolean)} pauses and resumes the transport's reads. A failed send or a
-   * transport connection loss closes the session and notifies {@code events}; a framing error also
-   * closes the current transport connection without performing an intentional disconnect.
+   * transport connection loss is reported to {@code events}, which closes the session; a framing
+   * error first closes the current transport connection.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -153,8 +155,8 @@ public final class Cs104Binding {
    *
    * <p>The session's outbound APDUs are framed and written to {@code connection}; inbound frames
    * from the connection's {@link TransportListener} are deframed into the session. A failed send or
-   * a connection loss closes the session and notifies {@code events}. The supplied outbound-queue
-   * bound and overflow policy are applied to the assembled session.
+   * a connection loss is reported to {@code events}, which closes the session. The supplied
+   * outbound-queue bound and overflow policy are applied to the assembled session.
    *
    * @param connection the accepted octet transport connection to bind.
    * @param events the facade's event sink for this connection.
@@ -201,9 +203,9 @@ public final class Cs104Binding {
       @Nullable ServerQueueConfig queueConfig,
       Runnable closeConnection) {
 
-    // The Output and listener below both reference the session after construction; hold it in a
-    // one-element array so they can close it on a failed write or transport loss.
-    ApciSession[] holder = new ApciSession[1];
+    // A failed write or a transport loss is reported and nothing else: the receiver closes the
+    // session
+    // and may open a replacement on it from the report, which a later close would break.
 
     ApciSession.Output output =
         new ApciSession.Output() {
@@ -233,7 +235,6 @@ public final class Cs104Binding {
                 .whenComplete(
                     (ignored, error) -> {
                       if (error != null) {
-                        holder[0].close();
                         events.onConnectionLost(error);
                       }
                     });
@@ -251,7 +252,6 @@ public final class Cs104Binding {
                 events,
                 queueConfig.maxOutboundQueue(),
                 queueConfig.queuePolicy());
-    holder[0] = session;
 
     listenerSink.accept(
         new TransportListener() {
@@ -298,15 +298,29 @@ public final class Cs104Binding {
             session.onApdu(new Apdu(control, asdu));
           }
 
+          /** Set while this listener closes the connection itself after a decode failure. */
+          private volatile boolean closingOnDecodeFailure;
+
           private void closeOnDecodeFailure(RuntimeException decodeFailure) {
-            session.close();
+            // Close the connection, then report, then touch nothing: the facade closes the session
+            // and may open a replacement from the report, which a later close of the connection or
+            // the session would break. Closing the session first would fail a pending STARTDT
+            // ahead of the report, with a less useful cause. A transport that reports this close
+            // as a loss does so without the decode failure, so that report is ignored.
+            closingOnDecodeFailure = true;
+            try {
+              closeConnection.run();
+            } finally {
+              closingOnDecodeFailure = false;
+            }
             events.onConnectionLost(decodeFailure);
-            closeConnection.run();
           }
 
           @Override
           public void onConnectionLost(@Nullable Throwable cause) {
-            session.close();
+            if (closingOnDecodeFailure) {
+              return;
+            }
             events.onConnectionLost(cause);
           }
         });

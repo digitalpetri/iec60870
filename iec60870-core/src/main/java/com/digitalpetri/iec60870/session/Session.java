@@ -224,7 +224,8 @@ public interface Session {
      *
      * <p>Distinguished from {@link #onClosed(Throwable)} so a facade can tell a lost connection
      * from a protocol failure, for example in what it reports. Either way the current connection is
-     * gone, and the session's binding may already have closed it. The default delegates to {@link
+     * gone, and the session's binding may already have closed it. The receiver should close the
+     * session; a binding may report the loss before doing so. The default delegates to {@link
      * #onClosed(Throwable)}, preserving the behavior of consumers that do not draw the distinction.
      *
      * @param cause the reason for the loss, or {@code null} when the peer closed the connection

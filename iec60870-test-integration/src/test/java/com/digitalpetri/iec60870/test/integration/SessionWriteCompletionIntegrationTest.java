@@ -28,7 +28,6 @@ import com.digitalpetri.iec60870.cs104.Cs104Binding;
 import com.digitalpetri.iec60870.cs104.UFunction;
 import com.digitalpetri.iec60870.session.Session;
 import com.digitalpetri.iec60870.test.common.ManualScheduler;
-import com.digitalpetri.iec60870.test.common.RecordingEvents;
 import com.digitalpetri.iec60870.transport.ClientTransport;
 import com.digitalpetri.iec60870.transport.ServerTransportConnection;
 import com.digitalpetri.iec60870.transport.TransportListener;
@@ -44,6 +43,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
@@ -193,7 +193,24 @@ class SessionWriteCompletionIntegrationTest {
       this.mode = mode;
       transport = new WireTransport(mode);
       var clock = new ManualScheduler();
-      var events = new RecordingEvents();
+      // Like the client and server facades, the receiver of a loss closes the session.
+      var bound = new AtomicReference<@Nullable Session>();
+      Session.Events events =
+          new Session.Events() {
+            @Override
+            public void onAsdu(Asdu asdu) {}
+
+            @Override
+            public void onDataTransferStateChanged(boolean started) {}
+
+            @Override
+            public void onClosed(@Nullable Throwable cause) {
+              Session current = bound.get();
+              if (current != null) {
+                current.close();
+              }
+            }
+          };
       if (mode == Mode.APCI) {
         session =
             new Cs104Binding(ApciSettings.defaults(), ProtocolProfile.iec104Default())
@@ -209,6 +226,7 @@ class SessionWriteCompletionIntegrationTest {
                 ? binding.bindClient(transport, events, clock)
                 : binding.bindServer(transport, events, clock, 1, OutboundQueuePolicy.DROP_OLDEST);
       }
+      bound.set(session);
       session.onConnected();
     }
 

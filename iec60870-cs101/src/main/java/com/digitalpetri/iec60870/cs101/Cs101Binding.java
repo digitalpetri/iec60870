@@ -36,9 +36,10 @@ import org.slf4j.LoggerFactory;
  *   <li>a registered {@link TransportListener} deframes each inbound whole-frame {@link ByteBuf}
  *       with {@link Ft12Framer#decode(ProtocolProfile, int, ByteBuf)} and feeds the {@link
  *       Ft12Frame} to {@link Ft12LinkLayer#onFrame(Ft12Frame)};
- *   <li>a failed outbound send or a transport connection loss closes the session and routes the
- *       cause to {@link Session.Events#onConnectionLost(Throwable)} (distinct from the session's
- *       own protocol-error {@link Session.Events#onClosed(Throwable)} self-close);
+ *   <li>a failed outbound send or a transport connection loss routes the cause to {@link
+ *       Session.Events#onConnectionLost(Throwable)}, whose receiver closes the session (distinct
+ *       from the session's own protocol-error {@link Session.Events#onClosed(Throwable)}
+ *       self-close);
  *   <li>an inbound frame that fails to decode (a bad checksum or end octet, or a stray reserved
  *       {@code 0xA2} single character) is a recoverable, per-frame error: the garbled frame is
  *       logged and dropped so the FT1.2 stop-and-wait retransmission can recover it, leaving the
@@ -127,9 +128,9 @@ public final class Cs101Binding {
    *
    * <p>The session's outbound FT1.2 frames are framed and written to {@code transport}; inbound
    * frames from the transport's {@link TransportListener} are deframed into the session. A failed
-   * send or a transport connection loss closes the session and notifies {@code events}; a malformed
-   * inbound frame is dropped without closing the session or the transport connection, so the FT1.2
-   * retransmission can recover it.
+   * send or a transport connection loss is reported to {@code events}, which closes the session; a
+   * malformed inbound frame is dropped without closing the session or the transport connection, so
+   * the FT1.2 retransmission can recover it.
    *
    * @param transport the octet client transport to bind.
    * @param events the facade's event sink; the assembled session reports delivered ASDUs, lifecycle
@@ -157,7 +158,7 @@ public final class Cs101Binding {
    *
    * <p>The session's outbound FT1.2 frames are framed and written to {@code connection}; inbound
    * frames from the connection's {@link TransportListener} are deframed into the session. A failed
-   * send or a connection loss closes the session and notifies {@code events}. The supplied
+   * send or a connection loss is reported to {@code events}, which closes the session. The supplied
    * outbound-queue bound and overflow policy are applied to the assembled session.
    *
    * @param connection the accepted octet transport connection to bind.
@@ -196,9 +197,9 @@ public final class Cs101Binding {
       Consumer<TransportListener> listenerSink,
       @Nullable ServerQueueConfig queueConfig) {
 
-    // The Output and listener below both reference the session after construction; hold it in a
-    // one-element array so they can close it on a failed write or transport loss.
-    Ft12LinkLayer[] holder = new Ft12LinkLayer[1];
+    // A failed write or a transport loss is reported and nothing else: the receiver closes the
+    // session
+    // and may open a replacement on it from the report, which a later close would break.
 
     Ft12LinkLayer.Output output =
         new Ft12LinkLayer.Output() {
@@ -215,7 +216,6 @@ public final class Cs101Binding {
                 .whenComplete(
                     (ignored, error) -> {
                       if (error != null) {
-                        holder[0].close();
                         events.onConnectionLost(error);
                       }
                     });
@@ -233,7 +233,6 @@ public final class Cs101Binding {
                 events,
                 queueConfig.maxOutboundQueue(),
                 queueConfig.queuePolicy());
-    holder[0] = session;
 
     listenerSink.accept(
         new TransportListener() {
@@ -275,7 +274,6 @@ public final class Cs101Binding {
 
           @Override
           public void onConnectionLost(@Nullable Throwable cause) {
-            session.close();
             events.onConnectionLost(cause);
           }
         });
