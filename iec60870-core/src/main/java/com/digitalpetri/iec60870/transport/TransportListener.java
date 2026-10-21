@@ -34,6 +34,24 @@ public interface TransportListener {
   void onFrame(ByteBuf frame);
 
   /**
+   * Called when the transport cannot frame the inbound byte stream, just before it closes the
+   * connection and calls {@link #onConnectionLost(Throwable)}.
+   *
+   * <p>For example, the IEC 60870-5-104 framing reports octets that do not start with the {@code
+   * 0x68} START octet. The listener does not need to close anything. May run on a transport I/O
+   * thread, so the implementation must return promptly and must not block. The default does
+   * nothing.
+   *
+   * <p><b>Buffer ownership.</b> {@code octets} is a read-only view lent for the duration of the
+   * call: the octets the transport had buffered when framing failed, starting at the offending
+   * octet. Copy what you need; do not retain or release it.
+   *
+   * @param octets the unframeable octets; valid only for the duration of this call.
+   * @param cause the framing failure.
+   */
+  default void onFramingError(ByteBuf octets, RuntimeException cause) {}
+
+  /**
    * Called once when the underlying connection is lost or closed.
    *
    * <p>After this callback no further {@link #onFrame(ByteBuf)} calls occur for the connection. May

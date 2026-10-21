@@ -49,6 +49,9 @@ import org.slf4j.LoggerFactory;
  *   <li>a failed outbound send or a transport connection loss routes the cause to {@link
  *       Session.Events#onConnectionLost(Throwable)} (distinct from the session's own protocol-error
  *       {@link Session.Events#onClosed(Throwable)} self-close); the receiver closes the session;
+ *   <li>octets the transport itself cannot frame (a bad START octet) are reported through {@link
+ *       ApciDiagnostics#onDecodeError(ByteBuf, RuntimeException)} before the transport closes the
+ *       connection;
  *   <li>an inbound framing error, or (under {@link UndecodableAsduPolicy#STRICT}) an undecodable
  *       ASDU, closes the transport connection and then routes the cause to {@link
  *       Session.Events#onConnectionLost(Throwable)}; the receiver closes the session.
@@ -408,6 +411,13 @@ public final class Cs104Binding {
               return;
             }
             session.onApdu(new Apdu(control, asdu));
+          }
+
+          @Override
+          public void onFramingError(ByteBuf octets, RuntimeException cause) {
+            // The transport could not frame the stream and closes the connection itself; only
+            // report the octets.
+            reportDecodeError(octets, octets.readerIndex(), octets.readableBytes(), cause);
           }
 
           private void reportDecodeError(

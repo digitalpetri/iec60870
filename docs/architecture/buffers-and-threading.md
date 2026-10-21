@@ -72,6 +72,11 @@ single uniform direction at each call:
   must decode it synchronously within the call and must **not** retain it past the call or release
   it. This mirrors Netty's `SimpleChannelInboundHandler`, which auto-releases the message after the
   callback returns.
+- **Framing failure** — `TransportListener.onFramingError(ByteBuf, RuntimeException)`: when the
+  transport cannot frame the byte stream (a bad START octet for 104), it lends a read-only view of
+  the buffered octets, starting at the offending one, just before it closes the connection and calls
+  `onConnectionLost`. The listener copies what it needs and neither retains nor releases the view.
+  `Cs104Binding` reports those octets through `ApciDiagnostics.onDecodeError`.
 - **Outbound** — `ClientTransport.send(ByteBuf)` / `ServerTransportConnection.send(ByteBuf)`: the
   caller allocates the frame; the transport writes-and-flushes it and releases it. The caller must
   **not** release it after calling `send`.
@@ -213,7 +218,8 @@ module rule holds:
   reports discardable ASDUs its bounded send queue evicts or rejects.
 - `ApciDiagnostics` (`iec60870-cs104`) adds the 104 frame-level events. `Cs104Binding` reports
   every APDU it frames (before `send` takes ownership) and every frame whose control field decodes
-  (before the ASDU is decoded), each decode failure with the frame, and the raw frame trace. The
+  (before the ASDU is decoded), each decode failure with the frame (including octets the transport
+  could not frame, through `TransportListener.onFramingError`), and the raw frame trace. The
   trace and decode-error callbacks run with the connection's logging context in the MDC, so
   `FrameTrace.logger` lines carry it. `ApciSession` reports a full `k`
   window, `t1`/`t2`/`t3` expiries, ignored U-frames, and the protocol errors that make it close

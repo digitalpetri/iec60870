@@ -36,6 +36,7 @@ import com.digitalpetri.iec60870.tcp.TcpIec104Client;
 import com.digitalpetri.iec60870.tcp.TcpIec104Server;
 import com.digitalpetri.iec60870.test.common.RecordingSlf4jProvider;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.IOException;
@@ -341,6 +342,52 @@ class DiagnosticsIntegrationTest {
             "connectionClosed",
             "event ConnectionClosed"),
         relevant);
+  }
+
+  @Test
+  void unframeableOctetsFromThePeerAreCountedAndReported() throws Exception {
+    // A peer that answers the connection with octets that do not start with 0x68.
+    byte[] garbage = HexFormat.of().parseHex("0004070000");
+    ServerSocket peer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+    resources.add(peer);
+    Thread writer =
+        new Thread(
+            () -> {
+              try (Socket socket = peer.accept()) {
+                socket.getOutputStream().write(garbage);
+                socket.getOutputStream().flush();
+                while (socket.getInputStream().read() >= 0) {
+                  // Wait for the client to close.
+                }
+              } catch (IOException ignored) {
+                // Closed by the test.
+              }
+            });
+    writer.setDaemon(true);
+    writer.start();
+
+    var counters = new ApciCounters();
+    List<byte[]> reported = Collections.synchronizedList(new ArrayList<>());
+    ApciDiagnostics capture =
+        new ApciDiagnostics() {
+          @Override
+          public void onDecodeError(ByteBuf frame, RuntimeException cause) {
+            reported.add(ByteBufUtil.getBytes(frame));
+          }
+        };
+    Iec60870Client client =
+        client(
+            TcpIec104Client.builder()
+                .port(peer.getLocalPort())
+                .startDataTransferOnConnect(false)
+                .reconnectPolicy(ReconnectPolicy.disabled())
+                .diagnostics(ApciDiagnostics.of(counters, capture)));
+
+    client.connect();
+    Await.until("the decode error", () -> counters.snapshot().decodeErrors() == 1);
+    Await.until("the close", () -> counters.snapshot().connectionsClosed() == 1);
+
+    assertArrayEquals(garbage, reported.get(0));
   }
 
   @Test

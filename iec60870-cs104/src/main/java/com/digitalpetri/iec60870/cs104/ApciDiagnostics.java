@@ -112,8 +112,8 @@ public interface ApciDiagnostics extends ConnectionDiagnostics {
   default void onProtocolError(Iec60870Exception cause) {}
 
   /**
-   * Reports a received frame that failed to decode: a malformed frame or control field, or an
-   * I-frame whose ASDU cannot be decoded.
+   * Reports received octets that failed to decode: octets the transport cannot frame (a bad START
+   * octet), a malformed frame or control field, or an I-frame whose ASDU cannot be decoded.
    *
    * <p>Runs with the connection's logging context in the MDC, so a listener that logs here tags the
    * line with the connection.
