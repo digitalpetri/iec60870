@@ -73,14 +73,16 @@ final class CommandAsdus {
    *
    * @param command the command.
    * @param select {@code true} for the select phase (S/E = 1), {@code false} for execute (S/E = 0).
-   * @param policy the policy that encodes the command's time tag.
+   * @param time the time tag to encode; present exactly when {@code command.time()} is, but may
+   *     differ from it when a later phase carries the time it is sent.
+   * @param policy the policy that encodes the time tag.
    * @return the wire-level information object.
    * @throws IllegalArgumentException if {@code select} is requested for a bit-string command; C_BO
    *     carries no select/execute qualifier, so select-before-operate is not applicable to it.
    */
-  static InformationObject toObject(Command command, boolean select, TimePolicy policy) {
+  static InformationObject toObject(
+      Command command, boolean select, Optional<Instant> time, TimePolicy policy) {
     InformationObjectAddress ioa = command.target().objectAddress();
-    Optional<Instant> time = command.time();
 
     if (command instanceof Command.SingleCommandRequest c) {
       QualifierOfCommand qoc = new QualifierOfCommand(c.qualifier(), select);

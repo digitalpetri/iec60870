@@ -106,15 +106,21 @@ if (result.positive()) {
 }
 ```
 
-`CommandResult` is a record `(PointAddress target, boolean positive, Cause cause, Optional<Asdu>
-confirmation)`:
+`CommandResult` is a record `(PointAddress target, CommandOutcome outcome, Cause cause,
+Optional<Asdu> confirmation, Optional<Asdu> termination)`:
 
-- `positive()` — `true` if the confirming ASDU's [P/N bit](glossary.md) is clear (accepted),
-  `false` on a negative confirmation.
-- `cause()` — the [cause of transmission (COT)](glossary.md), a `Cause`, of the confirming ASDU.
+- `outcome()` — `CONFIRMED`, `TERMINATED`, `REJECTED`, `TERMINATED_NEGATIVE`, or
+  `TERMINATION_MISSING`.
+- `positive()` — `true` for `CONFIRMED` and `TERMINATED`. A negative confirmation
+  ([P/N bit](glossary.md) set) or a cause 44 to 47 echo is `REJECTED`.
+- `cause()` — the [cause of transmission (COT)](glossary.md), a `Cause`, of the ASDU that decided
+  the outcome.
 - `confirmation()` — an `Optional<Asdu>` carrying the confirming ASDU if one was received.
+- `termination()` — the activation termination, when the command waited for one.
 
-Only transport/session failures — a timeout, a disconnect — throw from a command. A protocol-level
+Only transport/session failures before the station confirms the command — a timeout, a
+disconnect — throw from a command. After a positive confirmation, a missing termination is the
+`TERMINATION_MISSING` outcome instead. A protocol-level
 rejection is the non-positive result above. This mirrors the canonical
 [`ClientExample`](../../../iec60870-examples/README.md) line `client.commands().single(SWITCH, true)`.
 For [select-before-operate](glossary.md), the result reflects the *execute*

@@ -36,6 +36,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -55,6 +56,8 @@ class CommandTransactionTest {
 
   private static final PointAddress POINT =
       new PointAddress(CommonAddress.of(1), InformationObjectAddress.of(100));
+  private static final PointAddress OTHER =
+      new PointAddress(CommonAddress.of(1), InformationObjectAddress.of(102));
   private static final Instant TIME = Instant.parse("2024-06-01T12:00:00Z");
 
   @Test
@@ -256,14 +259,20 @@ class CommandTransactionTest {
   }
 
   @Test
-  void cancellingQueuedSelectContinuationSuppressesExecute() {
+  void cancellingQueuedSelectContinuationDeactivatesInsteadOfExecuting() {
     var callbacks = new QueuedExecutor();
     try (Harness h = new Harness(callbacks)) {
       CompletableFuture<CommandResult> result = h.send(Command.single(POINT, true), true);
       h.session().deliverAsdu(reply(h.sent(0), Cause.ACTIVATION_CONFIRMATION, false));
       assertTrue(result.cancel(false));
       callbacks.drain();
-      assertEquals(1, h.session().sentAsdus().size());
+      assertEquals(2, h.session().sentAsdus().size());
+      Asdu deactivation = h.sent(1);
+      assertEquals(Cause.DEACTIVATION, deactivation.cause());
+      assertEquals(h.sent(0).objects(), deactivation.objects(), "DEACT repeats the select object");
+      assertEquals(1, h.client.pendingRequestCount(), "the reservation lasts until DEACT_CON");
+      h.session().deliverAsdu(reply(deactivation, Cause.DEACTIVATION_CONFIRMATION, false));
+      callbacks.drain();
       assertEquals(0, h.client.pendingRequestCount());
     }
   }
@@ -473,6 +482,111 @@ class CommandTransactionTest {
     }
   }
 
+  @Test
+  void staleSelectWriteFailureLeavesTheDeactivationInCharge() {
+    ManualScheduler clock = new ManualScheduler();
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    try (var client = lockingClient(clock, sessionRef)) {
+      LockingSession session = requireNonNull(sessionRef.get());
+      session.holdWrites = true;
+      CompletableFuture<CommandResult> result =
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, true), CommandMode.selectBeforeOperate())
+              .toCompletableFuture();
+      clock.advance(50, TimeUnit.MILLISECONDS);
+      assertFailure(result, ProtocolTimeoutException.class);
+      List<Asdu> sent = session.delegate.sentAsdus();
+      assertEquals(Cause.DEACTIVATION, sent.get(1).cause());
+
+      // The SELECT write fails only after its timeout replaced it with the deactivation.
+      session.heldWrites.get(0).completeExceptionally(new IllegalStateException("late failure"));
+      assertEquals(1, client.pendingRequestCount(), "the deactivation keeps the reservation");
+      assertFailure(
+          client
+              .commands()
+              .sendAsync(Command.single(POINT, false), CommandMode.directExecute())
+              .toCompletableFuture(),
+          RequestInProgressException.class);
+
+      session.heldWrites.get(1).complete(null);
+      session.delegate.deliverAsdu(reply(sent.get(1), Cause.DEACTIVATION_CONFIRMATION, true));
+      assertEquals(0, client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void failedDeactivationWriteReleasesTheReservation() {
+    ManualScheduler clock = new ManualScheduler();
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    try (var client = lockingClient(clock, sessionRef)) {
+      LockingSession session = requireNonNull(sessionRef.get());
+      session.holdWrites = true;
+      client.commands().sendAsync(Command.single(POINT, true), CommandMode.selectBeforeOperate());
+      clock.advance(50, TimeUnit.MILLISECONDS);
+      session.heldWrites.get(1).completeExceptionally(new IllegalStateException("write failed"));
+      assertEquals(0, client.pendingRequestCount());
+    }
+  }
+
+  @Test
+  void confirmedWriteThatFailsLateKeepsTheSelectionAndTheTermination() {
+    ManualScheduler clock = new ManualScheduler();
+    AtomicReference<@Nullable LockingSession> sessionRef = new AtomicReference<>();
+    try (var client = lockingClient(clock, sessionRef)) {
+      LockingSession session = requireNonNull(sessionRef.get());
+      session.holdWrites = true;
+
+      CompletableFuture<SelectedCommand> selecting =
+          client.commands().selectAsync(Command.single(POINT, true)).toCompletableFuture();
+      Asdu select = session.delegate.sentAsdus().get(0);
+      session.delegate.deliverAsdu(reply(select, Cause.ACTIVATION_CONFIRMATION, false));
+      SelectedCommand handle = selecting.join();
+      session.heldWrites.get(0).completeExceptionally(new IllegalStateException("late failure"));
+      assertEquals(1, client.pendingRequestCount(), "the confirmed selection is still held");
+
+      CompletableFuture<CommandResult> cancelled = handle.cancelAsync().toCompletableFuture();
+      Asdu deactivation = session.delegate.sentAsdus().get(1);
+      assertEquals(Cause.DEACTIVATION, deactivation.cause());
+      session.delegate.deliverAsdu(reply(deactivation, Cause.DEACTIVATION_CONFIRMATION, false));
+      assertEquals(CommandOutcome.CONFIRMED, cancelled.join().outcome());
+
+      CompletableFuture<CommandResult> terminating =
+          client
+              .commands()
+              .sendAsync(
+                  Command.single(OTHER, true),
+                  CommandMode.directExecute(),
+                  CommandOptions.defaults().withCompletion(CommandCompletion.TERMINATION))
+              .toCompletableFuture();
+      Asdu execute = session.delegate.sentAsdus().get(2);
+      session.delegate.deliverAsdu(reply(execute, Cause.ACTIVATION_CONFIRMATION, false));
+      session.heldWrites.get(2).completeExceptionally(new IllegalStateException("late failure"));
+      assertFalse(terminating.isDone(), "the confirmed execute still awaits ACT_TERM");
+      session.delegate.deliverAsdu(reply(execute, Cause.ACTIVATION_TERMINATION, false));
+      assertEquals(CommandOutcome.TERMINATED, terminating.join().outcome());
+    }
+  }
+
+  private static DefaultIec60870Client lockingClient(
+      ManualScheduler clock, AtomicReference<@Nullable LockingSession> sessionRef) {
+    var client =
+        new DefaultIec60870Client(
+            new FakeClientTransport(),
+            ClientConfig.builder()
+                .callbackExecutor(Runnable::run)
+                .commandTimeout(Duration.ofMillis(50))
+                .build(),
+            (events, scheduler) -> {
+              var session = new LockingSession(events);
+              sessionRef.set(session);
+              return session;
+            },
+            clock);
+    client.connect();
+    return client;
+  }
+
   private static void awaitLatch(CountDownLatch latch) {
     try {
       assertTrue(latch.await(5, TimeUnit.SECONDS));
@@ -489,9 +603,11 @@ class CommandTransactionTest {
     final CountDownLatch competingSendEntered = new CountDownLatch(1);
     final CountDownLatch executeSendEntered = new CountDownLatch(1);
     final CountDownLatch releaseExecuteSend = new CountDownLatch(1);
+    final List<CompletableFuture<Void>> heldWrites = new CopyOnWriteArrayList<>();
     boolean pauseExecute;
     boolean failNextSend;
     boolean failNextConnect;
+    boolean holdWrites;
 
     LockingSession(Session.Events events) {
       delegate = FakeSession.client(events);
@@ -553,6 +669,11 @@ class CommandTransactionTest {
 
     public CompletionStage<Void> sendAsduAsync(Asdu asdu) {
       sendAsdu(asdu);
+      if (holdWrites) {
+        var write = new CompletableFuture<Void>();
+        heldWrites.add(write);
+        return write;
+      }
       return CompletableFuture.completedFuture(null);
     }
 

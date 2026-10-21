@@ -1220,6 +1220,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private boolean correlate(Asdu asdu) {
     PendingRequest finished = null;
     PendingCommand continuation = null;
+    PendingCommand selected = null;
     PendingRequest.Outcome outcome = PendingRequest.Outcome.IGNORED;
     boolean consumed = false;
 
@@ -1233,7 +1234,17 @@ public final class DefaultIec60870Client implements Iec60870Client {
         consumed = true;
         if (o == PendingRequest.Outcome.CONTINUE) {
           continuation = (PendingCommand) request;
-          request.cancelTimeout();
+          continuation.invalidateTimer();
+        }
+        if (o == PendingRequest.Outcome.ADVANCED) {
+          var command = (PendingCommand) request;
+          if (command.phase == PendingCommand.Phase.SELECTED) {
+            command.expiresAt = Instant.now().plus(config.selectionTimeout());
+            armCommandTimer(command, config.selectionTimeout());
+            selected = command;
+          } else {
+            armCommandTimer(command, command.terminationTimeout);
+          }
         }
         if (o == PendingRequest.Outcome.COMPLETED || o == PendingRequest.Outcome.FAILED) {
           finished = request;
@@ -1250,6 +1261,10 @@ public final class DefaultIec60870Client implements Iec60870Client {
       // Run EXECUTE off the session callback so its receive sequence has advanced before sending.
       PendingCommand request = continuation;
       callbackExecutor.execute(() -> sendCommandActivation(request));
+    }
+    if (selected != null) {
+      PendingCommand request = selected;
+      callbackExecutor.execute(() -> deliverSelection(request));
     }
     if (finished != null) {
       PendingRequest request = finished;
@@ -1394,6 +1409,25 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
     armAndSend(request, activation, config.commandTimeout());
     return result;
+  }
+
+  /**
+   * Reports whether a reply's header answers a control-direction request: the same type, test flag,
+   * and common address, and an originator address of zero or the request's own.
+   *
+   * <p>OA zero means no specific originator: one-octet COT omits OA, and peers may leave it unused
+   * even with two octets. A different nonzero OA still belongs to another source.
+   *
+   * @param reply the received ASDU.
+   * @param request the sent activation or deactivation.
+   * @return {@code true} if the header of {@code reply} matches {@code request}.
+   */
+  private static boolean repliesTo(Asdu reply, Asdu request) {
+    return reply.type() == request.type()
+        && reply.test() == request.test()
+        && (reply.originatorAddress().equals(OriginatorAddress.none())
+            || reply.originatorAddress().equals(request.originatorAddress()))
+        && reply.commonAddress().equals(request.commonAddress());
   }
 
   /**
@@ -1642,8 +1676,16 @@ public final class DefaultIec60870Client implements Iec60870Client {
       IGNORED,
       /** The ASDU belongs to this request, which still awaits more. */
       ACCEPTED,
-      /** A command SELECT was confirmed; queue its EXECUTE while retaining the registration. */
+      /**
+       * A command phase ended and the next one must be sent (EXECUTE after SELECT, or a
+       * deactivation); queue the send while retaining the registration.
+       */
       CONTINUE,
+      /**
+       * A command moved to a phase that waits without sending: a held selection or the wait for
+       * ACT_TERM. Re-arm the timer for that phase while retaining the registration.
+       */
+      ADVANCED,
       /** The ASDU completes this request successfully. */
       COMPLETED,
       /** The ASDU completes this request with a failure (for example a negative confirmation). */
@@ -1700,22 +1742,111 @@ public final class DefaultIec60870Client implements Iec60870Client {
     }
   }
 
-  /** One command reservation, including both phases of select-before-operate. */
+  /**
+   * One command reservation: a direct execute, both phases of select-before-operate, a held
+   * selection, the wait for ACT_TERM, and the deactivation that ends a selection.
+   *
+   * <p>The mutable fields are guarded by the client lock while the request is registered. Once it
+   * leaves the registry nothing mutates them, and the completion methods read them on the callback
+   * executor.
+   */
   private static final class PendingCommand extends PendingRequest {
 
-    private final PointAddress target;
-    private final TimeTagMatch timeTagMatch;
-    private final Asdu execute;
-    private final CompletableFuture<CommandResult> future = new CompletableFuture<>();
-    private Asdu activation;
-    private boolean executeQueued;
-    private @Nullable Asdu confirmation;
+    /** The step of the command procedure the request is in. */
+    enum Phase {
+      /** The select is queued or sent; awaiting its ACT_CON. */
+      SELECTING,
+      /** The select was confirmed for a {@link SelectedCommand}; nothing is outstanding. */
+      SELECTED,
+      /** The execute is queued or sent; awaiting its ACT_CON. */
+      EXECUTING,
+      /** The final ACT_CON was positive; awaiting ACT_TERM. */
+      TERMINATING,
+      /** A deactivation is queued or sent; awaiting its DEACT_CON. */
+      CANCELLING
+    }
 
-    PendingCommand(PointAddress target, TimeTagMatch timeTagMatch, Asdu activation, Asdu execute) {
-      this.target = target;
+    final Command command;
+    final PointAddress target;
+    final TimeTagMatch timeTagMatch;
+    final @Nullable Asdu select;
+    final Asdu execute;
+
+    /** Whether the request backs a {@link SelectedCommand} rather than an atomic send. */
+    final boolean selection;
+
+    final CommandCompletion completion;
+    final Duration terminationTimeout;
+    final CompletableFuture<SelectedCommand> selectStage = new CompletableFuture<>();
+
+    Phase phase;
+
+    /** Whether the activation of the current phase is queued and not yet sent. */
+    boolean sendQueued = true;
+
+    /** Identifies the timer armed for the current phase; a stale timer finds a different value. */
+    int timerToken;
+
+    /** The last activation sent, which replies must echo. */
+    @Nullable Asdu activation;
+
+    /** The stage the current phase completes; replaced by execute, cancel, and deactivation. */
+    CompletableFuture<CommandResult> stage = new CompletableFuture<>();
+
+    @Nullable Asdu selectConfirmation;
+    @Nullable Asdu confirmation;
+    @Nullable Asdu rejection;
+    @Nullable CommandResult result;
+    Instant expiresAt = Instant.MAX;
+    boolean expired;
+
+    PendingCommand(
+        Command command,
+        TimeTagMatch timeTagMatch,
+        @Nullable Asdu select,
+        Asdu execute,
+        boolean selection,
+        CommandCompletion completion,
+        Duration terminationTimeout) {
+      this.command = command;
+      this.target = command.target();
       this.timeTagMatch = timeTagMatch;
-      this.activation = activation;
+      this.select = select;
       this.execute = execute;
+      this.selection = selection;
+      this.completion = completion;
+      this.terminationTimeout = terminationTimeout;
+      this.phase = select != null ? Phase.SELECTING : Phase.EXECUTING;
+    }
+
+    /** Returns whether the procedure has a select phase, so a held selection may need breaking. */
+    boolean selectBeforeOperate() {
+      return select != null;
+    }
+
+    /** Invalidates the timer of the current phase, including one already dispatched. */
+    void invalidateTimer() {
+      cancelTimeout();
+      timerToken++;
+    }
+
+    /** Moves to the deactivation phase, whose result no caller awaits unless one replaces it. */
+    void beginDeactivation() {
+      phase = Phase.CANCELLING;
+      sendQueued = true;
+      stage = new CompletableFuture<>();
+      invalidateTimer();
+    }
+
+    /** Returns the outcome after a positive final ACT_CON and no ACT_TERM. */
+    CommandResult terminationMissing() {
+      Asdu ack = Objects.requireNonNull(confirmation);
+      return new CommandResult(
+          target,
+          CommandOutcome.TERMINATION_MISSING,
+          ack.cause(),
+          Optional.of(ack),
+          Optional.empty());
     }
 
     @Override
@@ -1727,54 +1858,107 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     Outcome accept(Asdu asdu) {
-      // OA zero means no specific originator: one-octet COT omits OA, and peers may leave it
-      // unused even with two octets. A different nonzero OA still belongs to another source.
-      if (executeQueued
-          || asdu.type() != activation.type()
-          || asdu.sequence() != activation.sequence()
-          || asdu.test() != activation.test()
-          || (!asdu.originatorAddress().equals(OriginatorAddress.none())
-              && !asdu.originatorAddress().equals(activation.originatorAddress()))
-          || !asdu.commonAddress().equals(activation.commonAddress())
-          || !CommandAsdus.echoes(asdu.objects(), activation.objects(), timeTagMatch)) {
+      Asdu sent = activation;
+      if (sendQueued
+          || sent == null
+          || phase == Phase.SELECTED
+          || !repliesTo(asdu, sent)
+          || asdu.sequence() != sent.sequence()
+          || !CommandAsdus.echoes(asdu.objects(), sent.objects(), timeTagMatch)) {
         return Outcome.IGNORED;
       }
-      boolean confirmationCause =
-          asdu.cause() == Cause.ACTIVATION_CONFIRMATION
-              || (asdu.negative()
-                  && switch (asdu.cause()) {
-                    case UNKNOWN_TYPE_ID,
-                        UNKNOWN_CAUSE,
-                        UNKNOWN_COMMON_ADDRESS,
-                        UNKNOWN_INFORMATION_OBJECT_ADDRESS ->
-                        true;
-                    default -> false;
-                  });
-      if (!confirmationCause) {
-        return Outcome.IGNORED;
+      Cause cause = asdu.cause();
+      boolean unknown = isUnknownCause(cause);
+      switch (phase) {
+        case TERMINATING -> {
+          if (cause != Cause.ACTIVATION_TERMINATION) {
+            return Outcome.IGNORED;
+          }
+          result =
+              new CommandResult(
+                  target,
+                  asdu.negative() ? CommandOutcome.TERMINATED_NEGATIVE : CommandOutcome.TERMINATED,
+                  cause,
+                  Optional.of(Objects.requireNonNull(confirmation)),
+                  Optional.of(asdu));
+          return Outcome.COMPLETED;
+        }
+        case CANCELLING -> {
+          if (cause != Cause.DEACTIVATION_CONFIRMATION && !unknown) {
+            return Outcome.IGNORED;
+          }
+          result = confirmationResult(asdu, !asdu.negative() && !unknown);
+          return Outcome.COMPLETED;
+        }
+        default -> {
+          // SELECTING or EXECUTING. A peer may answer an unknown field with or without P/N set.
+          if (cause != Cause.ACTIVATION_CONFIRMATION && !unknown) {
+            return Outcome.IGNORED;
+          }
+          if (asdu.negative() || unknown) {
+            if (phase == Phase.SELECTING && selection) {
+              rejection = asdu;
+              return Outcome.FAILED;
+            }
+            result = confirmationResult(asdu, false);
+            return Outcome.COMPLETED;
+          }
+          if (phase == Phase.SELECTING) {
+            selectConfirmation = asdu;
+            if (selection) {
+              phase = Phase.SELECTED;
+              return Outcome.ADVANCED;
+            }
+            phase = Phase.EXECUTING;
+            sendQueued = true;
+            return Outcome.CONTINUE;
+          }
+          confirmation = asdu;
+          if (completion == CommandCompletion.TERMINATION) {
+            phase = Phase.TERMINATING;
+            return Outcome.ADVANCED;
+          }
+          result = confirmationResult(asdu, true);
+          return Outcome.COMPLETED;
+        }
       }
-      if (activation != execute && !asdu.negative()) {
-        executeQueued = true;
-        return Outcome.CONTINUE;
-      }
-      confirmation = asdu;
-      return Outcome.COMPLETED;
+    }
+
+    private CommandResult confirmationResult(Asdu asdu, boolean positive) {
+      return new CommandResult(
+          target,
+          positive ? CommandOutcome.CONFIRMED : CommandOutcome.REJECTED,
+          asdu.cause(),
+          Optional.of(asdu),
+          Optional.empty());
     }
 
     @Override
     void deliver() {
-      Asdu ack = Objects.requireNonNull(confirmation);
-      future.complete(new CommandResult(target, !ack.negative(), ack.cause(), Optional.of(ack)));
+      stage.complete(Objects.requireNonNull(result));
     }
 
     @Override
     void deliverFailure() {
-      future.completeExceptionally(new ConnectionClosedException("command confirmation lost"));
+      Asdu asdu = Objects.requireNonNull(rejection);
+      selectStage.completeExceptionally(new NegativeConfirmationException(asdu.cause(), asdu));
     }
 
     @Override
     void fail(Throwable cause) {
-      future.completeExceptionally(cause);
+      switch (phase) {
+        // The outstation accepted the command, so its loss is an outcome rather than a failure.
+        case TERMINATING -> stage.complete(terminationMissing());
+        case SELECTING, SELECTED -> {
+          if (selection) {
+            // A handle already delivered reports the loss on its next call.
+            selectStage.completeExceptionally(cause);
+          } else {
+            stage.completeExceptionally(cause);
+          }
+        }
+        default -> stage.completeExceptionally(cause);
+      }
     }
   }
 
@@ -2098,13 +2282,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
     @Override
     Outcome accept(Asdu asdu) {
-      // OA zero means no specific originator: one-octet COT omits OA, and peers may leave it
-      // unused even with two octets. A different nonzero OA still belongs to another source.
-      if (asdu.type() != activation.type()
-          || asdu.test() != activation.test()
-          || (!asdu.originatorAddress().equals(OriginatorAddress.none())
-              && !asdu.originatorAddress().equals(activation.originatorAddress()))
-          || !asdu.commonAddress().equals(activation.commonAddress())
+      if (!repliesTo(asdu, activation)
           || asdu.objects().size() != 1
           || !echoes.test(asdu.objects().get(0))) {
         return Outcome.IGNORED;
@@ -2272,22 +2450,46 @@ public final class DefaultIec60870Client implements Iec60870Client {
   private final class DefaultCommandService implements CommandService {
 
     @Override
-    public CommandResult send(Command command, CommandMode mode) {
-      return await(sendAsync(command, mode));
+    public CommandResult send(Command command, CommandMode mode, CommandOptions options) {
+      return await(sendAsync(command, mode, options));
     }
 
     @Override
-    public CompletionStage<CommandResult> sendAsync(Command command, CommandMode mode) {
+    public CompletionStage<CommandResult> sendAsync(
+        Command command, CommandMode mode, CommandOptions options) {
       Objects.requireNonNull(command, "command");
       Objects.requireNonNull(mode, "mode");
+      Objects.requireNonNull(options, "options");
 
       PendingCommand request;
       try {
-        Asdu execute = commandActivation(command, false);
-        Asdu activation =
-            mode == CommandMode.SELECT_BEFORE_OPERATE ? commandActivation(command, true) : execute;
-        request =
-            new PendingCommand(command.target(), config.commandTimeTagMatch(), activation, execute);
+        request = newCommand(command, mode == CommandMode.SELECT_BEFORE_OPERATE, false, options);
+      } catch (RuntimeException e) {
+        return CompletableFuture.failedFuture(e);
+      }
+      // Capture the caller's stage now: a deactivation later replaces the request's stage.
+      CompletableFuture<CommandResult> stage = request.stage;
+      if (!register(request)) {
+        request.fail(alreadyInFlight("command for " + command.target()));
+      } else {
+        sendCommandActivation(request);
+      }
+      return stage;
+    }
+
+    @Override
+    public SelectedCommand select(Command command, CommandOptions options) {
+      return await(selectAsync(command, options));
+    }
+
+    @Override
+    public CompletionStage<SelectedCommand> selectAsync(Command command, CommandOptions options) {
+      Objects.requireNonNull(command, "command");
+      Objects.requireNonNull(options, "options");
+
+      PendingCommand request;
+      try {
+        request = newCommand(command, true, true, options);
       } catch (RuntimeException e) {
         return CompletableFuture.failedFuture(e);
       }
@@ -2296,20 +2498,169 @@ public final class DefaultIec60870Client implements Iec60870Client {
       } else {
         sendCommandActivation(request);
       }
-      return request.future;
+      return request.selectStage;
     }
 
-    private Asdu commandActivation(Command command, boolean select) {
-      return new Asdu(
-          CommandAsdus.typeOf(command),
-          false,
-          Cause.ACTIVATION,
-          false,
-          false,
-          config.originatorAddress(),
-          command.target().commonAddress(),
-          List.of(CommandAsdus.toObject(command, select, config.timePolicy())));
+    private PendingCommand newCommand(
+        Command command, boolean selectBeforeOperate, boolean selection, CommandOptions options) {
+      Asdu execute = commandAsdu(command, Cause.ACTIVATION, false, command.time());
+      Asdu select =
+          selectBeforeOperate ? commandAsdu(command, Cause.ACTIVATION, true, command.time()) : null;
+      AsduType family = commandFamily(execute.type());
+      boolean setpoint =
+          family == AsduType.C_SE_NA_1
+              || family == AsduType.C_SE_NB_1
+              || family == AsduType.C_SE_NC_1
+              || family == AsduType.C_BO_NA_1;
+      CommandCompletion completion =
+          options
+              .completion()
+              .orElse(setpoint ? config.setpointCompletion() : config.commandCompletion());
+      return new PendingCommand(
+          command,
+          config.commandTimeTagMatch(),
+          select,
+          execute,
+          selection,
+          completion,
+          options.terminationTimeout().orElse(config.commandTerminationTimeout()));
     }
+  }
+
+  /** The handle for a selection confirmed through {@link CommandService#select}. */
+  private final class CommandSelection implements SelectedCommand {
+
+    private final PendingCommand request;
+    private final Asdu selectConfirmation;
+    private final Instant expiresAt;
+
+    CommandSelection(PendingCommand request, Asdu selectConfirmation, Instant expiresAt) {
+      this.request = request;
+      this.selectConfirmation = selectConfirmation;
+      this.expiresAt = expiresAt;
+    }
+
+    @Override
+    public Command command() {
+      return request.command;
+    }
+
+    @Override
+    public Asdu selectConfirmation() {
+      return selectConfirmation;
+    }
+
+    @Override
+    public Instant expiresAt() {
+      return expiresAt;
+    }
+
+    @Override
+    public CommandResult execute() {
+      return await(executeAsync());
+    }
+
+    @Override
+    public CompletionStage<CommandResult> executeAsync() {
+      return endSelection(request, PendingCommand.Phase.EXECUTING);
+    }
+
+    @Override
+    public CommandResult cancel() {
+      return await(cancelAsync());
+    }
+
+    @Override
+    public CompletionStage<CommandResult> cancelAsync() {
+      return endSelection(request, PendingCommand.Phase.CANCELLING);
+    }
+
+    @Override
+    public void close() {
+      lock.lock();
+      try {
+        if (!pending.contains(request) || request.phase != PendingCommand.Phase.SELECTED) {
+          return;
+        }
+        request.beginDeactivation();
+      } finally {
+        lock.unlock();
+      }
+      sendCommandActivation(request);
+    }
+  }
+
+  /**
+   * Completes the select stage of a confirmed selection with its handle, or deactivates the
+   * selection if the caller already cancelled that stage.
+   *
+   * @param request the request in the selected phase.
+   */
+  private void deliverSelection(PendingCommand request) {
+    CommandSelection handle;
+    lock.lock();
+    try {
+      handle =
+          new CommandSelection(
+              request, Objects.requireNonNull(request.selectConfirmation), request.expiresAt);
+    } finally {
+      lock.unlock();
+    }
+    if (!request.selectStage.complete(handle)) {
+      handle.close();
+    }
+  }
+
+  /**
+   * Ends a held selection with an execute or an explicit cancel.
+   *
+   * @param request the request backing the handle.
+   * @param next {@link PendingCommand.Phase#EXECUTING} or {@link PendingCommand.Phase#CANCELLING}.
+   * @return a stage for the result of the execute or cancel.
+   */
+  private CompletionStage<CommandResult> endSelection(
+      PendingCommand request, PendingCommand.Phase next) {
+    var stage = new CompletableFuture<CommandResult>();
+    lock.lock();
+    try {
+      if (!pending.contains(request)) {
+        // Only a connection loss removes a request while its selection is held.
+        return CompletableFuture.failedFuture(
+            request.phase == PendingCommand.Phase.SELECTED
+                ? new ConnectionClosedException("selection ended by connection loss")
+                : new IllegalStateException("selection already ended"));
+      }
+      if (request.phase != PendingCommand.Phase.SELECTED) {
+        return CompletableFuture.failedFuture(
+            new IllegalStateException(
+                request.expired ? "selection expired" : "selection already ended"));
+      }
+      request.invalidateTimer();
+      request.phase = next;
+      request.sendQueued = true;
+      request.stage = stage;
+    } finally {
+      lock.unlock();
+    }
+    sendCommandActivation(request);
+    return stage;
+  }
+
+  /**
+   * Builds a command ASDU from this client.
+   *
+   * @param command the command.
+   * @param cause {@link Cause#ACTIVATION} or {@link Cause#DEACTIVATION}.
+   * @param select the select/execute flag.
+   * @param time the time tag to encode, present exactly when the command is time-tagged.
+   * @return the ASDU.
+   */
+  private Asdu commandAsdu(Command command, Cause cause, boolean select, Optional<Instant> time) {
+    return controlAsdu(
+        CommandAsdus.typeOf(command),
+        cause,
+        command.target().commonAddress(),
+        CommandAsdus.toObject(command, select, time, config.timePolicy()));
   }
 
   /** The parameter service backing {@link #parameters()}. */
@@ -2408,45 +2759,176 @@ public final class DefaultIec60870Client implements Iec60870Client {
 
   /** Submits a command phase only while its original transaction is still registered. */
   private void sendCommandActivation(PendingCommand request) {
-    CompletableFuture.supplyAsync(
-            () -> prepareAndSendCommand(request), this::executeSessionOperation)
-        .thenCompose(write -> write)
+    CompletableFuture.runAsync(() -> prepareAndSendCommand(request), this::executeSessionOperation)
         .whenComplete(
             (ignored, error) -> {
-              if (error != null && removePending(request)) {
-                callbackExecutor.execute(() -> request.fail(error));
+              if (error != null) {
+                failCommandWrite(request, null, error);
               }
             });
   }
 
-  private CompletionStage<Void> prepareAndSendCommand(PendingCommand request) {
+  private void prepareAndSendCommand(PendingCommand request) {
     Asdu activation;
     lock.lock();
     try {
-      if (!pending.contains(request)) {
-        return CompletableFuture.completedFuture(null);
+      if (!pending.contains(request) || !request.sendQueued) {
+        return;
       }
-      if (request.future.isCancelled()) {
-        pending.remove(request);
-        request.cancelTimeout();
-        return CompletableFuture.completedFuture(null);
+      boolean nothingSelected =
+          request.phase == PendingCommand.Phase.SELECTING || !request.selectBeforeOperate();
+      CompletableFuture<?> callerStage =
+          request.selection && request.phase == PendingCommand.Phase.SELECTING
+              ? request.selectStage
+              : request.stage;
+      if (callerStage.isCancelled() && request.phase != PendingCommand.Phase.CANCELLING) {
+        if (nothingSelected) {
+          pending.remove(request);
+          request.invalidateTimer();
+          return;
+        }
+        // The caller gave up after a positive select: break the selection off, do not operate.
+        request.beginDeactivation();
       }
-      if (request.executeQueued) {
-        request.activation = request.execute;
-        request.executeQueued = false;
-      }
-      activation = request.activation;
-      request.setTimeoutHandle(
-          scheduler.schedule(
-              () -> timeoutCommand(request, activation),
-              config.commandTimeout().toMillis(),
-              TimeUnit.MILLISECONDS));
+      activation = nextCommandActivation(request);
+      request.activation = activation;
+      request.sendQueued = false;
+      armCommandTimer(request, config.commandTimeout());
     } finally {
       lock.unlock();
     }
     // Loss can invalidate the request and close the old session concurrently. Session reset is
     // queued behind this submission, so the ASDU cannot cross into the replacement session.
-    return submitToSession(activation);
+    submitToSession(activation)
+        .whenComplete(
+            (ignored, error) -> {
+              if (error != null) {
+                failCommandWrite(request, activation, error);
+              }
+            });
+  }
+
+  /**
+   * Fails a command whose activation could not be written, unless a later phase has replaced that
+   * activation or a reply already answered it. A select whose write fails after its timeout already
+   * sent a deactivation leaves the deactivation in charge of the reservation, and a write that the
+   * outstation confirmed (a held selection, or an execute awaiting ACT_TERM) evidently arrived.
+   *
+   * @param request the command.
+   * @param activation the activation whose write failed, or {@code null} if the failure happened
+   *     before anything was submitted.
+   * @param error the write failure.
+   */
+  private void failCommandWrite(
+      PendingCommand request, @Nullable Asdu activation, Throwable error) {
+    lock.lock();
+    try {
+      boolean answered =
+          request.phase == PendingCommand.Phase.SELECTED
+              || request.phase == PendingCommand.Phase.TERMINATING;
+      if (!pending.contains(request)
+          || (activation != null
+              && (request.activation != activation || request.sendQueued || answered))) {
+        return;
+      }
+      pending.remove(request);
+      request.invalidateTimer();
+    } finally {
+      lock.unlock();
+    }
+    callbackExecutor.execute(() -> request.fail(error));
+  }
+
+  /**
+   * Builds the activation for a command's current phase. An execute after a held selection and
+   * every deactivation carry the time they are sent.
+   */
+  private Asdu nextCommandActivation(PendingCommand request) {
+    Optional<Instant> now = request.command.time().map(ignored -> Instant.now());
+    return switch (request.phase) {
+      case SELECTING -> Objects.requireNonNull(request.select);
+      case EXECUTING ->
+          request.selection
+              ? commandAsdu(request.command, Cause.ACTIVATION, false, now)
+              : request.execute;
+      case CANCELLING -> commandAsdu(request.command, Cause.DEACTIVATION, true, now);
+      case SELECTED, TERMINATING ->
+          throw new IllegalStateException("no activation in phase " + request.phase);
+    };
+  }
+
+  /**
+   * Arms the timer for a command's current phase, invalidating the previous one. Call with the lock
+   * held.
+   *
+   * @param request the registered command.
+   * @param delay the phase deadline.
+   */
+  private void armCommandTimer(PendingCommand request, Duration delay) {
+    request.invalidateTimer();
+    int token = request.timerToken;
+    request.setTimeoutHandle(
+        scheduler.schedule(
+            () -> onCommandTimer(request, token), delay.toMillis(), TimeUnit.MILLISECONDS));
+  }
+
+  /**
+   * Handles the deadline of a command phase. A stale timer, whose phase has already ended, does
+   * nothing.
+   *
+   * <p>A select timeout fails the caller and deactivates the select, in case the outstation
+   * accepted it late. A selection timeout deactivates the selection. A termination timeout
+   * completes with {@link CommandOutcome#TERMINATION_MISSING}. Any other timeout fails the phase's
+   * stage.
+   */
+  private void onCommandTimer(PendingCommand request, int token) {
+    @Nullable Runnable delivery = null;
+    boolean deactivate = false;
+    lock.lock();
+    try {
+      if (request.timerToken != token || !pending.contains(request)) {
+        return;
+      }
+      switch (request.phase) {
+        case SELECTING -> {
+          var timeout = new ProtocolTimeoutException("command timed out awaiting a response");
+          CompletableFuture<?> callerStage =
+              request.selection ? request.selectStage : request.stage;
+          delivery = () -> callerStage.completeExceptionally(timeout);
+          request.beginDeactivation();
+          deactivate = true;
+        }
+        case SELECTED -> {
+          request.expired = true;
+          request.beginDeactivation();
+          deactivate = true;
+        }
+        case TERMINATING -> {
+          pending.remove(request);
+          request.invalidateTimer();
+          CommandResult missing = request.terminationMissing();
+          CompletableFuture<CommandResult> stage = request.stage;
+          delivery = () -> stage.complete(missing);
+        }
+        case EXECUTING, CANCELLING -> {
+          pending.remove(request);
+          request.invalidateTimer();
+          CompletableFuture<CommandResult> stage = request.stage;
+          delivery =
+              () ->
+                  stage.completeExceptionally(
+                      new ProtocolTimeoutException("command timed out awaiting a response"));
+        }
+      }
+    } finally {
+      lock.unlock();
+    }
+    if (delivery != null) {
+      callbackExecutor.execute(delivery);
+    }
+    if (deactivate) {
+      sendCommandActivation(request);
+    }
   }
 
   private void executeSessionOperation(Runnable operation) {
@@ -2469,26 +2951,6 @@ public final class DefaultIec60870Client implements Iec60870Client {
       // Only CompletableFuture tasks enter this queue. They capture operation failures and allow
       // this drain to continue; their completion handlers can enqueue more work without blocking.
       next.run();
-    }
-  }
-
-  /** A cancelled SELECT timer must not time out the subsequent EXECUTE phase. */
-  private void timeoutCommand(PendingCommand request, Asdu activation) {
-    boolean removed;
-    lock.lock();
-    try {
-      removed =
-          request.activation == activation && !request.executeQueued && pending.remove(request);
-      if (removed) {
-        request.cancelTimeout();
-      }
-    } finally {
-      lock.unlock();
-    }
-    if (removed) {
-      callbackExecutor.execute(
-          () ->
-              request.fail(new ProtocolTimeoutException("command timed out awaiting a response")));
     }
   }
 

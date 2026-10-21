@@ -41,8 +41,13 @@
  * com.digitalpetri.iec60870.client.CommandService} as a {@link
  * com.digitalpetri.iec60870.client.Command} plus a {@link
  * com.digitalpetri.iec60870.client.CommandMode} (direct-execute or select-before-operate) and
- * return a {@link com.digitalpetri.iec60870.client.CommandResult}. A negative confirmation (P/N =
- * 1) is surfaced as a non-positive {@code CommandResult} for commands, a non-positive {@link
+ * return a {@link com.digitalpetri.iec60870.client.CommandResult}. A command completes on its
+ * activation confirmation or, under {@link
+ * com.digitalpetri.iec60870.client.CommandCompletion#TERMINATION}, on the activation termination
+ * that follows. {@link com.digitalpetri.iec60870.client.CommandService#select} returns a {@link
+ * com.digitalpetri.iec60870.client.SelectedCommand} that holds the selection until it is executed
+ * or cancelled with a deactivation. A negative confirmation (P/N = 1) is surfaced as a non-positive
+ * {@code CommandResult} for commands, a non-positive {@link
  * com.digitalpetri.iec60870.client.ParameterResult} for parameter loads, and a {@link
  * com.digitalpetri.iec60870.NegativeConfirmationException} for the other requests.
  *

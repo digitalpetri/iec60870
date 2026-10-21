@@ -23,8 +23,9 @@ import org.jspecify.annotations.Nullable;
  * objects a single interrogation will accumulate, the executor that delivers events and completes
  * blocking calls, the event backlog at which the client pauses inbound data, the policy that
  * reconnects after a loss, the diagnostics listener and logging context, the time policy for time
- * tags, and how command echoes match on their time tag. Transport concerns (host, port, TLS) are
- * configured on the transport, not here.
+ * tags, how command echoes match on their time tag, and when commands complete and how long a
+ * selection is held. Transport concerns (host, port, TLS) are configured on the transport, not
+ * here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -59,6 +60,11 @@ import org.jspecify.annotations.Nullable;
  * @param loggingContext the MDC entries set around the client's log lines.
  * @param timePolicy the rules that convert received, command, and clock-sync time tags.
  * @param commandTimeTagMatch how a command echo's time tag is compared with the sent one.
+ * @param commandCompletion when single, double, and regulating step commands complete.
+ * @param setpointCompletion when set-point and bit-string commands complete.
+ * @param commandTerminationTimeout how long a command awaits ACT_TERM after the positive ACT_CON of
+ *     its final phase, under {@link CommandCompletion#TERMINATION}.
+ * @param selectionTimeout how long a {@link SelectedCommand} may be held without execute or cancel.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -75,7 +81,11 @@ public record ClientConfig(
     ConnectionDiagnostics diagnostics,
     Map<String, String> loggingContext,
     TimePolicy timePolicy,
-    TimeTagMatch commandTimeTagMatch) {
+    TimeTagMatch commandTimeTagMatch,
+    CommandCompletion commandCompletion,
+    CommandCompletion setpointCompletion,
+    Duration commandTerminationTimeout,
+    Duration selectionTimeout) {
 
   /**
    * Validates the components.
@@ -105,10 +115,16 @@ public record ClientConfig(
    * @param loggingContext the MDC entries set around the client's log lines; copied.
    * @param timePolicy the rules that convert received, command, and clock-sync time tags.
    * @param commandTimeTagMatch how a command echo's time tag is compared with the sent one.
+   * @param commandCompletion when single, double, and regulating step commands complete.
+   * @param setpointCompletion when set-point and bit-string commands complete.
+   * @param commandTerminationTimeout how long a command awaits ACT_TERM after the positive ACT_CON
+   *     of its final phase, under {@link CommandCompletion#TERMINATION}.
+   * @param selectionTimeout how long a {@link SelectedCommand} may be held without execute or
+   *     cancel.
    * @throws NullPointerException if any non-nullable component is null.
-   * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
-   *     negative, {@code maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit}
-   *     is not in {@code 1..268435456}.
+   * @throws IllegalArgumentException if a timeout is zero or negative, {@code
+   *     maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit} is not in {@code
+   *     1..268435456}.
    */
   public ClientConfig {
     Objects.requireNonNull(protocolProfile, "protocolProfile");
@@ -117,12 +133,18 @@ public record ClientConfig(
     Objects.requireNonNull(requestTimeout, "requestTimeout");
     Objects.requireNonNull(timePolicy, "timePolicy");
     Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
+    Objects.requireNonNull(commandCompletion, "commandCompletion");
+    Objects.requireNonNull(setpointCompletion, "setpointCompletion");
+    Objects.requireNonNull(commandTerminationTimeout, "commandTerminationTimeout");
+    Objects.requireNonNull(selectionTimeout, "selectionTimeout");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
     Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
     Objects.requireNonNull(diagnostics, "diagnostics");
     loggingContext = Map.copyOf(loggingContext);
     requirePositive(commandTimeout, "commandTimeout");
     requirePositive(requestTimeout, "requestTimeout");
+    requirePositive(commandTerminationTimeout, "commandTerminationTimeout");
+    requirePositive(selectionTimeout, "selectionTimeout");
     if (maxInterrogationResponseObjects < 0) {
       throw new IllegalArgumentException(
           "maxInterrogationResponseObjects must be >= 0: " + maxInterrogationResponseObjects);
@@ -182,6 +204,10 @@ public record ClientConfig(
     private int maxInterrogationResponseObjects = 1_000_000;
     private TimePolicy timePolicy = TimePolicy.utc();
     private TimeTagMatch commandTimeTagMatch = TimeTagMatch.INSTANT;
+    private CommandCompletion commandCompletion = CommandCompletion.CONFIRMATION;
+    private CommandCompletion setpointCompletion = CommandCompletion.CONFIRMATION;
+    private Duration commandTerminationTimeout = Duration.ofSeconds(60);
+    private Duration selectionTimeout = Duration.ofSeconds(30);
     private Executor callbackExecutor = ForkJoinPool.commonPool();
     private int eventBacklogLimit = DEFAULT_EVENT_BACKLOG_LIMIT;
     private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
@@ -257,7 +283,9 @@ public record ClientConfig(
      * <p>Applies to {@link Iec60870Client#commands()}, {@link Iec60870Client#synchronizeClock},
      * counter freeze and reset through {@link Iec60870Client#counterInterrogate}, {@link
      * Iec60870Client#test}, {@link Iec60870Client#resetProcess}, and {@link
-     * Iec60870Client#parameters()}. For select-before-operate, each phase has its own timeout.
+     * Iec60870Client#parameters()}. For select-before-operate, each phase has its own timeout, and
+     * a command deactivation has one too. The wait for ACT_TERM uses {@link
+     * #commandTerminationTimeout(Duration)} instead.
      *
      * @param commandTimeout the command timeout; must be positive.
      * @return this builder.
@@ -330,6 +358,69 @@ public record ClientConfig(
      */
     public Builder commandTimeTagMatch(TimeTagMatch commandTimeTagMatch) {
       this.commandTimeTagMatch = Objects.requireNonNull(commandTimeTagMatch, "commandTimeTagMatch");
+      return this;
+    }
+
+    /**
+     * Sets when single, double, and regulating step commands (C_SC, C_DC, C_RC, timed and untimed)
+     * complete. Defaults to {@link CommandCompletion#CONFIRMATION}.
+     *
+     * <p>The companion standards make ACT_TERM part of the procedure for these commands, but many
+     * outstations never send it. Choose {@link CommandCompletion#TERMINATION} when the outstations
+     * do, or override it per call with {@link CommandOptions}.
+     *
+     * @param commandCompletion the completion policy.
+     * @return this builder.
+     */
+    public Builder commandCompletion(CommandCompletion commandCompletion) {
+      this.commandCompletion = Objects.requireNonNull(commandCompletion, "commandCompletion");
+      return this;
+    }
+
+    /**
+     * Sets when set-point and bit-string commands (C_SE, C_BO, timed and untimed) complete.
+     * Defaults to {@link CommandCompletion#CONFIRMATION}.
+     *
+     * <p>ACT_TERM for set-points is an interoperability option ("C_SE ACTTERM used"). Choose {@link
+     * CommandCompletion#TERMINATION} for outstations that declare it.
+     *
+     * @param setpointCompletion the completion policy.
+     * @return this builder.
+     */
+    public Builder setpointCompletion(CommandCompletion setpointCompletion) {
+      this.setpointCompletion = Objects.requireNonNull(setpointCompletion, "setpointCompletion");
+      return this;
+    }
+
+    /**
+     * Sets how long a command awaits ACT_TERM after the positive ACT_CON of its final phase, under
+     * {@link CommandCompletion#TERMINATION}. Defaults to 60 seconds.
+     *
+     * <p>When it passes, the command completes with {@link CommandOutcome#TERMINATION_MISSING} and
+     * releases its reservation. This timeout replaces the command timeout for that wait.
+     *
+     * @param commandTerminationTimeout the termination timeout; must be positive.
+     * @return this builder.
+     */
+    public Builder commandTerminationTimeout(Duration commandTerminationTimeout) {
+      this.commandTerminationTimeout =
+          Objects.requireNonNull(commandTerminationTimeout, "commandTerminationTimeout");
+      return this;
+    }
+
+    /**
+     * Sets how long a {@link SelectedCommand} may be held without execute or cancel. Defaults to 30
+     * seconds.
+     *
+     * <p>When it passes, the client deactivates the selection and releases the reservation. An
+     * outstation drops a selection on its own timer too, so set this no longer than the
+     * outstation's select timeout.
+     *
+     * @param selectionTimeout the selection timeout; must be positive.
+     * @return this builder.
+     */
+    public Builder selectionTimeout(Duration selectionTimeout) {
+      this.selectionTimeout = Objects.requireNonNull(selectionTimeout, "selectionTimeout");
       return this;
     }
 
@@ -425,8 +516,9 @@ public record ClientConfig(
      * Builds an immutable {@link ClientConfig} from the current builder state.
      *
      * @return the configuration.
-     * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is not
-     *     positive, or {@code eventBacklogLimit} is out of range.
+     * @throws IllegalArgumentException if a timeout is not positive, {@code
+     *     maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit} is out of
+     *     range.
      */
     public ClientConfig build() {
       return new ClientConfig(
@@ -444,7 +536,11 @@ public record ClientConfig(
           diagnostics,
           loggingContext,
           timePolicy,
-          commandTimeTagMatch);
+          commandTimeTagMatch,
+          commandCompletion,
+          setpointCompletion,
+          commandTerminationTimeout,
+          selectionTimeout);
     }
   }
 }

@@ -172,6 +172,10 @@ confirmation carries the value now in operation.
 | `resetProcess` (C_RP_NA_1) | ACT_CON | `commandTimeout` | one per CA |
 | `parameters().load` (P_ME_NA_1..NC_1) | ACT_CON | `commandTimeout` | one per CA and IOA |
 | `parameters().activate` / `deactivate` (P_AC_NA_1) | ACT_CON / DEACT_CON | `commandTimeout` | one per CA and IOA |
+| `commands().send` (C_SC..C_BO), `CONFIRMATION` | ACT_CON of the final phase | `commandTimeout` per phase | one per CA, IOA, and command family |
+| `commands().send`, `TERMINATION` | ACT_TERM after a positive final ACT_CON | `commandTimeout` per phase, then `commandTerminationTimeout` | (same as above) |
+| `commands().select` | ACT_CON of the select; the handle then holds the reservation | `commandTimeout`, then `selectionTimeout` while held | (same as above) |
+| `SelectedCommand.cancel` | DEACT_CON | `commandTimeout` | (same as above) |
 
 Requests of different kinds never conflict, so a general and a counter interrogation of the same
 station run side by side: their confirmations differ by TypeID and their data by COT. A conflicting
@@ -180,9 +184,10 @@ armed at send. Connection loss fails every pending request with `ConnectionClose
 `maxInterrogationResponseObjects` bounds the objects that both interrogation kinds collect.
 
 A negative confirmation fails the request with `NegativeConfirmationException`, except a command
-or a parameter load, which return a result with `positive() == false`. The counter interrogation,
-test, reset, and parameter services also treat causes 44 to 47 (unknown type, cause, CA, or IOA) on
-a matching reply as a rejection even when P/N is 0, so a station that answers that way fails fast.
+or a parameter load, which return a result with `positive() == false`. The command, counter
+interrogation, test, reset, and parameter services also treat causes 44 to 47 (unknown type, cause,
+CA, or IOA) on a matching reply as a rejection even when P/N is 0, so a station that answers that way
+fails fast.
 `interrogate` and `synchronizeClock` keep their earlier rule and need P/N set.
 
 The methods that take a station reject the global common address (255 or 65535, by
@@ -196,26 +201,59 @@ go through `send(Asdu)`.
 qualifier, and an optional `Instant` time tag — but **not** the select/execute flag. The service
 chooses select-vs-execute from a `CommandMode` (`directExecute()` or `selectBeforeOperate()`) when it
 builds the wire ASDU, and picks the time-tagged TypeID (e.g. `C_SC_TA_1`) when the command carries a
-time. One pending operation reserves the command family and point through both SELECT and EXECUTE.
-A positive SELECT confirmation queues EXECUTE while retaining that reservation; connection loss
-invalidates it before any delayed continuation can use a replacement connection. Each confirmation
-must mirror the transmitted command's exact type, object (including phase, value, qualifier, and
-time) and test flag. The reply's originator address must match the command or be zero (unused).
-A one-octet cause of transmission omits the originator octet, so its decoded replies use zero;
-zero is also accepted from peers that do not use originator addresses. A different nonzero
-originator is rejected. ACT_CON and mirrored negative error causes are accepted; DEACT_CON does
-not confirm an activation. Identical stale replies remain indistinguishable because the protocol
-carries no request identifier.
+time. Each confirmation, termination, and deactivation confirmation must mirror the transmitted
+command's type, object (including phase, value, qualifier, and time under `commandTimeTagMatch`) and
+test flag. The reply's originator address must match the command or be zero (unused). A one-octet
+cause of transmission omits the originator octet, so its decoded replies use zero; zero is also
+accepted from peers that do not use originator addresses. A different nonzero originator is
+rejected. Identical stale replies remain indistinguishable because the protocol carries no request
+identifier.
 
-A command completes with a `CommandResult(target, positive, cause, confirmation)` rather than
-throwing on a protocol-level rejection: `positive() == false` means the station returned a negative
-confirmation. Transport and session failures (timeout, disconnect) still surface as exceptions.
+One pending command reserves its command family and point from the first send until its result
+stage completes or its selection ends. The pending command is a small state machine:
+
+| Phase | Waiting for | Deadline | Then |
+|---|---|---|---|
+| selecting | ACT_CON of the select (S/E = 1) | `commandTimeout` | executing (atomic SBO) or selected (`select`) |
+| selected | `execute`, `cancel`, or `close` on the handle | `selectionTimeout` | executing or cancelling |
+| executing | ACT_CON of the execute (S/E = 0) or direct command | `commandTimeout` | done, or terminating under `TERMINATION` |
+| terminating | ACT_TERM echoing the execute | `commandTerminationTimeout` | done |
+| cancelling | DEACT_CON echoing the deactivation (COT 8, S/E = 1) | `commandTimeout` | done |
+
+Each phase arms its own timer on the client scheduler, and a timer left over from an earlier phase
+does nothing. Replies are matched only against the phase's outstanding ASDU, so an ACT_TERM before
+the ACT_CON, or a DEACT_CON during a select, is ignored and published as usual. A negative ACT_CON
+or DEACT_CON, or a matching echo with cause 44 to 47, ends the command with `REJECTED`. A positive
+DEACT_CON gives `CONFIRMED`.
+
+The client sends a deactivation in four cases: an explicit `cancel`, `close` or expiry of a held
+selection, cancelling an atomic SBO stage after its select was confirmed, and a select that timed
+out, in case the outstation accepted it late. Only the explicit `cancel` reports the outcome. The
+others consume the DEACT_CON, even a negative one, and release the reservation when it arrives or
+the deactivation times out. An execute that follows a held selection, and every deactivation, carry
+the time they are sent when the command is time-tagged; an atomic SBO execute keeps the command's
+time. A held selection never crosses a connection loss; the handle's later calls fail with
+`ConnectionClosedException` and nothing is sent.
+
+`ClientConfig.commandCompletion` (C_SC, C_DC, C_RC) and `setpointCompletion` (C_SE, C_BO) choose
+between `CommandCompletion.CONFIRMATION`, the default, and `TERMINATION`; `CommandOptions` overrides
+the policy and the termination timeout per call. Under `TERMINATION`, a positive final ACT_CON
+keeps the request registered and the termination timer replaces the command timeout. Once that
+ACT_CON has arrived the stage always completes normally: `TERMINATED`, `TERMINATED_NEGATIVE` for an
+ACT_TERM with P/N = 1, or `TERMINATION_MISSING` on the termination timeout or a connection loss.
+Before it, timeouts and connection loss stay exceptions. A consumed ACT_TERM, positive or negative,
+publishes no `NegativeConfirmation`.
+
+A command completes with a `CommandResult(target, outcome, cause, confirmation, termination)` rather
+than throwing on a protocol-level rejection. `positive()` is true for `CONFIRMED` and `TERMINATED`.
 
 ```java
 CommandResult r = client.commands().single(point, true);              // direct execute
 if (!r.positive()) handleRejection(r.cause());
-CommandResult sbo = client.commands()
-    .send(Command.single(point, true), CommandMode.selectBeforeOperate());
+
+try (SelectedCommand selected = client.commands().select(Command.single(point, true))) {
+  CommandResult executed = operatorConfirms() ? selected.execute() : selected.cancel();
+}
 ```
 
 **Interrogation.** `interrogate` sends `C_IC_NA_1 ACT`, awaits the positive `ACT_CON` (else a

@@ -65,6 +65,9 @@
 #define ACCEPT_IOA_LO 2000
 #define ACCEPT_IOA_HI 2999
 #define REJECT_IOA    3000
+/* Accepted IOAs whose executes terminate unusually (both inside the accept range). */
+#define NO_ACT_TERM_IOA       2998 /* ACT_CON only, never ACT_TERM */
+#define NEGATIVE_ACT_TERM_IOA 2999 /* ACT_TERM with P/N = 1 */
 
 /* Return-information monitor targets */
 #define RETINFO_SC_IOA 1000 /* single command -> single point */
@@ -470,10 +473,18 @@ classifyControlIoa(int ioa)
 }
 
 /*
- * Handle one process command type. `isSelect` is the S/E bit. We confirm with
- * ACT_CON (positive for accept, negative for reject), and for select+execute we
- * additionally send ACT_TERM after the execute. The return-information update
- * is enqueued only on an *accepted execute or accepted direct command*.
+ * Handle one process command type. `isSelect` is the S/E bit.
+ *
+ * COT ACTIVATION: confirm with ACT_CON (positive for accept, negative for reject). An accepted
+ * execute or direct command (S/E = 0) is then terminated with ACT_TERM and, for the mapped
+ * types, followed by a return-information update. NO_ACT_TERM_IOA sends no ACT_TERM, and
+ * NEGATIVE_ACT_TERM_IOA sends ACT_TERM with P/N = 1.
+ *
+ * COT DEACTIVATION: break off a selection with DEACT_CON, positive for accept, negative for
+ * reject.
+ *
+ * Any other COT is answered with UNKNOWN_COT (P/N = 1); an unknown IOA with UNKNOWN_IOA, whose
+ * P/N bit stays clear as in the lib60870-C examples.
  */
 static bool
 handleProcessCommand(IMasterConnection con, CS101_ASDU asdu, const char* typeName,
@@ -481,10 +492,32 @@ handleProcessCommand(IMasterConnection con, CS101_ASDU asdu, const char* typeNam
         bool reflectShort, float reflectShortValue)
 {
     int klass = classifyControlIoa(ioa);
-    const char* phase = isSelect ? "SELECT" : (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION ? "DIRECT" : "EXECUTE");
-    /* In CS104 both direct-execute and the execute step of S/E use COT=ACTIVATION;
-     * the S/E bit distinguishes select from (direct/execute). Label by S/E. */
-    if (isSelect) phase = "SELECT"; else phase = "EXECUTE/DIRECT";
+    CS101_CauseOfTransmission cot = CS101_ASDU_getCOT(asdu);
+    const char* phase = isSelect ? "SELECT" : "EXECUTE/DIRECT";
+
+    if (cot != CS101_COT_ACTIVATION && cot != CS101_COT_DEACTIVATION) {
+        printf("CMD %s ioa=%i UNKNOWN-COT cot=%i\n", typeName, ioa, (int) cot);
+        CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_COT);
+        CS101_ASDU_setNegative(asdu, true);
+        IMasterConnection_sendASDU(con, asdu);
+        return true;
+    }
+
+    if (klass < 0) {
+        printf("CMD %s ioa=%i UNKNOWN-IOA sel=%i\n", typeName, ioa, isSelect ? 1 : 0);
+        CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
+        IMasterConnection_sendASDU(con, asdu);
+        return true;
+    }
+
+    if (cot == CS101_COT_DEACTIVATION) {
+        printf("CMD %s ioa=%i %s CANCEL sel=%i\n", typeName, ioa,
+                klass == 0 ? "ACCEPT" : "REJECT", isSelect ? 1 : 0);
+        CS101_ASDU_setCOT(asdu, CS101_COT_DEACTIVATION_CON);
+        CS101_ASDU_setNegative(asdu, klass != 0);
+        IMasterConnection_sendASDU(con, asdu);
+        return true;
+    }
 
     if (klass == 0) {
         printf("CMD %s ioa=%i ACCEPT %s sel=%i\n", typeName, ioa, phase, isSelect ? 1 : 0);
@@ -493,26 +526,27 @@ handleProcessCommand(IMasterConnection con, CS101_ASDU asdu, const char* typeNam
         IMasterConnection_sendASDU(con, asdu);
 
         if (!isSelect) {
-            /* execute or direct: terminate S/E sequences and emit return info */
-            IMasterConnection_sendACT_TERM(con, asdu);
+            /* execute or direct: terminate and emit return info */
+            if (ioa == NEGATIVE_ACT_TERM_IOA) {
+                /* IMasterConnection_sendACT_TERM always clears P/N, so build it by hand. */
+                CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_TERMINATION);
+                CS101_ASDU_setNegative(asdu, true);
+                IMasterConnection_sendASDU(con, asdu);
+            }
+            else if (ioa != NO_ACT_TERM_IOA) {
+                IMasterConnection_sendACT_TERM(con, asdu);
+            }
             if (reflectSingle) sendReturnInfoSingle(RETINFO_SC_IOA, reflectSingleValue);
             if (reflectShort)  sendReturnInfoShort(RETINFO_SE_IOA, reflectShortValue);
         }
         return true;
     }
-    else if (klass == 1) {
-        printf("CMD %s ioa=%i REJECT %s sel=%i\n", typeName, ioa, phase, isSelect ? 1 : 0);
-        CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
-        CS101_ASDU_setNegative(asdu, true); /* P/N = 1 */
-        IMasterConnection_sendASDU(con, asdu);
-        return true;
-    }
-    else {
-        printf("CMD %s ioa=%i UNKNOWN-IOA sel=%i\n", typeName, ioa, isSelect ? 1 : 0);
-        CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
-        IMasterConnection_sendASDU(con, asdu);
-        return true;
-    }
+
+    printf("CMD %s ioa=%i REJECT %s sel=%i\n", typeName, ioa, phase, isSelect ? 1 : 0);
+    CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
+    CS101_ASDU_setNegative(asdu, true); /* P/N = 1 */
+    IMasterConnection_sendASDU(con, asdu);
+    return true;
 }
 
 static bool
