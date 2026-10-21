@@ -1,5 +1,6 @@
 package com.digitalpetri.iec60870.cs104;
 
+import static java.util.Objects.requireNonNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -33,6 +34,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
@@ -162,6 +165,98 @@ class Cs104BindingTest {
         1,
         transport.closeConnectionCount(),
         "a client-side decode failure must close the current transport connection");
+  }
+
+  @Test
+  void clientBindingDecodeFailureClosesTheConnectionBeforeReportingTheLoss() {
+    RecordingClientTransport transport = new RecordingClientTransport();
+    AtomicInteger closesWhenReported = new AtomicInteger(-1);
+    Session.Events events =
+        new Session.Events() {
+          @Override
+          public void onAsdu(Asdu asdu) {}
+
+          @Override
+          public void onDataTransferStateChanged(boolean started) {}
+
+          @Override
+          public void onClosed(@Nullable Throwable cause) {}
+
+          @Override
+          public void onConnectionLost(@Nullable Throwable cause) {
+            closesWhenReported.set(transport.closeConnectionCount());
+          }
+        };
+    new Cs104Binding(ApciSettings.defaults(), PROFILE)
+        .bindClient(transport, events, new ManualScheduler());
+
+    ByteBuf frame = ALLOC.buffer(1);
+    frame.writeByte(0x00);
+    try {
+      assertNotNull(transport.listener());
+      transport.listener().onFrame(frame);
+    } finally {
+      frame.release();
+    }
+
+    assertEquals(
+        1,
+        closesWhenReported.get(),
+        "the bad connection must be closed before the loss is reported, so a replacement opened "
+            + "from the report is not closed by the old cleanup");
+  }
+
+  @Test
+  void decodeFailureIsTheReportedCauseWhenTheTransportReportsItsOwnClose() {
+    var listener = new AtomicReference<@Nullable TransportListener>();
+    ClientTransport transport =
+        new ClientTransport() {
+          @Override
+          public CompletionStage<Void> connect() {
+            return CompletableFuture.completedFuture(null);
+          }
+
+          @Override
+          public CompletionStage<Void> disconnect() {
+            return CompletableFuture.completedFuture(null);
+          }
+
+          @Override
+          public void closeConnection() {
+            // Some transports report a local close as a loss, synchronously and without a cause.
+            requireNonNull(listener.get()).onConnectionLost(null);
+          }
+
+          @Override
+          public boolean isConnected() {
+            return true;
+          }
+
+          @Override
+          public CompletionStage<Void> send(ByteBuf frame) {
+            frame.release();
+            return CompletableFuture.completedFuture(null);
+          }
+
+          @Override
+          public void setListener(TransportListener transportListener) {
+            listener.set(transportListener);
+          }
+        };
+    RecordingEvents events = new RecordingEvents();
+    new Cs104Binding(ApciSettings.defaults(), PROFILE)
+        .bindClient(transport, events, new ManualScheduler());
+
+    ByteBuf frame = ALLOC.buffer(1);
+    frame.writeByte(0x00);
+    try {
+      requireNonNull(listener.get()).onFrame(frame);
+    } finally {
+      frame.release();
+    }
+
+    assertEquals(1, events.closedCount());
+    assertInstanceOf(AsduDecodeException.class, events.lastCloseCause());
   }
 
   @Test

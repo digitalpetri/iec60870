@@ -957,11 +957,18 @@ final class BalancedEngine implements Ft12Engine {
       return;
     }
     closed = true;
-    sendQueue.failAll(cause);
+    Runnable failWrites = sendQueue.detachAll(cause);
     cancelAllTimers();
     queueDrained.signalAll();
-    failPendingStart(cause);
+    CompletableFuture<Void> start = pendingStart;
+    pendingStart = null;
+    // Report before failing anything: the receiver may reconnect on this session from a failed
+    // stage's handler, and the report must reach it while this connection is still its current one.
     events.onClosed(cause);
+    failWrites.run();
+    if (start != null) {
+      start.completeExceptionally(cause);
+    }
   }
 
   private void failPendingStart(Throwable cause) {

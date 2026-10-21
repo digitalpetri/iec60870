@@ -19,6 +19,14 @@ import java.util.concurrent.Flow;
  * {@link CompletionStage}. The client is {@link AutoCloseable}, so it works with
  * try-with-resources.
  *
+ * <p>After {@link #connect()} the client manages the connection: if it is lost, or a connection
+ * attempt fails, the client reconnects on its own according to its {@link ReconnectPolicy}, resets
+ * the session, and starts data transfer again when configured. {@link #disconnect()} stops this,
+ * and {@link #close()} ends the client. Requests in flight when a connection is lost fail with a
+ * {@link com.digitalpetri.iec60870.ConnectionClosedException} and are never replayed. {@link
+ * #connectionState()} and the lifecycle events on {@link #events()} report what the client is
+ * doing.
+ *
  * <p>Received data is delivered through {@link #events()}: every monitor ASDU yields one {@link
  * ClientEvent.PointUpdated} per information object, alongside an always-published {@link
  * ClientEvent.AsduReceived}. Each {@code PointUpdated} reports the value's point type and the wire
@@ -39,30 +47,62 @@ import java.util.concurrent.Flow;
 public interface Iec60870Client extends AutoCloseable {
 
   /**
-   * Establishes the connection and, when configured, starts data transfer.
+   * Starts the managed connection and waits for it to be established.
    *
-   * <p>Concurrent calls share connection initialization. Calling again on an active connection
-   * preserves its session state; after connection loss, a new call initializes the replacement
-   * connection. A closed client cannot be connected again.
+   * <p>Returns once a connection is established and, when configured, data transfer has started. If
+   * that attempt fails, this method throws its failure; unless the {@link ReconnectPolicy} is
+   * disabled, the client keeps retrying in the background. Each attempt is bounded by the
+   * transport's connect timeout ({@code t0} for IEC 60870-5-104), the TLS handshake timeout when
+   * TLS is enabled, and the {@code STARTDT} confirmation timeout ({@code t1}).
+   *
+   * <p>Calling again while connected preserves the session. A call while an attempt is in progress
+   * joins that attempt, and a call while the client waits to reconnect starts an attempt at once. A
+   * closed client cannot be connected again.
    *
    * @throws com.digitalpetri.iec60870.ConnectionClosedException if the connection cannot be
-   *     established.
+   *     established or the client is closed; the transport's failure is its cause.
    * @throws com.digitalpetri.iec60870.ProtocolTimeoutException if a {@code STARTDT} handshake does
    *     not complete in time.
    */
   void connect();
 
   /**
-   * Establishes the connection and, when configured, starts data transfer.
+   * Starts the managed connection.
    *
-   * <p>Concurrent calls share connection initialization. Calling again on an active connection
-   * preserves its session state; after connection loss, a new call initializes the replacement
-   * connection. A closed client cannot be connected again.
+   * <p>Behaves like {@link #connect()} without blocking.
    *
    * @return a stage that completes once the client is connected (and data transfer started, if
-   *     configured), or completes exceptionally on failure.
+   *     configured), or completes exceptionally with the failure of the attempt.
    */
   CompletionStage<Void> connectAsync();
+
+  /**
+   * Stops the managed connection and waits for the connection to close.
+   *
+   * <p>Cancels any scheduled reconnect, fails requests in flight with a {@link
+   * com.digitalpetri.iec60870.ConnectionClosedException}, and closes the current connection without
+   * a {@code STOPDT} handshake. When a connection was open, {@link ClientEvent.DataTransferStopped}
+   * (if data transfer was started) and {@link ClientEvent.ConnectionClosed} with no cause are
+   * published. The client can be connected again with {@link #connect()}. Does nothing on a closed
+   * client.
+   */
+  void disconnect();
+
+  /**
+   * Stops the managed connection.
+   *
+   * <p>Behaves like {@link #disconnect()} without blocking.
+   *
+   * @return a stage that completes once the connection has closed.
+   */
+  CompletionStage<Void> disconnectAsync();
+
+  /**
+   * Returns the state of the managed connection.
+   *
+   * @return the current connection state.
+   */
+  ConnectionState connectionState();
 
   /**
    * Starts user-data transfer by performing the {@code STARTDT} handshake.
@@ -242,13 +282,21 @@ public interface Iec60870Client extends AutoCloseable {
   CompletionStage<Void> sendAsync(Asdu asdu);
 
   /**
-   * Reports whether the client currently has an established connection.
+   * Reports whether the session is armed on a live connection.
    *
-   * @return {@code true} if connected.
+   * @return {@code true} if {@link #connectionState()} is {@link ConnectionState#CONNECTED} and the
+   *     transport connection is open.
    */
   boolean isConnected();
 
-  /** Closes the client and the underlying connection. This method is idempotent. */
+  /**
+   * Closes the client for good.
+   *
+   * <p>Stops the managed connection like {@link #disconnect()}, publishes {@link
+   * ClientEvent.ConnectionClosed} with no cause if a connection was open, completes the event
+   * stream, and releases the transport's resources. After this call, {@link #connect()} fails with
+   * a {@link com.digitalpetri.iec60870.ConnectionClosedException}. This method is idempotent.
+   */
   @Override
   void close();
 }

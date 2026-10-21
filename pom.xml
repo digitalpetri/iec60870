@@ -59,7 +59,6 @@
     <jspecify.version>1.0.1</jspecify.version>
     <joou.version>0.9.6</joou.version>
     <netty.version>4.1.139.Final</netty.version>
-    <netty-channel-fsm.version>1.0.2</netty-channel-fsm.version>
     <slf4j.version>2.0.20</slf4j.version>
     <jSerialComm.version>2.11.4</jSerialComm.version>
 

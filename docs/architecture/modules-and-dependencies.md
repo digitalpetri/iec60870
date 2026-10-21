@@ -26,9 +26,10 @@ layer, and of the high-level facade:
   implement. The SPI is shaped in **whole-frame `ByteBuf`s**: `send(ByteBuf)` and `onFrame(ByteBuf)`
   exchange one complete, length-delimited frame each. Turning a frame into an `Apdu` (via
   `ApduFramer`) happens above the SPI, so the 101-over-TCP variant reuses the same transport.
-  `ClientTransport.disconnect()` means intentional shutdown; `ClientTransport.closeConnection()`
-  closes only the current connection so a persistent transport can reconnect after a protocol
-  binding drops a malformed frame.
+  A `ClientTransport` makes one attempt per `connect()` and never redials on its own;
+  `disconnect()` and `closeConnection()` close the current connection and leave the transport usable,
+  and only `close()` releases what it owns. Reconnecting belongs to the client facade in
+  `iec60870-application`.
   `ClientTransport.setReadPaused(boolean)` and `Session.setInboundPaused(boolean)` are the inbound
   flow-control seam: both default to no-ops, `NettyClientTransport` toggles `autoRead`, and
   `ApciSession` forwards the session call to its transport.
@@ -72,8 +73,8 @@ builder:
 - the framing handler `Iec104FrameDecoder`, which slices one whole-frame `ByteBuf` per complete
   frame off the wire, and `InboundFrameHandler`, which forwards each frame to the `TransportListener`
   (outbound is a raw `ByteBuf` write — there is no encoder handler);
-- TLS via Netty's `SslHandler`, and the client channel lifecycle via
-  `com.digitalpetri.netty:netty-channel-fsm`.
+- TLS via Netty's `SslHandler`, and a plain `Bootstrap` that makes one connection attempt per
+  `ClientTransport.connect()`.
 
 These octet classes import nothing from `cs104`, `cs101`, or `application`; a
 `TcpTransportDependencyGuardTest` enforces that core-only boundary.
@@ -232,7 +233,7 @@ back into core.
 | `iec60870-cs104` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 104 link/session engine; `netty-buffer` confined to the `Apdu`/`ControlField` `Serde` codecs; published API module |
 | `iec60870-cs101` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `io.netty:netty-buffer`, `org.slf4j:slf4j-api` | the 101 FT1.2 link layer; `netty-buffer` confined to the `Ft12Frame`/`LinkControlField` `Serde` codecs and `Ft12Framer`; published API module |
 | `iec60870-application` | `iec60870-core`, `org.jspecify:jspecify`, `org.jooq:joou`, `org.slf4j:slf4j-api` | **zero Netty**; depends on core only (never on cs104 or cs101). Guarded by `NoNettyInApplicationTest` |
-| `iec60870-transport-tcp` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `com.digitalpetri.netty:netty-channel-fsm`, `org.slf4j:slf4j-api` | **core-only** Netty octet transport, including TLS via `netty-handler`; no `cs104`/`cs101`/`application` dependency; the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoders) stay link- and application-free, enforced by `TcpTransportDependencyGuardTest` |
+| `iec60870-transport-tcp` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `io.netty:netty-codec`, `io.netty:netty-handler`, `org.slf4j:slf4j-api` | **core-only** Netty octet transport, including TLS via `netty-handler`; no `cs104`/`cs101`/`application` dependency; the octet classes (`NettyClientTransport`/`NettyServerTransport`, pipeline, decoders) stay link- and application-free, enforced by `TcpTransportDependencyGuardTest` |
 | `iec60870-transport-serial` | `iec60870-core`, `org.jspecify:jspecify`, `io.netty:netty-buffer`, `com.fazecast:jSerialComm`, `org.slf4j:slf4j-api` | **core-only** serial octet transport; jSerialComm and `netty-buffer` confined to the octet classes; no `cs101`/`application` dependency; the octet classes (`SerialClientTransport`/`SerialServerTransport`, `Ft12Deframer`) stay cs101- and application-free, enforced by `SerialTransportDependencyGuardTest` |
 | `iec60870-tcp` | `iec60870-transport-tcp`, `iec60870-cs104`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **TCP assembly module** (the sole TCP point of convergence); hosts the `TcpIec104*`/`TcpIec101*` builders, which call `Cs104Binding`/`Cs101Binding` over the Netty octet transport |
 | `iec60870-serial` | `iec60870-transport-serial`, `iec60870-cs101`, `iec60870-application`, `iec60870-core`, `org.jspecify:jspecify`, `org.slf4j:slf4j-api` | the **serial assembly module** (the sole serial point of convergence); hosts the `SerialIec101*` builders, which call `Cs101Binding` over the serial octet transport |
@@ -261,9 +262,8 @@ core-only mirrors the octet-classes-stay-core-only rule and means it can never b
 `cs104`/`cs101`/`application`/transport type to leak across module boundaries. It is never published
 (its deploy, sign, and install steps are skipped).
 
-Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`,
-`netty-channel-fsm` `1.0.x`, SLF4J `2.0.x`). The `netty-channel-fsm` dependency excludes
-`netty-handler` and `slf4j-api` so the module's own pinned versions win.
+Versions are centralized in the parent POM (Netty `4.1.x`, jOOU `0.9.x`, JSpecify `1.0.0`, SLF4J
+`2.0.x`).
 
 ## jOOU and JSpecify conventions
 

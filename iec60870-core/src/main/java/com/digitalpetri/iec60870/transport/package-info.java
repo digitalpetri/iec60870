@@ -9,13 +9,13 @@
  * com.digitalpetri.iec60870.transport.ServerTransport} accepts inbound connections and surfaces
  * each one as a {@link com.digitalpetri.iec60870.transport.ServerTransportConnection}, and a {@link
  * com.digitalpetri.iec60870.transport.TransportListener} receives one inbound frame per callback
- * plus connection-loss notifications. A client transport also separates intentional shutdown
- * ({@link com.digitalpetri.iec60870.transport.ClientTransport#disconnect()}) from closing only the
- * current connection ({@link
- * com.digitalpetri.iec60870.transport.ClientTransport#closeConnection()}) so persistent
- * implementations can reconnect after protocol bindings drop a bad wire connection. Translating a
- * frame to and from a protocol data unit (a 104 {@code Apdu}, a future 101 link frame) is the job
- * of the protocol layer above this SPI, not of the transport.
+ * plus connection-loss notifications. A client transport makes one connection attempt per {@link
+ * com.digitalpetri.iec60870.transport.ClientTransport#connect()} and never redials on its own;
+ * closing the current connection leaves it usable, and only {@link
+ * com.digitalpetri.iec60870.transport.ClientTransport#close()} ends it. Reconnecting is the job of
+ * the client facade above the transport. Translating a frame to and from a protocol data unit (a
+ * 104 {@code Apdu}, a future 101 link frame) is the job of the protocol layer above this SPI, not
+ * of the transport.
  *
  * <h2>Runtime boundaries</h2>
  *

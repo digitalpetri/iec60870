@@ -228,9 +228,9 @@ class ProtocolErrorFrameIntegrationTest {
    * outcome the Netty pipeline's {@code exceptionCaught} net produces, now reproduced on every
    * transport.
    *
-   * <p>On the in-JVM fault transport the client-role close handle tears down the current pair but
-   * does not model reconnection; the production Netty transport uses the same close-current-channel
-   * hook while leaving its persistent FSM free to reconnect.
+   * <p>On the in-JVM fault transport the client-role close handle tears down the current pair; the
+   * production Netty transport uses the same close-current-channel hook, and in both cases the
+   * client facade decides whether to reconnect.
    */
   @Test
   void garbledInboundWholeFrameDecodeFailureDropsConnectionCleanly() {

@@ -115,8 +115,13 @@ class ClientEventFlowControlTest {
     drain();
     assertEquals(50, count(ClientEvent.AsduReceived.class));
     assertEquals(50, count(ClientEvent.PointUpdated.class));
-    ClientEvent last = received.get(received.size() - 1);
-    assertEquals(cause, assertInstanceOf(ClientEvent.ConnectionClosed.class, last).cause());
+    // The close follows every data event, then the default policy schedules a reconnect.
+    int size = received.size();
+    assertInstanceOf(ClientEvent.DataTransferStopped.class, received.get(size - 3));
+    ClientEvent closed = received.get(size - 2);
+    assertEquals(cause, assertInstanceOf(ClientEvent.ConnectionClosed.class, closed).cause());
+    ClientEvent scheduled = received.get(size - 1);
+    assertEquals(cause, assertInstanceOf(ClientEvent.ReconnectScheduled.class, scheduled).cause());
   }
 
   @Test
@@ -145,7 +150,7 @@ class ClientEventFlowControlTest {
     assertTrue(session().isClosed(), "the client closes the session at the hard capacity");
     // ASDUs that arrive while the close is in progress are discarded, not delivered with a gap.
     session().deliverAsdu(measured(delivered));
-    assertEquals(1, transport.closeConnectionCount());
+    assertEquals(1, transport.disconnectCount());
     assertTrue(session().inboundPauses().contains(true));
 
     drain();
@@ -160,10 +165,11 @@ class ClientEventFlowControlTest {
     for (int i = 0; i < updates.size(); i++) {
       assertEquals((short) i, updates.get(i).value().value());
     }
-    ClientEvent last = received.get(received.size() - 1);
+    ClientEvent closed = received.get(received.size() - 2);
     assertInstanceOf(
         EventBacklogExceededException.class,
-        assertInstanceOf(ClientEvent.ConnectionClosed.class, last).cause());
+        assertInstanceOf(ClientEvent.ConnectionClosed.class, closed).cause());
+    assertInstanceOf(ClientEvent.ReconnectScheduled.class, received.get(received.size() - 1));
   }
 
   @Test

@@ -18,8 +18,9 @@ import org.jspecify.annotations.Nullable;
  * APCI flow-control parameters, the originator address, an optional point catalog, whether to start
  * data transfer automatically on connect, the request and command timeouts, the bound on the
  * objects a single interrogation will accumulate, the executor that delivers events and completes
- * blocking calls, and the event backlog at which the client pauses inbound data. Transport concerns
- * (host, port, TLS) are configured on the transport, not here.
+ * blocking calls, the event backlog at which the client pauses inbound data, and the policy that
+ * reconnects after a loss. Transport concerns (host, port, TLS) are configured on the transport,
+ * not here.
  *
  * <p>Build a configuration with the {@linkplain #builder() builder}; unset fields take sensible
  * defaults:
@@ -36,8 +37,8 @@ import org.jspecify.annotations.Nullable;
  *     for a 104 session).
  * @param originatorAddress the originator address placed in control-direction ASDUs.
  * @param pointCatalog the optional point catalog describing known points, or {@code null} if none.
- * @param startDataTransferOnConnect whether {@link Iec60870Client#connect()} also starts data
- *     transfer.
+ * @param startDataTransferOnConnect whether every connection the client establishes, including
+ *     automatic reconnects, also starts data transfer.
  * @param commandTimeout the maximum time to await a command confirmation.
  * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
  * @param maxInterrogationResponseObjects the bound on the number of information objects a single
@@ -45,6 +46,7 @@ import org.jspecify.annotations.Nullable;
  * @param callbackExecutor the executor used to deliver events and complete blocking calls.
  * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at which
  *     the client pauses inbound data.
+ * @param reconnectPolicy when the client reconnects after a lost connection or a failed attempt.
  */
 public record ClientConfig(
     ProtocolProfile protocolProfile,
@@ -56,7 +58,8 @@ public record ClientConfig(
     Duration requestTimeout,
     int maxInterrogationResponseObjects,
     Executor callbackExecutor,
-    int eventBacklogLimit) {
+    int eventBacklogLimit,
+    ReconnectPolicy reconnectPolicy) {
 
   /**
    * Validates the components.
@@ -67,8 +70,8 @@ public record ClientConfig(
    * @param originatorAddress the originator address placed in control-direction ASDUs.
    * @param pointCatalog the optional point catalog describing known points, or {@code null} if
    *     none.
-   * @param startDataTransferOnConnect whether {@link Iec60870Client#connect()} also starts data
-   *     transfer.
+   * @param startDataTransferOnConnect whether every connection the client establishes, including
+   *     automatic reconnects, also starts data transfer.
    * @param commandTimeout the maximum time to await a command confirmation.
    * @param requestTimeout the maximum time to await an interrogation, read, or clock-sync response.
    * @param maxInterrogationResponseObjects the bound on the number of information objects a single
@@ -76,6 +79,7 @@ public record ClientConfig(
    * @param callbackExecutor the executor used to deliver events and complete blocking calls.
    * @param eventBacklogLimit the number of undelivered events behind the slowest subscriber at
    *     which the client pauses inbound data.
+   * @param reconnectPolicy when the client reconnects after a lost connection or a failed attempt.
    * @throws NullPointerException if any non-nullable component is null.
    * @throws IllegalArgumentException if {@code commandTimeout} or {@code requestTimeout} is zero or
    *     negative, {@code maxInterrogationResponseObjects} is negative, or {@code eventBacklogLimit}
@@ -87,6 +91,7 @@ public record ClientConfig(
     Objects.requireNonNull(commandTimeout, "commandTimeout");
     Objects.requireNonNull(requestTimeout, "requestTimeout");
     Objects.requireNonNull(callbackExecutor, "callbackExecutor");
+    Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
     requirePositive(commandTimeout, "commandTimeout");
     requirePositive(requestTimeout, "requestTimeout");
     if (maxInterrogationResponseObjects < 0) {
@@ -148,6 +153,7 @@ public record ClientConfig(
     private int maxInterrogationResponseObjects = 1_000_000;
     private Executor callbackExecutor = ForkJoinPool.commonPool();
     private int eventBacklogLimit = DEFAULT_EVENT_BACKLOG_LIMIT;
+    private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
 
     private Builder() {}
 
@@ -197,8 +203,12 @@ public record ClientConfig(
     }
 
     /**
-     * Sets whether {@link Iec60870Client#connect()} also starts data transfer. Defaults to {@code
-     * true}.
+     * Sets whether every connection the client establishes, through {@link
+     * Iec60870Client#connect()} or an automatic reconnect, also starts data transfer. Defaults to
+     * {@code true}.
+     *
+     * <p>A standby link in a redundancy group sets this to {@code false} and calls {@link
+     * Iec60870Client#startDataTransfer()} once it is chosen to carry data.
      *
      * @param startDataTransferOnConnect whether to start data transfer on connect.
      * @return this builder.
@@ -296,6 +306,22 @@ public record ClientConfig(
     }
 
     /**
+     * Sets when the client reconnects after a lost connection or a failed attempt. Defaults to
+     * {@link ReconnectPolicy#defaults()}.
+     *
+     * <p>Every automatic attempt runs the same initialization as {@link Iec60870Client#connect()},
+     * including {@code STARTDT} when {@link #startDataTransferOnConnect(boolean)} is set. Use
+     * {@link ReconnectPolicy#disabled()} to leave reconnecting to the application.
+     *
+     * @param reconnectPolicy the reconnect policy.
+     * @return this builder.
+     */
+    public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+      this.reconnectPolicy = Objects.requireNonNull(reconnectPolicy, "reconnectPolicy");
+      return this;
+    }
+
+    /**
      * Builds an immutable {@link ClientConfig} from the current builder state.
      *
      * @return the configuration.
@@ -313,7 +339,8 @@ public record ClientConfig(
           requestTimeout,
           maxInterrogationResponseObjects,
           callbackExecutor,
-          eventBacklogLimit);
+          eventBacklogLimit,
+          reconnectPolicy);
     }
   }
 }

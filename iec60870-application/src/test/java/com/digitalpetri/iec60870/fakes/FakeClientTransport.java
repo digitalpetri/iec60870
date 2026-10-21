@@ -10,20 +10,23 @@ import org.jspecify.annotations.Nullable;
 /**
  * A neutral in-memory {@link ClientTransport} for client facade unit tests.
  *
- * <p>The facade now drives only the transport's connection lifecycle ({@code connect}/{@code
- * disconnect}/{@code isConnected}); inbound frames and connection loss reach the facade through the
- * injected {@link com.digitalpetri.iec60870.session.Session}, so {@link #send(ByteBuf)} and {@link
- * #setListener} are inert here. This fake carries no wire-frame logic.
+ * <p>The facade drives only the transport's connection lifecycle ({@code connect}/{@code
+ * disconnect}/{@code close}/{@code isConnected}); inbound frames and connection loss reach the
+ * facade through the injected {@link com.digitalpetri.iec60870.session.Session}, so {@link
+ * #send(ByteBuf)} and {@link #setListener} are inert here. This fake carries no wire-frame logic.
  */
 public final class FakeClientTransport implements ClientTransport {
 
   private boolean connected;
+  private int connectCount;
   private int disconnectCount;
+  private int closeCount;
   private int closeConnectionCount;
   private @Nullable Throwable connectFailure;
 
   @Override
   public CompletionStage<Void> connect() {
+    connectCount++;
     Throwable failure = connectFailure;
     if (failure != null) {
       return CompletableFuture.failedFuture(failure);
@@ -46,6 +49,12 @@ public final class FakeClientTransport implements ClientTransport {
   }
 
   @Override
+  public void close() {
+    connected = false;
+    closeCount++;
+  }
+
+  @Override
   public boolean isConnected() {
     return connected;
   }
@@ -65,16 +74,32 @@ public final class FakeClientTransport implements ClientTransport {
   /**
    * Makes the next and subsequent {@link #connect()} calls fail with the given cause.
    *
-   * @param cause the failure to report from {@code connect()}.
+   * @param cause the failure to report from {@code connect()}, or {@code null} to let them succeed.
    */
-  public void failConnect(Throwable cause) {
+  public void failConnect(@Nullable Throwable cause) {
     this.connectFailure = cause;
   }
 
   /**
-   * Returns how many times {@link #disconnect()} has been invoked, letting tests assert that a
-   * transport-level connection loss does not trigger an explicit disconnect (which would stop a
-   * persistent transport's auto-reconnect).
+   * Returns how many times {@link #connect()} has been invoked.
+   *
+   * @return the {@code connect()} invocation count.
+   */
+  public int connectCount() {
+    return connectCount;
+  }
+
+  /**
+   * Returns how many times {@link #close()} has been invoked.
+   *
+   * @return the {@code close()} invocation count.
+   */
+  public int closeCount() {
+    return closeCount;
+  }
+
+  /**
+   * Returns how many times {@link #disconnect()} has been invoked.
    *
    * @return the {@code disconnect()} invocation count.
    */

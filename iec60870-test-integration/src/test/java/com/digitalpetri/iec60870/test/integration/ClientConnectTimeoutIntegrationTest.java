@@ -1,13 +1,19 @@
 package com.digitalpetri.iec60870.test.integration;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.digitalpetri.iec60870.ConnectionClosedException;
 import com.digitalpetri.iec60870.address.CommonAddress;
 import com.digitalpetri.iec60870.address.PointAddress;
 import com.digitalpetri.iec60870.client.ClientEvent;
+import com.digitalpetri.iec60870.client.ConnectionState;
 import com.digitalpetri.iec60870.client.Iec60870Client;
+import com.digitalpetri.iec60870.client.ReconnectPolicy;
 import com.digitalpetri.iec60870.cs104.ApciSettings;
 import com.digitalpetri.iec60870.point.PointCapability;
 import com.digitalpetri.iec60870.point.PointType;
@@ -22,6 +28,7 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.joou.UShort;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -29,27 +36,15 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Real-Netty integration test for the connect-establishment path of {@link TcpIec104Client}: a
- * failed initial connect must surface as an exceptionally-completed {@code connectAsync()} future,
- * and the persistent {@code ChannelFsm} must keep retrying on its own so that a server appearing
- * later on the same port is picked up without any further {@code connect()} call.
+ * failed initial connect fails the {@code connect()} call with a typed exception that carries the
+ * transport's cause, and the client then keeps retrying per its {@link ReconnectPolicy}, so a
+ * server appearing later on the same port is picked up without any further {@code connect()} call.
  *
  * <p>The client's {@code t0} (connection-establishment timeout) is wired straight through to
- * Netty's {@code CONNECT_TIMEOUT_MILLIS}, so a short {@code t0} bounds the connect attempt
- * deterministically.
- *
- * <p>SCOPED-DOWN, deliberately: this asserts the OUTCOMES that hold regardless of whether the OS
- * surfaces a true SYN-drop timeout ({@code ConnectTimeoutException}) or an immediate
- * connection-refused ({@code ConnectException}) — namely that the connect did NOT succeed and that
- * the persistent FSM stays in its retry loop. Asserting specifically on {@code
- * ConnectTimeoutException} would require a filled-accept-backlog trick whose queue depth and
- * drop-vs-reset behavior are kernel-tunable, hence environment-fragile; that variant is
- * intentionally omitted. The retry loop is proven the strongest, non-fragile way: a real server is
- * started on the same port and the FSM auto-connects with no extra {@code connect()} call.
- *
- * <p>NON-FLAKY discipline: assertions are on the connect future failing and on
- * event/connection-state outcomes, never on durations. The only timing element is the
- * netty-channel-fsm reconnect backoff (~1s first retry, not tunable through any public knob), which
- * is absorbed by a generous bounded wait, exactly as {@link ReconnectIntegrationTest} does.
+ * Netty's {@code CONNECT_TIMEOUT_MILLIS}, so a short {@code t0} bounds each attempt. The test does
+ * not depend on whether the OS reports a refused port or a timeout; it asserts that the connect
+ * failed, that retries were scheduled, and that the client connects on its own once the server is
+ * up.
  */
 class ClientConnectTimeoutIntegrationTest {
 
@@ -62,11 +57,7 @@ class ClientConnectTimeoutIntegrationTest {
    */
   private static final Duration SHORT_T0 = Duration.ofMillis(300);
 
-  /**
-   * Generous deadline for the persistent FSM to retry and pick up the server that appears on the
-   * port after the initial failure. The first reconnect fires after ~1s (fixed backoff, not
-   * shortenable via any public knob), so this is well above {@link Await#DEFAULT_TIMEOUT}.
-   */
+  /** Generous deadline for the retries to pick up the server that appears after the failure. */
   private static final Duration RETRY_TIMEOUT = Duration.ofSeconds(20);
 
   private @Nullable Iec60870Server server;
@@ -83,8 +74,7 @@ class ClientConnectTimeoutIntegrationTest {
   }
 
   @Test
-  void failedConnectFailsTheFutureThenThePersistentFsmRetriesUntilTheServerAppears()
-      throws Exception {
+  void failedConnectFailsTheCallThenTheClientRetriesUntilTheServerAppears() throws Exception {
     // Reserve a port and leave NOTHING listening on it, so the first connect cannot succeed.
     int port = reserveEphemeralPort();
 
@@ -93,8 +83,6 @@ class ClientConnectTimeoutIntegrationTest {
         TcpIec104Client.builder()
             .host("127.0.0.1")
             .port(port)
-            // Short t0 -> short CONNECT_TIMEOUT_MILLIS bounds a SYN-timeout if the OS drops;
-            // a refused port fails even faster. Either way the connect attempt resolves promptly.
             .apci(
                 new ApciSettings(
                     UShort.valueOf(12),
@@ -104,58 +92,56 @@ class ClientConnectTimeoutIntegrationTest {
                     Duration.ofSeconds(10),
                     Duration.ofSeconds(20)))
             .startDataTransferOnConnect(true)
+            .reconnectPolicy(
+                ReconnectPolicy.exponentialBackoff(Duration.ofMillis(100), Duration.ofMillis(500)))
             .build();
     this.client = client;
     client.events().subscribe(events);
 
-    // 1. The initial connect must FAIL (the handleConnectFailureEvent path completes the first
-    // connect() future exceptionally). We do not assert the concrete exception type because
-    // refused-vs-timeout is OS-dependent; we assert only that the future completed exceptionally.
+    // 1. The initial connect fails promptly with a typed exception carrying the transport cause.
     ExecutionException failure =
         assertThrows(
             ExecutionException.class,
-            () ->
-                client
-                    .connectAsync()
-                    .toCompletableFuture()
-                    // Bound a little over t0 to absorb scheduling jitter; the connect itself is
-                    // capped by CONNECT_TIMEOUT_MILLIS, so timing out here would indicate a hang.
-                    .get(10, TimeUnit.SECONDS),
+            () -> client.connectAsync().toCompletableFuture().get(10, TimeUnit.SECONDS),
             "the initial connect to a dead port must fail exceptionally");
-    // Sanity: a cause is present (the connect failure) and the client is not connected.
-    org.junit.jupiter.api.Assertions.assertNotNull(
-        failure.getCause(), "the connect failure should carry a cause");
+    assertInstanceOf(ConnectionClosedException.class, failure.getCause());
+    assertNotNull(failure.getCause().getCause(), "the transport's failure is the cause");
     assertFalse(client.isConnected(), "client must not be connected after a failed connect");
 
-    // 2. THE load-bearing retry proof. Without calling connect() again, bring up a real server on
-    // the SAME port. The persistent, non-lazy ChannelFsm must, on its own, transition
-    // ReconnectWait -> Reconnecting -> Connected and re-establish the TCP socket. isConnected()
-    // reflects FSM State.Connected, so flipping to true with NO further connect() call is direct
-    // evidence the failed connect left the FSM in its retry loop. (The IEC session/ConnectionOpened
-    // is only re-armed by an explicit connect(), exercised in step 3; a pure FSM reconnect does not
-    // by itself publish ConnectionOpened.) If the FSM had parked instead of retrying, isConnected()
-    // would stay false forever and this await would time out.
+    // 2. The client schedules retries on its own, each announced with its attempt and cause.
+    awaitWithin(
+        "ReconnectScheduled events for the failed attempts",
+        () -> events.hasMatch(ClientEvent.ReconnectScheduled.class, r -> r.attempt() >= 2),
+        RETRY_TIMEOUT);
+    assertTrue(
+        events.hasMatch(
+            ClientEvent.ReconnectScheduled.class,
+            r -> r.attempt() == 1 && r.cause() instanceof ConnectionClosedException),
+        "the first scheduled attempt reports the failure of the first connect");
+    assertNoConnectionClosedBeforeAnOpen(events);
+
+    // 3. THE load-bearing retry proof. Without calling connect() again, bring up a real server on
+    // the SAME port. The client must connect on its own, arm the session, and run STARTDT.
     startServer(port);
 
     awaitWithin(
-        "persistent FSM auto-reconnected the TCP socket to the late-arriving server (isConnected) "
-            + "without an explicit connect() — proves the failed connect left it in its retry loop",
-        client::isConnected,
+        "ConnectionOpened after the server appears, with no further connect()",
+        () -> events.hasAny(ClientEvent.ConnectionOpened.class),
         RETRY_TIMEOUT);
+    awaitWithin(
+        "DataTransferStarted on the retried connection (STARTDT ran)",
+        () -> events.hasAny(ClientEvent.DataTransferStarted.class),
+        Await.DEFAULT_TIMEOUT);
+    awaitWithin("client reports connected", client::isConnected, Await.DEFAULT_TIMEOUT);
+    assertEquals(ConnectionState.CONNECTED, client.connectionState());
+    assertTrue(client.interrogate(STATION).terminated());
+  }
 
-    // 3. Now that the FSM has the socket back, an explicit connect() reuses the auto-reconnected
-    // channel (the FSM is already Connected) and arms the IEC session over it: a successful STARTDT
-    // proves the retried socket is fully usable end to end.
-    client.connect();
-    awaitWithin(
-        "ConnectionOpened after the session is armed on the FSM-reconnected socket",
-        () -> count(events, ClientEvent.ConnectionOpened.class) >= 1,
-        Await.DEFAULT_TIMEOUT);
-    awaitWithin(
-        "DataTransferStarted on the FSM-reconnected socket (STARTDT ran)",
-        () -> count(events, ClientEvent.DataTransferStarted.class) >= 1,
-        Await.DEFAULT_TIMEOUT);
-    assertTrue(client.isConnected(), "client should be connected after the session is armed");
+  /** A failed attempt never opened a connection, so it must not publish ConnectionClosed. */
+  private static void assertNoConnectionClosedBeforeAnOpen(EventCollector events) {
+    assertFalse(
+        events.hasAny(ClientEvent.ConnectionClosed.class),
+        "failed attempts publish ReconnectScheduled, not ConnectionClosed");
   }
 
   private void startServer(int port) {
@@ -173,12 +159,7 @@ class ClientConnectTimeoutIntegrationTest {
     server.start();
   }
 
-  private static int count(EventCollector events, Class<? extends ClientEvent> type) {
-    return (int) events.events().stream().filter(type::isInstance).count();
-  }
-
-  private static void awaitWithin(
-      String description, java.util.function.BooleanSupplier condition, Duration timeout) {
+  private static void awaitWithin(String description, BooleanSupplier condition, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
       if (condition.getAsBoolean()) {

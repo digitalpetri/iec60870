@@ -565,7 +565,8 @@ class DefaultIec60870ClientTest {
           assertThrows(
               CompletionException.class,
               () -> failingClient.connectAsync().toCompletableFuture().join());
-      assertInstanceOf(IOException.class, ex.getCause());
+      var failure = assertInstanceOf(ConnectionClosedException.class, ex.getCause());
+      assertInstanceOf(IOException.class, failure.getCause());
       assertFalse(failingClient.isConnected());
     }
   }
@@ -845,24 +846,18 @@ class DefaultIec60870ClientTest {
   }
 
   @Test
-  void transportLossDoesNotDisconnectButProtocolErrorCloseDoes() {
-    // A transport-level connection loss (peer drop, send failure) must NOT call
-    // transport.disconnect: doing so would fire Event.Disconnect on the persistent ChannelFsm and
-    // stop its auto-reconnect.
+  void transportLossAndProtocolSelfCloseBothCloseTheConnectionAndReconnect() {
+    // A transport-level loss (peer drop, send failure) and a protocol self-close (t1 expiry, bad
+    // N(R)) end the current connection the same way: the transport connection is closed, and the
+    // client waits to reconnect under the default policy.
     client.connect();
     assertEquals(0, transport.disconnectCount());
 
     session().fireConnectionLost(null);
-    assertEquals(
-        0,
-        transport.disconnectCount(),
-        "a transport-level connection loss must not disconnect the (reconnecting) transport");
-    assertTrue(
-        transport.isConnected(),
-        "the transport is left connected so a persistent transport can auto-reconnect");
+    assertEquals(1, transport.disconnectCount(), "a lost connection is closed");
+    assertEquals(ConnectionState.RECONNECT_WAIT, client.connectionState());
+    assertFalse(client.isConnected());
 
-    // A self-initiated protocol-error/timeout close, by contrast, must tear the transport down so a
-    // persistent transport stops reconnecting.
     FakeClientTransport errorTransport = new FakeClientTransport();
     AtomicReference<@Nullable FakeSession> errorSession = new AtomicReference<>();
     try (DefaultIec60870Client errorClient =
@@ -871,9 +866,8 @@ class DefaultIec60870ClientTest {
       assertEquals(0, errorTransport.disconnectCount());
       requireNonNull(errorSession.get()).fireClosed(new SequenceNumberException("protocol error"));
       assertEquals(
-          1,
-          errorTransport.disconnectCount(),
-          "a protocol-error self-close must disconnect the transport to stop reconnection");
+          1, errorTransport.disconnectCount(), "a protocol self-close closes the connection");
+      assertEquals(ConnectionState.RECONNECT_WAIT, errorClient.connectionState());
     }
   }
 

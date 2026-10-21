@@ -82,20 +82,21 @@ targets Java 17, so the body snippets here use `instanceof` chains, matching `Cl
 
 | Event | Fires when | Typical use |
 |---|---|---|
-| `ConnectionOpened` | the TCP/TLS transport connection is established | log "link up" |
+| `ConnectionOpened` | a connection is established and its session reset, by `connect()` or an automatic reconnect | log "link up", re-interrogate |
 | `DataTransferStarted` | the [STARTDT](../reference/glossary.md) handshake completed; user data may now flow | enable polling/UI |
 | `PointUpdated` | once per information object of a received [monitor ASDU](../reference/glossary.md) | update your value cache |
 | `AsduReceived` | once for *every* received [ASDU](../reference/glossary.md) that decodes | inspect raw or unmodeled frames |
 | `UndecodableAsdu` | a received ASDU could not be decoded (private TypeID or cause, `F_*` type, bad objects); the connection stays open | log the raw octets; see [Work with raw ASDUs](./work-with-raw-asdus.md#receive-an-undecodable-asdu) |
 | `NegativeConfirmation` | the peer sent a negative confirmation not tied to a pending blocking call | log/audit a stray rejection |
 | `ProtocolWarning` | the client hit a recoverable protocol anomaly (no disconnect) | diagnostics/logging |
-| `DataTransferStopped` | the [STOPDT](../reference/glossary.md) handshake completed; user data paused | pause polling/UI |
-| `ConnectionClosed` | the connection closed or was lost | reconnect or shut down (see below) |
+| `DataTransferStopped` | the [STOPDT](../reference/glossary.md) handshake completed, or a started connection closed; user data paused | pause polling/UI |
+| `ConnectionClosed` | the connection closed or was lost | log "link down" (see below) |
+| `ReconnectScheduled` | the client scheduled an automatic connection attempt | log the attempt and its cause |
 
 > **`ConnectionOpened` vs `DataTransferStarted`** — `ConnectionOpened` means the transport is up;
 > `DataTransferStarted` means STARTDT finished and user data may flow. With
-> `startDataTransferOnConnect(true)` (the default) both fire around `connect()`, but they remain two
-> distinct events.
+> `startDataTransferOnConnect(true)` (the default) both fire for every connection the client opens,
+> including automatic reconnects, but they remain two distinct events.
 
 > **`PointUpdated` vs `AsduReceived`** — `PointUpdated` fires once *per information object* of a
 > received monitor ASDU (point level); `AsduReceived` fires once for *every* received ASDU (ASDU
@@ -110,32 +111,50 @@ targets Java 17, so the body snippets here use `instanceof` chains, matching `Cl
 
 ## Connection-state changes
 
-The lifecycle of a client connection is a quartet of events:
+Each connection the client opens produces this sequence of events:
 
 ```
 ConnectionOpened → DataTransferStarted → … → DataTransferStopped → ConnectionClosed
 ```
 
-`ConnectionClosed` carries `causeOptional()` (an `Optional<Throwable>`) that distinguishes an
-orderly close from a fault: an empty optional is an orderly local close (typically after
-`client.close()`); a present throwable is a fault. The client does **not** auto-reconnect — branch on
-the cause and rebuild or reconnect yourself:
+`DataTransferStopped` appears when a STOPDT completes or when a connection on which data transfer
+was started closes. `ConnectionClosed` carries `causeOptional()`. An empty optional means your
+application closed the connection with `client.disconnect()` or `client.close()`. Any other close,
+including a peer that closed the connection normally, carries a cause.
+
+**The client reconnects on its own.** After a lost connection, a protocol failure such as a `t1`
+timeout, or a failed connection attempt, it waits for the delay its `ReconnectPolicy` gives,
+publishes `ReconnectScheduled(attempt, delay, cause)`, and dials again. Each new connection resets
+the session, runs STARTDT when `startDataTransferOnConnect` is set, and publishes `ConnectionOpened`
+and `DataTransferStarted` again, with no call from you. Requests in flight when the connection was
+lost fail with `ConnectionClosedException` and are not replayed. A good reaction to
+`ConnectionOpened` is to re-interrogate so your image is fresh:
 
 ```java
-} else if (event instanceof ClientEvent.ConnectionClosed closed) {
-  if (closed.causeOptional().isPresent()) {
-    // Connection dropped on a fault — schedule a reconnect.
-    // Do the actual reconnect off this thread if it blocks (see Threading rules).
-  } else {
-    // Orderly local close — typically after client.close(); nothing to do.
-  }
+} else if (event instanceof ClientEvent.ConnectionOpened) {
+  // A new connection; values from the previous one may be stale. Interrogate off this thread.
+  executor.execute(() -> client.interrogate(station));
+} else if (event instanceof ClientEvent.ReconnectScheduled scheduled) {
+  log.warn("reconnect attempt {} in {}: {}",
+      scheduled.attempt(), scheduled.delay(), scheduled.cause().toString());
 }
 ```
 
-> **No built-in auto-reconnect.** The client facade exposes only `connect()` and `close()` — there
-> is no retry policy. To reconnect, call `client.connect()` again, or rebuild the client with
-> `TcpIec104Client.builder()…build()`. The STARTDT/STOPDT internals behind these events are described
-> in [APCI and timers](../../architecture/apci-and-timers.md).
+The default policy waits 1 s, then doubles the delay up to 32 s, and starts over after a connection
+is established. Choose different bounds, or turn reconnecting off and drive it yourself:
+
+```java
+TcpIec104Client.builder()
+    .reconnectPolicy(ReconnectPolicy.exponentialBackoff(Duration.ofMillis(500), Duration.ofSeconds(10)))
+    // or .reconnectPolicy(ReconnectPolicy.disabled())
+    .build();
+```
+
+`client.connectionState()` reports `DISCONNECTED`, `CONNECTING`, `CONNECTED`, `RECONNECT_WAIT`, or
+`CLOSED`, and `isConnected()` is `true` only while the session is up on a live connection.
+`connect()` during `RECONNECT_WAIT` dials at once. `disconnect()` stops the client from retrying
+until the next `connect()`, and `close()` ends it for good. The STARTDT/STOPDT internals behind these
+events are described in [APCI and timers](../../architecture/apci-and-timers.md).
 
 ## Spontaneous and monitor data on the client
 
@@ -332,7 +351,8 @@ For the full ownership and serialization model, read
   your callbacks there.
 - **Events are fire-and-forget observation.** There is no acknowledgment; you cannot "answer" an
   event.
-- **The client does not auto-reconnect.** Rebuild or reconnect yourself from `ConnectionClosed`.
+- **The client reconnects on its own** per its `ReconnectPolicy`. Re-interrogate on
+  `ConnectionOpened`; use `ReconnectPolicy.disabled()` if you want to drive reconnects yourself.
 - **Command rejection is not an exception.** On the client it surfaces as
   `CommandResult.positive() == false`; on the server you return `CommandDecision.reject(...)`. See
   [Send commands](./send-commands.md) and the [error model](../reference/errors.md).

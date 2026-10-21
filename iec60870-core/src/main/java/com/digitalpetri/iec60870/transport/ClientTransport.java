@@ -6,28 +6,37 @@ import java.util.concurrent.CompletionStage;
 /**
  * An octet-shaped client connection to a single IEC 60870-5 peer.
  *
- * <p>A {@code ClientTransport} owns one outgoing connection. Callers establish it with {@link
- * #connect()}, exchange complete length-delimited frame {@link ByteBuf}s with {@link
- * #send(ByteBuf)} and a registered {@link TransportListener}, and tear it down with {@link
- * #disconnect()}. When a protocol binding has to drop only the current wire connection (for example
- * after a malformed inbound frame) it uses {@link #closeConnection()} instead. The transport
- * handles length framing, optional TLS, and channel lifecycle; it never exposes
+ * <p>A {@code ClientTransport} owns one outgoing connection at a time. Callers establish it with
+ * {@link #connect()}, exchange complete length-delimited frame {@link ByteBuf}s with {@link
+ * #send(ByteBuf)} and a registered {@link TransportListener}, and close it with {@link
+ * #disconnect()} or {@link #closeConnection()}. Both close only the current connection; a later
+ * {@code connect()} opens a new one. {@link #close()} ends the transport and releases what it owns.
+ * The transport handles length framing, optional TLS, and channel lifecycle; it never exposes
  * networking-framework types other than the {@link ByteBuf} that carries one whole frame.
+ *
+ * <p>A transport never reconnects on its own. Each {@code connect()} makes one attempt, and a lost
+ * connection stays closed until the next {@code connect()}. Retrying belongs to the caller.
  *
  * <p>Register a {@link TransportListener} with {@link #setListener(TransportListener)} before
  * connecting so no inbound frame is missed. Listener callbacks may be invoked on a transport I/O
- * thread and must not block.
+ * thread and must not block. The listener hears about the loss of a connection that the peer or the
+ * network closed; a connection closed through {@code disconnect()}, {@code closeConnection()}, or
+ * {@code close()} need not be reported.
  *
  * <p>Lifecycle methods are asynchronous and idempotent-friendly: the returned {@link
  * CompletionStage} completes when the requested transition has finished. Stages may complete on a
  * transport I/O thread, so dependent actions must not block.
  */
-public interface ClientTransport {
+public interface ClientTransport extends AutoCloseable {
 
   /**
-   * Establishes the connection to the configured peer.
+   * Makes one attempt to connect to the configured peer.
    *
-   * <p>When TLS is configured, the returned stage completes only after the handshake succeeds.
+   * <p>The attempt is bounded by the transport's connect timeout and, when TLS is configured, by
+   * the TLS handshake timeout; the returned stage completes only after the handshake succeeds. A
+   * failed attempt is not retried. Calling this while connected completes at once, and calling it
+   * while an attempt is in progress joins that attempt. After {@link #close()} the stage fails with
+   * a {@link com.digitalpetri.iec60870.ConnectionClosedException}.
    *
    * @return a stage that completes when the connection is established, or completes exceptionally
    *     if the connection attempt fails.
@@ -35,21 +44,35 @@ public interface ClientTransport {
   CompletionStage<Void> connect();
 
   /**
-   * Closes the connection to the peer.
+   * Closes the current connection and aborts an attempt in progress.
+   *
+   * <p>The transport stays usable: a later {@link #connect()} opens a new connection.
    *
    * @return a stage that completes when the connection has been closed.
    */
   CompletionStage<Void> disconnect();
 
   /**
-   * Closes only the current connection, without treating the close as an intentional transport
-   * shutdown.
+   * Closes the current connection without waiting for the close to finish.
    *
-   * <p>This differs from {@link #disconnect()}: persistent transports may reconnect after this
-   * close, and owned transport resources such as event loops remain available. The method is a
-   * no-op if there is no current connection.
+   * <p>Protocol bindings call this to drop a wire connection they can no longer trust, for example
+   * after a malformed inbound frame. Like {@link #disconnect()}, it leaves the transport usable.
+   * The method is a no-op if there is no current connection.
    */
   void closeConnection();
+
+  /**
+   * Closes the current connection and releases the resources the transport owns, such as a private
+   * event loop.
+   *
+   * <p>The transport cannot be connected again afterwards. This method is idempotent. The default
+   * only calls {@link #disconnect()}; an implementation must override this method to reject later
+   * {@link #connect()} calls and to release resources it owns.
+   */
+  @Override
+  default void close() {
+    disconnect();
+  }
 
   /**
    * Indicates whether the transport currently has an established connection.

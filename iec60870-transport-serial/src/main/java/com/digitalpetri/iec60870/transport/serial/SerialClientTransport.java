@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,9 +25,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Per the transport SPI, {@link #isConnected()} reflects whether the serial port is open, not
  * whether the FT1.2 link has been established; link availability is surfaced by the protocol layer
- * above. This transport is single-station and does not auto-reconnect: {@link #disconnect()} and
- * {@link #closeConnection()} both close the current port, and a subsequent {@link #connect()} opens
- * a fresh one.
+ * above. This transport is single-station and never reopens the port on its own: {@link
+ * #disconnect()} and {@link #closeConnection()} both close the current port, and a subsequent
+ * {@link #connect()} opens a fresh one. Only a port that fails or closes underneath the transport
+ * is reported to the listener as lost. {@link #close()} closes the port for good.
  */
 public final class SerialClientTransport implements ClientTransport {
 
@@ -37,6 +39,8 @@ public final class SerialClientTransport implements ClientTransport {
   private final SerialPortConfig config;
 
   private volatile @Nullable Ft12SerialChannel channel;
+
+  private volatile boolean closed;
 
   /**
    * Creates a client transport for the given serial port configuration.
@@ -49,6 +53,9 @@ public final class SerialClientTransport implements ClientTransport {
 
   @Override
   public CompletionStage<Void> connect() {
+    if (closed) {
+      return CompletableFuture.failedFuture(new ConnectionClosedException("transport closed"));
+    }
     // Defensively tear down any prior channel before replacing it. If the previous connection was
     // lost on the reader thread it already closed its own port; but an app that calls connect()
     // again from its loss handler, without an intervening disconnect(), must not leak the old
@@ -59,12 +66,23 @@ public final class SerialClientTransport implements ClientTransport {
       previous.close();
     }
 
-    Ft12SerialChannel newChannel = new Ft12SerialChannel(this::dispatchFrame, this::dispatchLoss);
+    // Report the loss of this port only while it is the current one, so a port closed through
+    // disconnect() or closeConnection() is not reported as lost.
+    AtomicReference<@Nullable Ft12SerialChannel> self = new AtomicReference<>();
+    Consumer<@Nullable Throwable> onLoss =
+        cause -> {
+          if (self.get() == channel) {
+            dispatchLoss(cause);
+          }
+        };
+    Ft12SerialChannel newChannel = new Ft12SerialChannel(this::dispatchFrame, onLoss);
+    self.set(newChannel);
     try {
-      newChannel.open(config);
       this.channel = newChannel;
+      newChannel.open(config);
       return CompletableFuture.completedFuture(null);
     } catch (IOException | RuntimeException e) {
+      this.channel = null;
       return CompletableFuture.failedFuture(e);
     }
   }
@@ -86,6 +104,17 @@ public final class SerialClientTransport implements ClientTransport {
     if (current != null) {
       current.close();
     }
+  }
+
+  /**
+   * Closes the current port; the transport cannot be connected again afterwards.
+   *
+   * <p>This method is idempotent.
+   */
+  @Override
+  public void close() {
+    closed = true;
+    disconnect();
   }
 
   @Override

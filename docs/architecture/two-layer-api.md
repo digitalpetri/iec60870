@@ -86,6 +86,8 @@ so the high-level layer itself never names a wire frame. See
 ```java
 public interface Iec60870Client extends AutoCloseable {
   void connect();                                   // + connectAsync()
+  void disconnect();                                // + disconnectAsync()
+  ConnectionState connectionState();
   void startDataTransfer(); void stopDataTransfer();// + *Async()
   Flow.Publisher<ClientEvent> events();
   InterrogationResult interrogate(CommonAddress station);
@@ -101,6 +103,49 @@ public interface Iec60870Client extends AutoCloseable {
 
 Blocking methods are the primary surface; each has an `*Async` variant returning a
 `CompletionStage`. The client is `AutoCloseable`.
+
+**Connection lifecycle.** The client facade owns reconnect; the transport dials once per request and
+never on its own. `connect()` starts a managed connection and returns once the first connection is
+established (and `STARTDT` confirmed, when `startDataTransferOnConnect` is set), or throws the first
+attempt's failure. After that, any unplanned loss — a peer FIN or RST, an I/O or send failure, a
+protocol self-close such as `t1` expiry or an invalid N(R), an unconfirmed `STARTDT`, or a failed
+attempt — ends the current connection. The client then fails pending requests with
+`ConnectionClosedException` (they are never replayed), closes the transport connection, and waits for
+the delay its `ReconnectPolicy` gives. Each attempt resets the session (V(S) and V(R) to zero), runs
+`STARTDT` when configured, and publishes the same events as `connect()`.
+
+`connectionState()` reports the lifecycle:
+
+```
+DISCONNECTED --connect()--> CONNECTING --established--> CONNECTED
+                                 ^   |                       |
+                     timer fires |   | attempt fails         | loss / self-close
+                                 |   v                       v
+                             RECONNECT_WAIT <----------------+
+any state --disconnect()--> DISCONNECTED        any state --close()--> CLOSED
+```
+
+With `ReconnectPolicy.disabled()` a loss or failed attempt goes to `DISCONNECTED` instead of
+`RECONNECT_WAIT`. `connect()` during `RECONNECT_WAIT` dials at once; during `CONNECTING` it joins the
+attempt in progress. `ReconnectPolicy.exponentialBackoff(initial, max)` doubles the delay from
+`initial` up to `max`, and an established connection resets it; the default is 1 s up to 32 s.
+`isConnected()` is `true` only in `CONNECTED` while the transport connection is open.
+
+The facade serializes the lifecycle through one operation queue that also runs session
+initialization, so a connection's closing events always follow its `ConnectionOpened` and precede the
+next connection's. A new attempt dials only after the previous connection's transport close has
+finished, which keeps late callbacks from the old socket away from the new session. The transport,
+for its part, reports a loss only for the connection it established and still holds; a connection
+closed through `disconnect()` or `closeConnection()` is not reported. A transport-owned Netty event
+loop group is shut down only by the client's `close()`.
+
+Lifecycle events follow the connection:
+`ConnectionOpened → DataTransferStarted → … → DataTransferStopped → ConnectionClosed`, then
+`ReconnectScheduled(attempt, delay, cause)` when the policy schedules an attempt. `ConnectionClosed`
+carries a cause for every unplanned close, including a peer that closed the connection normally;
+`disconnect()` and `close()` publish it with no cause, and `close()` does so before the event stream
+completes. A failed attempt that never opened a connection publishes only `ReconnectScheduled`. All
+of these events go through the lossless event stream's lifecycle reserve, so none is dropped.
 
 **Commands.** `client.commands()` returns a `CommandService`. A `Command` is a sealed domain type
 (`SingleCommandRequest`, `DoubleCommandRequest`, `RegulatingStepCommandRequest`, the three
@@ -144,8 +189,10 @@ entries, skipping non-monitor objects.
 
 **Events.** `events()` is a `Flow.Publisher<ClientEvent>`. `ClientEvent` is a sealed interface whose
 records cover the connection lifecycle and inbound data: `ConnectionOpened`, `ConnectionClosed`,
-`DataTransferStarted`/`Stopped`, `PointUpdated(address, value, asduType, cause, timestamp)`,
-`AsduReceived(asdu)`, `NegativeConfirmation(asdu, cause)`, and `ProtocolWarning(message)`. Every
+`ReconnectScheduled(attempt, delay, cause)`, `DataTransferStarted`/`Stopped`,
+`PointUpdated(address, value, asduType, cause, timestamp)`, `AsduReceived(asdu)`,
+`UndecodableAsdu(asdu, cause)`, `NegativeConfirmation(asdu, cause)`, and
+`ProtocolWarning(message)`. Every
 received monitor ASDU yields one `PointUpdated` per information object **and** an always-published
 `AsduReceived`, so a subscriber can work at the point level, the ASDU level, or both. Events are
 delivered serially — a subscriber never observes two events concurrently.
@@ -155,7 +202,7 @@ client.events().subscribe(subscriber);
 // inside Flow.Subscriber#onNext(ClientEvent event):
 switch (event) {
   case ClientEvent.PointUpdated u -> handle(u.address(), u.value());
-  case ClientEvent.ConnectionClosed c -> reconnect(c.cause());
+  case ClientEvent.ConnectionOpened o -> refreshImage();
   default -> {}
 }
 ```
