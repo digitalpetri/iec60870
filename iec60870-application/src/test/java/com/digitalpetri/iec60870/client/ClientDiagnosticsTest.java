@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
@@ -137,6 +138,38 @@ class ClientDiagnosticsTest {
     client.connect();
 
     client.disconnect();
+
+    assertEquals(List.of("closed null"), log);
+  }
+
+  @Test
+  void disconnectBeforeTheConnectStageCompletesStillReportsOneClose() {
+    DefaultIec60870Client client =
+        newClient(ReconnectPolicy.disabled(), ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT, true);
+    transport.holdNextConnect();
+    CompletableFuture<Void> connecting = client.connectAsync().toCompletableFuture();
+
+    // The transport has reported the connection; the disconnect lands before its stage completes.
+    client.disconnectAsync().toCompletableFuture().join();
+    assertEquals(List.of(), log, "the teardown cannot know the transport connected yet");
+    transport.heldConnect().complete(null);
+
+    assertEquals(List.of("closed null"), log);
+    assertTrue(connecting.isCompletedExceptionally());
+    client.close();
+    assertEquals(List.of("closed null"), log, "reported exactly once");
+  }
+
+  @Test
+  void disconnectAfterTheConnectStageCompletesReportsOneClose() {
+    DefaultIec60870Client client =
+        newClient(ReconnectPolicy.disabled(), ClientConfig.DEFAULT_EVENT_BACKLOG_LIMIT, true);
+    transport.holdNextConnect();
+    client.connectAsync();
+    transport.heldConnect().complete(null);
+
+    client.disconnectAsync().toCompletableFuture().join();
+    client.close();
 
     assertEquals(List.of("closed null"), log);
   }

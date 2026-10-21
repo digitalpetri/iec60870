@@ -304,7 +304,11 @@ public final class DefaultIec60870Client implements Iec60870Client {
     transportConnected
         .thenCompose(
             connected -> {
-              started.transportConnected = true;
+              // The transport reported the connection before completing; a teardown that ran in
+              // between found no transport connection, so the close is reported here instead.
+              if (started.markTransportConnected()) {
+                diagnostics.onConnectionClosed(started.teardownCause());
+              }
               return CompletableFuture.supplyAsync(
                       () -> initializeConnection(started), this::executeSessionOperation)
                   .thenCompose(stage -> stage);
@@ -457,7 +461,7 @@ public final class DefaultIec60870Client implements Iec60870Client {
    */
   private void publishClosed(@Nullable Connection ended, @Nullable Throwable cause) {
     session.close();
-    if (ended != null && ended.transportConnected) {
+    if (ended != null && ended.markTornDown(cause)) {
       diagnostics.onConnectionClosed(cause);
     }
     // The session is closed, so no data-transfer callback can race these events.
@@ -1953,14 +1957,63 @@ public final class DefaultIec60870Client implements Iec60870Client {
     /** The {@link #closed} stage of the connection or barrier before this one. */
     private final CompletableFuture<Void> predecessorClosed;
 
-    /** Set once the transport connected; a loss reported before this belongs to another one. */
+    /**
+     * Set once the transport connected; a loss reported before this belongs to another one. Written
+     * under this connection's monitor.
+     */
     private volatile boolean transportConnected;
+
+    /** Whether the teardown has run; guarded by this connection's monitor. */
+    private boolean tornDown;
+
+    /** The cause the teardown was given; guarded by this connection's monitor. */
+    private @Nullable Throwable teardownCause;
+
+    /** Whether onConnectionClosed was reported; guarded by this connection's monitor. */
+    private boolean closeReported;
 
     /** Set once ConnectionOpened was published; read and written on the operation queue. */
     private volatile boolean opened;
 
     private Connection(CompletableFuture<Void> predecessorClosed) {
       this.predecessorClosed = predecessorClosed;
+    }
+
+    /**
+     * Records that the transport connected.
+     *
+     * @return {@code true} if the teardown already ran and the caller must report the close, which
+     *     happens when a disconnect lands between the transport reporting the connection and
+     *     completing its connect stage.
+     */
+    private synchronized boolean markTransportConnected() {
+      transportConnected = true;
+      return tornDown && claimCloseReport();
+    }
+
+    /**
+     * Records that the teardown ran.
+     *
+     * @param cause the teardown's cause, or {@code null} for an application close.
+     * @return {@code true} if the transport connected and the caller must report the close.
+     */
+    private synchronized boolean markTornDown(@Nullable Throwable cause) {
+      tornDown = true;
+      teardownCause = cause;
+      return transportConnected && claimCloseReport();
+    }
+
+    private synchronized @Nullable Throwable teardownCause() {
+      return teardownCause;
+    }
+
+    // Monitor held. Every connection the transport reported gets exactly one close report.
+    private boolean claimCloseReport() {
+      if (closeReported) {
+        return false;
+      }
+      closeReported = true;
+      return true;
     }
 
     /**
