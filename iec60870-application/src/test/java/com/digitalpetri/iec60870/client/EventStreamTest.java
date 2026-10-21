@@ -238,6 +238,25 @@ class EventStreamTest {
   }
 
   @Test
+  void lateCancelOfAnOldSubscriptionKeepsTheNewOneTracked() {
+    var stream = new EventStream<Integer>(executor, 10, pauses::add);
+    var subscriber = new TestSubscriber(0);
+    stream.subscribe(subscriber);
+    drain();
+    Flow.Subscription old = requireNonNull(subscriber.subscription);
+    old.cancel();
+
+    stream.subscribe(subscriber);
+    drain();
+    old.cancel();
+
+    publish(stream, 10);
+    assertEquals(10, stream.maxBacklog(), "the new subscription still counts");
+    stream.afterInbound();
+    assertEquals(List.of(true), pauses);
+  }
+
+  @Test
   void closeCompletesAfterBufferedEvents() {
     var stream = new EventStream<Integer>(executor, 10, pauses::add);
     var subscriber = new TestSubscriber(Long.MAX_VALUE);

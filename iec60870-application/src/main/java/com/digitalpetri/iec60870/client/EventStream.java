@@ -277,7 +277,9 @@ final class EventStream<T> implements Flow.Publisher<T> {
   }
 
   private void remove(TrackedSubscriber subscriber) {
-    if (subscribers.remove(subscriber)) {
+    // By identity: a late signal from an old subscription must not untrack a newer subscription of
+    // the same subscriber, which compares equal.
+    if (subscribers.removeIf(tracked -> tracked == subscriber)) {
       maybeResume();
     }
   }
