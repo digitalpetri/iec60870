@@ -140,8 +140,10 @@ How `ApciSession` runs them:
   subsequent frame. On expiry, if any received frames are still unacknowledged, the session sends an
   S-frame. Sending any acknowledgement cancels it. This bounds acknowledgement latency below `t1`
   even when traffic does not reach the `w` threshold.
-- **`t3`** is a sliding idle timer: any sent or received frame re-arms it. On expiry — meaning the
-  connection has been silent — the session sends `TESTFR act` and arms `t1` to await `TESTFR con`. A
+- **`t3`** is a sliding idle timer: it is armed when the connection opens and re-armed by every frame
+  the session receives (I, S, or U), and by no frame it sends. A frame the session sends, such as the
+  S-frame `t2` produces, says nothing about whether the peer is alive. On expiry — meaning the peer
+  has been silent for `t3` — the session sends `TESTFR act` and arms `t1` to await `TESTFR con`. A
   received `TESTFR act` is answered immediately with `TESTFR con`; a received `TESTFR con` clears the
   outstanding test and cancels its `t1` deadline. Together `t3`+`TESTFR`+`t1` detect a dead peer on an
   otherwise idle link.

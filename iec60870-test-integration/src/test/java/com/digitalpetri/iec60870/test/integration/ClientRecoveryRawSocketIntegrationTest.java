@@ -19,6 +19,7 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -147,7 +148,14 @@ class ClientRecoveryRawSocketIntegrationTest {
         RawOutstation.readUFrame(booting, STARTDT_ACT);
         var failure = assertThrows(ExecutionException.class, () -> first.get(3, TimeUnit.SECONDS));
         assertInstanceOf(ProtocolTimeoutException.class, failure.getCause());
-        assertEquals(-1, booting.getInputStream().read(), "the client closed the connection");
+        // t3 runs from the connection's opening, and the STARTDT act sent then doesn't restart it,
+        // so
+        // with t3 equal to t1 a TESTFR act can precede the close. Read up to the end of the stream.
+        booting.setSoTimeout(3_000);
+        InputStream in = booting.getInputStream();
+        while (in.read() != -1) {
+          // Discard whatever the client sent before closing.
+        }
         assertEquals(ConnectionState.DISCONNECTED, client.connectionState());
 
         // Long enough for a private event loop group that was shut down to have terminated. With
