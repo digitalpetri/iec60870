@@ -383,7 +383,7 @@ public final class ApciSession implements Session {
       if (closed) {
         return;
       }
-      // Any received frame is activity: restart the idle timer.
+      // Any received frame shows the peer is alive: restart the idle timer. Sent frames don't.
       armT3();
 
       ControlField control = apdu.control();
@@ -954,10 +954,10 @@ public final class ApciSession implements Session {
       if (closed) {
         break;
       }
-      // Sending an I-frame piggybacks the acknowledgement of received frames.
+      // Sending an I-frame piggybacks the acknowledgement of received frames. Like every frame the
+      // session sends, it leaves t3 alone: only a received frame shows the peer is alive.
       onReceiveAcknowledged();
       sendSequenceNumber = increment(sendSequenceNumber);
-      armT3();
       entry.completeFrom(write);
     }
     if (!closed
@@ -972,7 +972,6 @@ public final class ApciSession implements Session {
   private void sendSupervisoryAck() {
     output.send(new Apdu(new ControlField.TypeS(receiveSequenceNumber), null));
     onReceiveAcknowledged();
-    armT3();
   }
 
   private void onReceiveAcknowledged() {
@@ -997,9 +996,6 @@ public final class ApciSession implements Session {
         timeout.cancel();
       }
       throw e;
-    }
-    if (!closed) {
-      armT3();
     }
   }
 

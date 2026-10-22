@@ -16,7 +16,8 @@ import org.joou.UShort;
  *   <li>{@code t0} — connection establishment timeout.
  *   <li>{@code t1} — timeout on sent frames awaiting acknowledgement.
  *   <li>{@code t2} — timeout for acknowledging received frames (must be shorter than {@code t1}).
- *   <li>{@code t3} — idle timeout after which a {@code TESTFR} frame is sent.
+ *   <li>{@code t3} — idle timeout after which a {@code TESTFR} frame is sent; it restarts on every
+ *       received frame and on no sent frame.
  * </ul>
  *
  * <p>Use {@link #defaults()} for the standard parameter set.

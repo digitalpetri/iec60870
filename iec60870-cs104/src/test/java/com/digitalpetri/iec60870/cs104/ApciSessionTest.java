@@ -290,6 +290,59 @@ class ApciSessionTest {
   }
 
   @Test
+  void t3RunsFromTheLastReceivedFrameThroughTheT2Acknowledgement() {
+    ApciSession session = newSession(ApciSession.Role.CLIENT);
+    session.onConnected();
+    startClientDataTransfer(session);
+    output.clear();
+
+    // One I-frame, fewer than w: t2 acknowledges it with an S-frame 10 s later.
+    session.onApdu(iFrame(0, asdu(1)));
+    scheduler.advance(T2_MILLIS, TimeUnit.MILLISECONDS);
+    assertEquals(1, output.sFrames().size());
+
+    // The S-frame doesn't restart t3, so TESTFR act follows t3 after the I-frame, not after it.
+    scheduler.advance(T3_MILLIS - T2_MILLIS - 1, TimeUnit.MILLISECONDS);
+    assertTrue(output.uFrames().isEmpty());
+    scheduler.advance(1, TimeUnit.MILLISECONDS);
+    assertEquals(List.of(UFunction.TESTFR_ACT), uFunctions());
+  }
+
+  @Test
+  void t3IgnoresSentIFramesAndTestFrameConfirmations() {
+    // t3 shorter than t1, so an unacknowledged I-frame can be sent within t3 without t1 expiring.
+    long t3 = 5_000;
+    var settings =
+        new ApciSettings(
+            SETTINGS.k(),
+            SETTINGS.w(),
+            SETTINGS.t0(),
+            SETTINGS.t1(),
+            SETTINGS.t2(),
+            Duration.ofMillis(t3));
+    ApciSession session =
+        new ApciSession(ApciSession.Role.CLIENT, settings, scheduler, output, events);
+    session.onConnected();
+    startClientDataTransfer(session);
+    output.clear();
+
+    // A received TESTFR act restarts t3; the TESTFR con and the I-frame sent after it don't.
+    session.onApdu(uFrame(UFunction.TESTFR_ACT));
+    scheduler.advance(3_000, TimeUnit.MILLISECONDS);
+    session.sendAsdu(asdu(1));
+
+    scheduler.advance(t3 - 3_000 - 1, TimeUnit.MILLISECONDS);
+    assertEquals(List.of(UFunction.TESTFR_CON), uFunctions());
+    scheduler.advance(1, TimeUnit.MILLISECONDS);
+    assertEquals(List.of(UFunction.TESTFR_CON, UFunction.TESTFR_ACT), uFunctions());
+    assertNull(events.lastCloseCause());
+  }
+
+  private List<UFunction> uFunctions() {
+    return output.uFrames().stream().map(ControlField.TypeU::function).toList();
+  }
+
+  @Test
   void receivingTestFrameActRepliesWithConfirmation() {
     ApciSession session = newSession(ApciSession.Role.SERVER);
     session.onConnected();
