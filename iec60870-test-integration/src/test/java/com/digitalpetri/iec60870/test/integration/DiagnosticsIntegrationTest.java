@@ -384,7 +384,9 @@ class DiagnosticsIntegrationTest {
                 .reconnectPolicy(ReconnectPolicy.disabled())
                 .diagnostics(ApciDiagnostics.of(counters, capture)));
 
-    client.connect();
+    // The decoder can reject the octets and drop the connection before the session is armed, which
+    // fails the connect. The decode error and the close are reported either way.
+    client.connectAsync();
     Await.until("the decode error", () -> counters.snapshot().decodeErrors() == 1);
     Await.until("the close", () -> counters.snapshot().connectionsClosed() == 1);
 
