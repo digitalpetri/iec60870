@@ -58,7 +58,7 @@
     <!-- Dependencies -->
     <jspecify.version>1.0.1</jspecify.version>
     <joou.version>0.9.6</joou.version>
-    <netty.version>4.1.139.Final</netty.version>
+    <netty.version>4.1.140.Final</netty.version>
     <slf4j.version>2.0.20</slf4j.version>
     <jSerialComm.version>2.11.4</jSerialComm.version>
 
@@ -82,7 +82,7 @@
     <maven-resources-plugin.version>3.5.0</maven-resources-plugin.version>
     <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
     <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
-    <spotless-maven-plugin.version>3.10.4</spotless-maven-plugin.version>
+    <spotless-maven-plugin.version>3.11.0</spotless-maven-plugin.version>
     <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
   </properties>
 
