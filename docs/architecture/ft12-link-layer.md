@@ -141,14 +141,18 @@ station initiates the link-reset bring-up, and which station may drive
   `startDataTransfer()` drives the handshake **FC9 → FC11 → FC0 → ack**: it sends a
   request-status-of-link (`FC9`), and on the peer's status-of-link (`FC11`) reply it sends a
   reset-of-remote-link (`FC0`); the positive acknowledgement of that reset completes the bring-up.
-  On the initiating CLIENT, completion sets primary `nextFcb = true` and initializes the local
-  secondary receive state (`expectedFcb = false`, no cached response). It makes the link available,
-  fires `Events.onDataTransferStateChanged(true)`, completes the stage returned by
+  Completion sets primary `nextFcb = true` and, if the peer has not reset the local secondary yet,
+  initializes its receive state (`expectedFcb = false`, no cached response). It makes the link
+  available, fires `Events.onDataTransferStateChanged(true)`, completes the stage returned by
   `startDataTransfer()`, and flushes queued user data when the peer is ready.
 - **A `Role.SERVER` station follows the peer.** It reaches the available state by *receiving* the
   peer's reset-of-remote-link, which sets the link available, fires the same data-transfer-state
-  event, acknowledges, and flushes its own queued data. `isDataTransferStarted()` returns whether the
-  link is available.
+  event, and acknowledges. `isDataTransferStarted()` returns whether the link is available.
+- **Each station resets the peer's link before it sends user data.** The peer's reset initializes
+  only the local secondary; the peer's secondary stays in the "not reset" state until this station
+  resets it, and such a secondary ignores user data. After acknowledging the first peer reset, the
+  SERVER therefore runs the same **FC9 → FC11 → FC0 → ack** handshake for its own primary direction,
+  and its queued user data waits for that handshake to complete.
 - **A received reset affects the secondary direction.** It clears the received-frame FCB and cached
   response. The SERVER therefore resets only its secondary during the CLIENT's bring-up. Its
   independent primary retains its next FCB, any outstanding transaction, and its confirmation

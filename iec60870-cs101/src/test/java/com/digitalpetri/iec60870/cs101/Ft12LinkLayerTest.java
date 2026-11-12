@@ -296,6 +296,40 @@ class Ft12LinkLayerTest {
     assertEquals(0, client.pendingSendCount());
   }
 
+  @Test
+  void clientResetByThePeerFirstStillResetsThePeerLink() {
+    Ft12LinkLayer client = newClient();
+    client.onConnected();
+
+    // The peer resets our secondary before we start: we bring up our own primary in turn.
+    client.onFrame(inboundPrimaryReset());
+    assertEquals(2, output.frames().size());
+    assertInstanceOf(Ft12Frame.SingleChar.class, output.frames().get(0));
+    Ft12Frame.FixedLength fc9 =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(1));
+    assertEquals(FC_REQUEST_STATUS_OF_LINK, fc9.control().functionCode());
+    output.clear();
+
+    // Starting now joins that bring-up instead of completing at once or starting another one.
+    CompletionStage<Void> start = client.startDataTransfer();
+    assertFalse(start.toCompletableFuture().isDone());
+    assertTrue(output.frames().isEmpty());
+    client.sendAsdu(asdu(10));
+    assertTrue(output.frames().isEmpty(), "no user data before the peer's link is reset");
+
+    client.onFrame(inboundSecondary(FC_STATUS_OF_LINK));
+    Ft12Frame.FixedLength fc0 =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
+    assertEquals(FC_RESET_REMOTE_LINK, fc0.control().functionCode());
+    output.clear();
+
+    client.onFrame(inboundSecondary(FC_ACK));
+    assertTrue(start.toCompletableFuture().isDone());
+    Ft12Frame.Variable data = assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(0));
+    assertEquals(FC_USER_DATA, data.control().functionCode());
+    assertTrue(data.control().fcb());
+  }
+
   // --- SERVER role -----------------------------------------------------------------------------
 
   @Test
@@ -319,11 +353,82 @@ class Ft12LinkLayerTest {
 
     assertTrue(server.isDataTransferStarted());
     assertEquals(List.of(Boolean.TRUE), events.dataTransferChanges());
-    assertEquals(1, output.frames().size());
+    assertEquals(2, output.frames().size());
     Ft12Frame.FixedLength ack =
         assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
     assertFalse(ack.control().prm(), "the reset acknowledgement is a secondary frame");
     assertEquals(FC_ACK, ack.control().functionCode());
+    // The server then starts bringing up its own primary direction.
+    Ft12Frame.FixedLength fc9 =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(1));
+    assertTrue(fc9.control().prm());
+    assertEquals(FC_REQUEST_STATUS_OF_LINK, fc9.control().functionCode());
+  }
+
+  @Test
+  void serverResetsPeerLinkBeforeSendingUserData() {
+    Ft12LinkLayer server = newServer(SETTINGS);
+    server.onConnected();
+    Asdu a = asdu(10);
+    server.sendAsdu(a);
+    assertTrue(output.frames().isEmpty(), "no user data before the link is up");
+
+    // The peer resets our secondary. We acknowledge, then request the status of the peer's link
+    // instead of sending the queued ASDU: the peer's secondary has not been reset yet.
+    server.onFrame(inboundPrimaryReset());
+    assertTrue(server.isDataTransferStarted());
+    assertEquals(2, output.frames().size());
+    assertInstanceOf(Ft12Frame.SingleChar.class, output.frames().get(0));
+    Ft12Frame.FixedLength fc9 =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(1));
+    assertTrue(fc9.control().prm());
+    assertFalse(fc9.control().dir(), "a SERVER sends DIR=0");
+    assertEquals(FC_REQUEST_STATUS_OF_LINK, fc9.control().functionCode());
+    assertEquals(1, server.pendingSendCount());
+    output.clear();
+
+    // Status of link -> reset of remote link.
+    server.onFrame(inboundSecondary(FC_STATUS_OF_LINK));
+    assertEquals(1, output.frames().size());
+    Ft12Frame.FixedLength fc0 =
+        assertInstanceOf(Ft12Frame.FixedLength.class, output.frames().get(0));
+    assertTrue(fc0.control().prm(), "reset-of-remote-link is a primary frame");
+    assertEquals(FC_RESET_REMOTE_LINK, fc0.control().functionCode());
+    assertEquals(1, server.pendingSendCount());
+    output.clear();
+
+    // The acknowledged reset releases the queued ASDU with FCB=1.
+    server.onFrame(inboundSecondary(FC_ACK));
+    assertEquals(1, output.frames().size());
+    Ft12Frame.Variable data = assertInstanceOf(Ft12Frame.Variable.class, output.frames().get(0));
+    assertEquals(FC_USER_DATA, data.control().functionCode());
+    assertTrue(data.control().fcb(), "the first user-data frame after reset carries FCB=1");
+    assertEquals(a, data.asdu());
+    assertEquals(0, server.pendingSendCount());
+    assertEquals(List.of(Boolean.TRUE), events.dataTransferChanges());
+    assertEquals(0, events.closedCount());
+  }
+
+  @Test
+  void serverBringUpKeepsTheSecondaryStateSetByThePeerReset() {
+    Ft12LinkLayer server = newServer(SETTINGS);
+    server.onConnected();
+    server.onFrame(inboundPrimaryReset());
+
+    // The peer sends user data while our own bring-up is still in progress.
+    Asdu first = asdu(10);
+    server.onFrame(inboundUserData(true, first));
+    assertEquals(List.of(first), events.asdus());
+
+    server.onFrame(inboundSecondary(FC_STATUS_OF_LINK));
+    server.onFrame(inboundSecondary(FC_ACK));
+    output.clear();
+
+    // A retransmission of that frame is still recognized after our bring-up completed.
+    server.onFrame(inboundUserData(true, first));
+    assertEquals(List.of(first), events.asdus(), "a retransmission must not be delivered again");
+    assertEquals(1, output.frames().size());
+    assertInstanceOf(Ft12Frame.SingleChar.class, output.frames().get(0));
   }
 
   // --- close() ---------------------------------------------------------------------------------

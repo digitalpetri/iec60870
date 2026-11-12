@@ -65,6 +65,9 @@ class BalancedEngineOversizedUserDataTest {
   // Primary (PRM=1) send/confirm user-data function code (FCV=1).
   private static final int FC_USER_DATA = 3;
 
+  // Secondary (PRM=0) status-of-link function code, the answer to request-status-of-link.
+  private static final int FC_STATUS_OF_LINK = 11;
+
   /**
    * A non-sequence single-point-information ASDU of this many objects encodes to well over the
    * {@code 255}-octet FT1.2 user-data limit (header plus several octets per object), so it cannot
@@ -85,7 +88,7 @@ class BalancedEngineOversizedUserDataTest {
 
   /**
    * A {@link Ft12LinkLayer.Role#SERVER} engine reaches the available state by receiving the peer's
-   * reset-of-remote-link, which keeps bring-up to a single inbound frame.
+   * reset-of-remote-link, then resets the peer's link before it sends user data.
    */
   private BalancedEngine newEngine() {
     return new BalancedEngine(
@@ -103,9 +106,12 @@ class BalancedEngineOversizedUserDataTest {
     BalancedEngine engine = newEngine();
     engine.onConnected();
 
-    // Bring the link up: the peer's reset makes it available and the engine acknowledges.
+    // Bring the link up: the peer's reset makes it available and the engine acknowledges, then the
+    // engine resets the peer's link (status of link, then the acknowledgement of its reset).
     engine.onFrame(primaryReset());
     assertTrue(engine.isDataTransferStarted(), "the link is available after the peer reset");
+    engine.onFrame(secondary(FC_STATUS_OF_LINK));
+    engine.onFrame(new Ft12Frame.SingleChar());
     output.clear();
 
     // Publishing one ASDU too large to frame in a single FT1.2 variable frame makes output.send
@@ -172,6 +178,12 @@ class BalancedEngineOversizedUserDataTest {
   private static Ft12Frame primaryReset() {
     return new Ft12Frame.FixedLength(
         LinkControlField.primary(true, false, false, FC_RESET_REMOTE_LINK), LINK_ADDRESS);
+  }
+
+  /** An inbound secondary (response) frame from the peer. */
+  private static Ft12Frame secondary(int functionCode) {
+    return new Ft12Frame.FixedLength(
+        LinkControlField.secondary(true, false, false, functionCode), LINK_ADDRESS);
   }
 
   /**
