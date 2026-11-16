@@ -63,7 +63,7 @@
     <jSerialComm.version>2.11.4</jSerialComm.version>
 
     <!-- Test Dependencies -->
-    <bouncycastle.version>1.86</bouncycastle.version>
+    <bouncycastle.version>1.87</bouncycastle.version>
     <junit.version>5.14.4</junit.version>
     <testcontainers.version>2.0.5</testcontainers.version>
 
