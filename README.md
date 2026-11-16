@@ -224,8 +224,8 @@ ownership and threading, TLS and configuration, and the error model and extensib
 
 ## Requirements
 
-The repository configures Java 17 and Maven 3.10 with `mise`. Java uses an exact version; Maven allows
-patch updates within 3.10:
+Building the repository requires Java 17 and Maven 3.9.0 or later. The repository configures Java 17
+and Maven 3.10 with `mise`. Java uses an exact version; Maven allows patch updates within 3.10:
 
 ```shell
 mise install
