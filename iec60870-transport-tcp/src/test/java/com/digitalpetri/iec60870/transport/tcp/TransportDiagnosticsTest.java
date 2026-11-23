@@ -96,6 +96,7 @@ class TransportDiagnosticsTest {
     }
     List<SocketAddress> rejected = Collections.synchronizedList(new ArrayList<>());
     var rejectedCause = new CompletableFuture<Throwable>();
+    var accepted = new CompletableFuture<SocketAddress>();
     NettyServerTransport server =
         new NettyServerTransport(
             NettyServerTransportConfig.builder("127.0.0.1", port)
@@ -110,17 +111,21 @@ class TransportDiagnosticsTest {
                           }
                         })
                 .build());
-    server.setConnectionHandler(connection -> {});
+    server.setConnectionHandler(connection -> accepted.complete(connection.remoteAddress()));
     server.bind().toCompletableFuture().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    try (Socket first = new Socket("127.0.0.1", port);
-        Socket second = new Socket("127.0.0.1", port)) {
-      Throwable cause = rejectedCause.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    try (Socket first = new Socket("127.0.0.1", port)) {
+      // Socket.connect() can finish before the server has admitted the connection.
+      assertEquals(first.getLocalSocketAddress(), accepted.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
 
-      assertInstanceOf(ConnectionClosedException.class, cause);
-      assertEquals(second.getLocalPort(), ((InetSocketAddress) rejected.get(0)).getPort());
-      InputStream in = second.getInputStream();
-      assertEquals(-1, in.read(), "the rejected connection is closed");
-      assertTrue(first.isConnected());
+      try (Socket second = new Socket("127.0.0.1", port)) {
+        Throwable cause = rejectedCause.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        assertInstanceOf(ConnectionClosedException.class, cause);
+        assertEquals(second.getLocalSocketAddress(), rejected.get(0));
+        second.setSoTimeout((int) TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
+        InputStream in = second.getInputStream();
+        assertEquals(-1, in.read(), "the rejected connection is closed");
+      }
     } finally {
       server.unbind().toCompletableFuture().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
