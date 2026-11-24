@@ -759,10 +759,11 @@ class DefaultIec60870ClientTest {
       // Each spontaneous ASDU publishes two events (AsduReceived + PointUpdated). The burst is far
       // larger than Flow.defaultBufferSize() (256); the event stream must deliver every event.
       int count = 5_000;
-      CountDownLatch latch = new CountDownLatch(count);
+      CountDownLatch delivered = new CountDownLatch(2 * count);
       AtomicInteger concurrent = new AtomicInteger();
       AtomicInteger maxConcurrent = new AtomicInteger();
-      List<ClientEvent> received = new ArrayList<>();
+      AtomicInteger asdusReceived = new AtomicInteger();
+      AtomicInteger pointsUpdated = new AtomicInteger();
 
       serialClient
           .events()
@@ -777,10 +778,17 @@ class DefaultIec60870ClientTest {
                 public void onNext(ClientEvent item) {
                   int now = concurrent.incrementAndGet();
                   maxConcurrent.accumulateAndGet(now, Math::max);
-                  received.add(item); // safe only if callbacks never overlap
-                  concurrent.decrementAndGet();
+                  boolean expectedEvent = true;
                   if (item instanceof ClientEvent.AsduReceived) {
-                    latch.countDown();
+                    asdusReceived.incrementAndGet();
+                  } else if (item instanceof ClientEvent.PointUpdated) {
+                    pointsUpdated.incrementAndGet();
+                  } else {
+                    expectedEvent = false;
+                  }
+                  concurrent.decrementAndGet();
+                  if (expectedEvent) {
+                    delivered.countDown();
                   }
                 }
 
@@ -795,13 +803,10 @@ class DefaultIec60870ClientTest {
         requireNonNull(serialSession.get()).deliverAsdu(measured(Cause.SPONTANEOUS, (short) i));
       }
 
-      assertTrue(latch.await(10, TimeUnit.SECONDS), "all events delivered");
+      assertTrue(delivered.await(10, TimeUnit.SECONDS), "all ASDU and point events delivered");
       assertEquals(1, maxConcurrent.get(), "callbacks must never overlap");
-      // The unsynchronized list captured every counted event, proving callbacks never raced.
-      assertEquals(
-          count,
-          received.stream().filter(e -> e instanceof ClientEvent.AsduReceived).count(),
-          "every delivered ASDU event was recorded without corruption");
+      assertEquals(count, asdusReceived.get(), "every ASDU was delivered");
+      assertEquals(count, pointsUpdated.get(), "every point update was delivered");
     } finally {
       executor.shutdownNow();
     }
