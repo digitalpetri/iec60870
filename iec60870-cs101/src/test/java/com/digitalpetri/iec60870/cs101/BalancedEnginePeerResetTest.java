@@ -200,6 +200,18 @@ class BalancedEnginePeerResetTest {
       peer.onFrame(localOutput.removeFirst()); // FC11 -> FC0
       local.onFrame(peerOutput.removeFirst()); // FC0 -> ACK
       peer.onFrame(localOutput.removeFirst()); // ACK completes bring-up
+      if (!localOutput.isEmpty()) {
+        // On the first peer reset the SERVER brings up its own primary in turn.
+        Ft12Frame.FixedLength fc9 =
+            assertInstanceOf(Ft12Frame.FixedLength.class, localOutput.peekFirst());
+        assertEquals(9, fc9.control().functionCode());
+        peer.onFrame(localOutput.removeFirst()); // FC9 -> FC11
+        local.onFrame(peerOutput.removeFirst()); // FC11 -> FC0
+        peer.onFrame(localOutput.removeFirst()); // FC0 -> ACK
+        local.onFrame(peerOutput.removeFirst()); // ACK completes the SERVER's bring-up
+      }
+      assertTrue(localOutput.isEmpty());
+      assertTrue(peerOutput.isEmpty());
       assertTrue(local.isDataTransferStarted());
       assertTrue(peer.isDataTransferStarted());
     }

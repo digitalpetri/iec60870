@@ -243,6 +243,11 @@ class SessionWriteCompletionIntegrationTest {
         feed(new Ft12Frame.SingleChar());
       } else {
         feed(new Ft12Frame.FixedLength(LinkControlField.primary(true, false, false, 0), 1));
+        if (mode == Mode.BALANCED) {
+          // The balanced server then resets the peer's link: status of link, then the ACK.
+          feed(new Ft12Frame.FixedLength(LinkControlField.secondary(true, false, false, 11), 1));
+          feed(new Ft12Frame.SingleChar());
+        }
         if (mode == Mode.SLAVE) {
           feed(new Ft12Frame.FixedLength(LinkControlField.primary(false, true, true, 11), 1));
         }

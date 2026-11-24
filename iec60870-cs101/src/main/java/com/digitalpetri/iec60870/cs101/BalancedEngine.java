@@ -48,8 +48,9 @@ import org.slf4j.LoggerFactory;
  * send application data with {@link #sendAsdu(Asdu)}. A {@link Ft12LinkLayer.Role#CLIENT} drives
  * the link-reset bring-up with {@link #startDataTransfer()}, which completes when the link becomes
  * available; a {@link Ft12LinkLayer.Role#SERVER} reaches the available state by receiving the
- * peer's reset-of-remote-link frame. Call {@link #close()} when the transport goes away; it is
- * idempotent.
+ * peer's reset-of-remote-link frame. Either station sends user data only after it has reset the
+ * peer's link itself, so a SERVER answers the peer's reset with its own request-status-of-link and
+ * reset-of-remote-link. Call {@link #close()} when the transport goes away; it is idempotent.
  *
  * <p><b>Threading.</b> All mutable state is guarded by a single internal lock, and the timer
  * callbacks scheduled on the injected {@link ScheduledExecutorService} acquire that same lock, so a
@@ -124,6 +125,7 @@ final class BalancedEngine implements Ft12Engine {
   private boolean linkAvailable;
 
   // Primary process: the frames this station initiates and the FCB it stamps on them.
+  private boolean primaryReset; // true once the peer acknowledged our reset-of-remote-link
   private boolean nextFcb; // FCB for the next FCV=1 primary frame; true after a link reset
   private @Nullable PendingPrimary pending; // null when idle; else what we await a confirmation for
   private @Nullable Asdu
@@ -301,7 +303,7 @@ final class BalancedEngine implements Ft12Engine {
       if (closed) {
         return failedFuture(new ConnectionClosedException("session is closed"));
       }
-      if (linkAvailable) {
+      if (linkAvailable && primaryReset) {
         return CompletableFuture.completedFuture(null);
       }
       if (pendingStart != null) {
@@ -309,7 +311,9 @@ final class BalancedEngine implements Ft12Engine {
       }
       CompletableFuture<Void> future = new CompletableFuture<>();
       pendingStart = future;
-      beginBringUp();
+      if (!isBringingUp()) {
+        beginBringUp();
+      }
       return future;
     } finally {
       lock.unlock();
@@ -490,12 +494,17 @@ final class BalancedEngine implements Ft12Engine {
     // Start completion callbacks can send inline, so establish the busy gate before notifying them.
     pending = busy ? PendingPrimary.BUSY_STATUS : null;
     retryCount = 0;
-    // Initialize this CLIENT's primary sequence and secondary receive state. The peer resets
-    // only its secondary when it receives our FC0; its primary sequence remains independent.
+    // Initialize this station's primary sequence. The peer resets only its secondary when it
+    // receives our FC0; its primary sequence remains independent.
+    primaryReset = true;
     nextFcb = true;
-    secondaryReset = true;
-    expectedFcb = false;
-    lastSecondaryResponse = null;
+    if (!secondaryReset) {
+      // The peer has not reset our secondary (yet): initialize its receive state here. A SERVER
+      // brings up its primary after the peer's reset, and must keep the FCB state that reset set.
+      secondaryReset = true;
+      expectedFcb = false;
+      lastSecondaryResponse = null;
+    }
     if (!linkAvailable) {
       linkAvailable = true;
       events.onDataTransferStateChanged(true);
@@ -686,7 +695,14 @@ final class BalancedEngine implements Ft12Engine {
     if (closed) {
       return;
     }
-    // Initial bring-up may release queued data; an outstanding primary still owns the window.
+    if (!primaryReset && pending == null) {
+      // The peer's reset initializes only our secondary. Before this station sends user data it
+      // must reset the peer's secondary in turn (IEC 60870-5-101 6.2.1.2, Figure 8): a secondary
+      // that was never reset ignores user data.
+      beginBringUp();
+      return;
+    }
+    // An outstanding primary still owns the window.
     flushSendQueue();
   }
 
@@ -756,7 +772,7 @@ final class BalancedEngine implements Ft12Engine {
     // Window of one: at most a single outstanding primary frame, and only once the link is
     // available. Loop so an ASDU whose framing fails (see the catch below) does not stall the
     // queue: its transaction is rolled back and the next queued ASDU is attempted on the same turn.
-    while (linkAvailable && pending == null && !sendQueue.isEmpty()) {
+    while (linkAvailable && primaryReset && pending == null && !sendQueue.isEmpty()) {
       Entry entry = sendQueue.removeFirst();
       Asdu asdu = entry.asdu();
       // A queue slot freed up; wake any publisher parked on capacity (BLOCK policy).
@@ -993,6 +1009,7 @@ final class BalancedEngine implements Ft12Engine {
 
   private void resetState() {
     linkAvailable = false;
+    primaryReset = false;
     nextFcb = true;
     pending = null;
     pendingDataAsdu = null;
@@ -1031,6 +1048,10 @@ final class BalancedEngine implements Ft12Engine {
             asdu.commonAddress(),
             asdu.objects());
     events.onAsdu(rejection);
+  }
+
+  private boolean isBringingUp() {
+    return pending == PendingPrimary.BRING_UP_STATUS || pending == PendingPrimary.BRING_UP_RESET;
   }
 
   private static boolean isLinkServiceFailure(int functionCode) {
